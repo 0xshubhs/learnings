@@ -1145,3 +1145,93 @@ timelock only delays it by 1 to 14 days
 system a depositor actually faces.
 
 ---
+
+## 9. Exercises to trace yourself
+
+These assume you have the Aave references open alongside, since the point of
+reading Morpho is the comparison.
+
+1. **The virtual offset, by hand.** Open
+   [`SharesMathLib.sol:27-44`](morpho-blue/src/libraries/SharesMathLib.sol#L27-L44).
+   Run the first-depositor attack numerically on a market with
+   `VIRTUAL_SHARES = 1e6`: attacker supplies 1 wei, donates 10,000e6 USDC by
+   calling `supply` again (note: a direct token transfer does *nothing* here —
+   why?), victim supplies 10,000e6. Compute both parties' final asset claims.
+   Then redo it with the offset removed and confirm the victim gets zero shares.
+
+2. **Why `- feeAmount`.** In `_accrueInterest`
+   ([`:494-502`](morpho-blue/src/Morpho.sol#L494-L502)) the fee conversion uses
+   `totalSupplyAssets - feeAmount` as the denominator. Work out, with numbers,
+   what the fee recipient would receive if it used `totalSupplyAssets`, and
+   explain who pays the difference. Then find Aave's equivalent in
+   `_accrueToTreasury`
+   ([`ReserveLogic.sol`](../aave/aave-v3-origin/src/contracts/protocol/libraries/logic/ReserveLogic.sol))
+   and identify the same adjustment.
+
+3. **The Taylor error.** Implement `wTaylorCompounded`
+   ([`MathLib.sol:38-44`](morpho-blue/src/libraries/MathLib.sol#L38-L44)) in
+   Python and compare it against `math.exp(x*n) - 1` for `z` from 0.001 to 1.0.
+   At what `z` does the error exceed 1%? Now find the elapsed time that produces
+   that `z` at a 50% APR, and decide whether it is reachable in practice.
+
+4. **Rounding direction audit.** List every rounding call in `_isHealthy`
+   ([`:515-539`](morpho-blue/src/Morpho.sol#L515-L539)) and in the two liquidation
+   branches ([`:371-380`](morpho-blue/src/Morpho.sol#L371-L380)). For each, state
+   who loses the dust. Find one where reversing the direction would let someone
+   extract value, and describe the attack.
+
+5. **Build leverage on paper.** Using only `supplyCollateral` with a callback
+   (§4), write the exact sequence that takes 2 WETH of your own into a 5 WETH
+   position against USDC debt. State the health factor at the moment
+   `onMorphoSupplyCollateral` fires and explain why the borrow inside it
+   succeeds. Then find the Aave v2 contract that exists solely to do this
+   (`aave/v2-protocol/contracts/adapters/`) and count its lines.
+
+6. **The LIF table.** Reproduce the table in §6 from
+   [`:365-369`](morpho-blue/src/Morpho.sol#L365-L369). At what `lltv` does the
+   cap first bind? Then argue whether a 0.6% bounty at `lltv = 0.98` is enough to
+   attract liquidators during a 20% hourly drawdown, and what that implies about
+   who should use high-LLTV markets.
+
+7. **Bad debt, both ways.** Trace
+   [`:392-403`](morpho-blue/src/Morpho.sol#L392-L403) and then Aave's
+   `_burnBadDebt` / deficit path
+   ([`LiquidationLogic.sol:538`](../aave/aave-v3-origin/src/contracts/protocol/libraries/logic/LiquidationLogic.sol#L538)).
+   Write down what a supplier sees in each system in the block the loss occurs,
+   and in the block after. Which one would you rather be in, and does the answer
+   change if you are the *last* supplier to withdraw?
+
+8. **MetaMorpho's queue.** Read `_withdrawMorpho`
+   ([`metamorpho/src/MetaMorpho.sol:807`](metamorpho/src/MetaMorpho.sol#L807))
+   and `totalAssets`
+   ([`:589-593`](metamorpho/src/MetaMorpho.sol#L589-L593)). Construct a state
+   where a depositor cannot withdraw despite `totalAssets` being large, and
+   identify which role could have prevented it and which could fix it fastest.
+
+9. **The unenforced assumptions.** Take the list at
+   [`IMorpho.sol:104-125`](morpho-blue/src/interfaces/IMorpho.sol#L104-L125) and
+   for each item construct the concrete failure. Start with the fee-on-transfer
+   one, which is the easiest to reason about, then do the oracle gap condition
+   `newPrice < oldPrice · LLTV · LIF`.
+
+10. **Reproduce the size claim.** Run
+    `find morpho-blue/src -name '*.sol' -not -path '*/mocks/*' | xargs wc -l` and
+    compare against
+    `find ../aave/aave-v3-origin/src/contracts/protocol -name '*.sol' | xargs wc -l`.
+    Then argue which comparison is fair, given that MetaMorpho, the oracle
+    contracts and the bundlers are all doing work that lives inside Aave's number.
+
+---
+
+## Where to go next
+
+- [`MORPHO-COMPLETE-REFERENCE.md`](MORPHO-COMPLETE-REFERENCE.md) — every contract
+  and every function across all four repos, with selector tables, storage
+  layouts and the full error list.
+- [`../liquity/LIQUITY-DEEP-DIVE.md`](../liquity/LIQUITY-DEEP-DIVE.md) — the
+  other minimalist design in this repo. Liquity removes governance entirely
+  rather than minimising it, and replaces liquidation auctions with a stability
+  pool. Read it directly after this one; the two make different bets on the same
+  intuition.
+- [`../aave/AAVE-DEEP-DIVE.md`](../aave/AAVE-DEEP-DIVE.md) — the maximalist
+  counterpart referenced throughout.
