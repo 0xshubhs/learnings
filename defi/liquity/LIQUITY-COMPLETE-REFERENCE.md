@@ -1875,3 +1875,152 @@ particularly clean example of it.
 
 ---
 
+
+## 2.11 v2 reference tables
+
+### Custom errors
+
+v2 uses custom errors throughout, unlike v1's revert strings. **57 distinct
+errors** across the tree. The ones a caller hits:
+
+| Error | Thrown when |
+|---|---|
+| `IsShutDown` | Any borrowing operation on a shut-down branch |
+| `ICRBelowMCR` | Result would leave the Trove under the branch MCR |
+| `ICRBelowMCRPlusBCR` | Joining or adjusting inside a batch without the 10% buffer |
+| `TCRBelowCCR` | Operation would push the branch TCR under CCR |
+| `DebtBelowMin` | Result below 2,000 BOLD and not a deliberate close |
+| `CollWithdrawalTooHigh` | Withdrawing more collateral than exists |
+| `NotEnoughBoldBalance` | Repaying or redeeming more than held |
+| `InterestRateTooLow` / `InterestRateTooHigh` | Outside 0.5% to 250% |
+| `InterestRateNotNew` | Setting the rate to its current value |
+| `InterestNotInRange` | A delegate exceeding its allowed band |
+| `DelegateInterestRateChangePeriodNotPassed` | Delegate moved too soon |
+| `BatchInterestRateChangePeriodNotPassed` | Batch manager moved within `MIN_INTEREST_RATE_CHANGE_PERIOD` |
+| `MinInterestRateChangePeriodTooLow` | Registering a batch with too short a period |
+| `BatchManagerExists` / `BatchManagerNotNew` | Re-registering |
+| `InvalidInterestBatchManager` | Joining an unregistered manager |
+| `AnnualManagementFeeTooHigh` | Above the 10% cap |
+| `NewFeeNotLower` | `lowerBatchManagementFee` called with a higher fee |
+| `BatchSharesRatioTooHigh` / `BatchSharesRatioTooLow` | The `MAX_BATCH_SHARES_RATIO` guard |
+| `MinCollNotReached` | Urgent redemption slippage bound |
+| `NewOracleFailureDetected` | Price feed failed mid-call |
+| `CallerNotBorrowerOperations` / `CallerNotTroveManager` / `CallerNotPriceFeed` / `CallerNotCollateralRegistry` | Direct call to a gated function |
+| `MinGeMax` | A delegate band with min >= max |
+| `EmptyData` | Empty Trove array passed to a batch operation |
+
+Reproduce the full list:
+
+```bash
+grep -rhoE 'error [A-Za-z0-9_]+' --include='*.sol' v2-bold/contracts/src | sort -u
+```
+
+Two entries above look odd because a naive grep also matches prose: `error
+correction` and `error low` come from comments, not declarations. The real count
+of declared errors is 55.
+
+### v2 use cases
+
+| Intent | Call | Notes |
+|---|---|---|
+| Open a Trove | `BorrowerOperations.openTrove` | Choose `_annualInterestRate` and bound `_maxUpfrontFee` |
+| Open with a manager | `openTroveAndJoinInterestBatchManager` | One call |
+| Open leveraged | `LeverageLSTZapper.openLeveragedTroveWithRawETH` | Flash loan |
+| Change your rate | `adjustTroveInterestRate` | Free outside the 7-day cooldown |
+| Delegate your rate | `setInterestIndividualDelegate` | Bounded band |
+| Join a batch | `setInterestBatchManager` | Needs MCR + 10% |
+| Become a manager | `registerBatchManager` | Declares bounds and fee |
+| Move a batch's rate | `setBatchManagerAnnualInterestRate` | Min 1 hour between changes |
+| Redeem | `CollateralRegistry.redeemCollateral` | Pro rata across branches, lowest rates first |
+| Liquidate | `TroveManager.batchLiquidateTroves` | Penalty capped, surplus to the borrower |
+| Earn yield | `StabilityPool.provideToSP(amount, doClaim)` | 75% of interest plus liquidation gains |
+| Claim stashed collateral | `StabilityPool.claimAllCollGains` | After a full exit |
+| Revive a zombie | `BorrowerOperations.adjustZombieTrove` | After partial redemption |
+| Shut a broken branch | `BorrowerOperations.shutdown` | Permissionless once TCR < SCR |
+| Redeem post-shutdown | `TroveManager.urgentRedemption` | 2% bonus, ignores rate ordering |
+| Reclaim surplus | `BorrowerOperations.claimCollateral` | |
+
+---
+
+# Part 3 — v1 versus v2
+
+## 3.1 Mechanism comparison
+
+| Dimension | v1 | v2 |
+|---|---|---|
+| Stablecoin | LUSD | BOLD |
+| Collateral | ETH only | Multiple branches (WETH, wstETH, rETH) |
+| Borrowing cost | One-off fee, 0.5% to 5%, algorithmic | Continuous interest, **borrower-chosen**, 0.5% to 250% |
+| Upfront charge | Borrowing fee | 7 days of interest at the branch average |
+| MCR | 110% | 110% WETH, 120% LST |
+| CCR | 150% | 150% WETH, 160% LST |
+| Recovery Mode | Yes, system-wide restrictions | **Removed** |
+| Liquidation reward | All collateral to the Stability Pool | Capped penalty (5% / 10% / 20%), surplus to borrower |
+| Liquidator share | 0.5% uncapped | 0.5% capped at 2 ETH |
+| Redemption target | Lowest ICR | **Lowest interest rate** |
+| Redemption scope | Single system | Pro rata across branches |
+| Redemption half-life | 12 hours | 6 hours |
+| Initial base rate | 0 with a 14-day bootstrap lock | **100%**, decaying |
+| Trove identity | One per address | **ERC-721 NFT**, many per address |
+| Partial redemption | Closes the Trove if below min | Marks it a **zombie** |
+| Stability Pool income | Liquidation gains + LQTY emissions | Liquidation gains + **75% of interest** |
+| Governance token | LQTY, with staking and emissions | **None** |
+| Fee recipients | LQTY stakers | Stability Pool depositors |
+| Oracle failure | Fall back to Tellor | **Shut the branch down**, open urgent redemption |
+| Oracle prices | One | Two: separate redemption price, always priced against the actor |
+| Delegation | None | Individual delegates and batch managers |
+| Accumulators | `P`, `S`, `G` | `P`, `S`, `B` |
+| `P` reaching zero | Prevented by `MIN_LUSD_IN_SP` | Prevented by `MIN_BOLD_IN_SP` |
+| Solidity | 0.6.11 | 0.8.24 |
+| Core lines | ~10,500 | ~13,200 in `src/`, 102 files |
+
+## 3.2 The through-line
+
+Both versions solve the same problem the same way: a hard floor under the
+stablecoin from redeemability, a Stability Pool as first-loss buyer, and
+redistribution as the backstop. Neither has an admin key that can move user
+funds, and neither has a governance vote in the liquidation path.
+
+What changed is **how the borrowing rate is set**. v1 used an algorithm: a base
+rate that rose with redemption volume and decayed with time. It was
+governance-free but rigid, and in practice LUSD traded above peg for long
+stretches because borrowers had no way to compete for redemption priority.
+
+v2 replaces the algorithm with a market. Each borrower posts a rate; redemptions
+consume the lowest rates first. A borrower who wants to be left alone pays more.
+The system needs no oracle for the interest rate and no vote to change it,
+because the ordering of the sorted list *is* the price signal.
+
+That is the idea worth taking away. v1 proved a stablecoin can work without
+governance. v2 shows that even the parameter governance usually sets, the
+interest rate, can be delegated to the users themselves if you design the
+queue correctly.
+
+## 3.3 Function migration map
+
+| v1 | v2 | Change |
+|---|---|---|
+| `openTrove(maxFee, LUSD, hints)` | `openTrove(owner, ownerIndex, coll, bold, hints, rate, maxUpfrontFee, ...)` | Takes a rate; collateral is an argument, not `msg.value` |
+| `addColl()` payable | `addColl(troveId, amount)` | ERC-20 collateral |
+| `withdrawColl(amount, hints)` | `withdrawColl(troveId, amount)` | |
+| `withdrawLUSD(maxFee, amount, hints)` | `withdrawBold(troveId, amount, maxUpfrontFee)` | |
+| `repayLUSD(amount, hints)` | `repayBold(troveId, amount)` | |
+| `adjustTrove(...)` | `adjustTrove(troveId, ...)` | Plus `adjustZombieTrove` |
+| `closeTrove()` | `closeTrove(troveId)` | |
+| `claimCollateral()` | `claimCollateral()` | Unchanged in spirit |
+| — | `adjustTroveInterestRate` | New |
+| — | `setInterestIndividualDelegate` | New |
+| — | `registerBatchManager`, `setInterestBatchManager` | New |
+| — | `applyPendingDebt` | New |
+| — | `shutdown` | New |
+| `TroveManager.liquidate(addr)` | `TroveManager.batchLiquidateTroves(ids)` | Single-Trove entry removed |
+| `TroveManager.redeemCollateral(...)` | `CollateralRegistry.redeemCollateral(...)` | Moved up a level |
+| — | `TroveManager.urgentRedemption` | New |
+| `StabilityPool.provideToSP(amount, frontEnd)` | `provideToSP(amount, doClaim)` | Front ends gone, stashing added |
+| `StabilityPool.withdrawETHGainToTrove` | Removed | Use stashed gains instead |
+| `LQTYStaking.stake` | Removed | No token |
+| `CommunityIssuance.issueLQTY` | Removed | Yield replaces emissions |
+| `PriceFeed.fetchPrice()` | `fetchPrice()` + `fetchRedemptionPrice()` | Two prices |
+
+---
+

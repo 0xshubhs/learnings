@@ -2060,7 +2060,7 @@ into the test build.
 ### 12.1 `Morpho`
 
 Nine slots. Full table in §1.5. `DOMAIN_SEPARATOR` is `immutable`
-([`Morpho.sol:33`](morpho-blue-blue/src/Morpho.sol#L33)) so it lives in bytecode, not storage.
+([`Morpho.sol:33`](morpho-blue/src/Morpho.sol#L33)) so it lives in bytecode, not storage.
 
 Packing within the mapped structs:
 
