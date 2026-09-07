@@ -3144,3 +3144,135 @@ tuples; expand them from `IAaveV3ConfigEngine.sol` and run `cast sig` if you nee
 hardcoded the 3.6 values will silently miss.
 
 ---
+<a name="15-storage-layouts"></a>
+
+## 15. Storage layouts
+
+`forge inspect` cannot run against this tree — the git submodules under `lib/` were not
+vendored with the clone, so `forge build` fails on a missing
+`openzeppelin-contracts/contracts/utils/Multicall.sol`. Everything below is therefore derived
+from the declarations in source, with each slot assignment traceable to a cited line. The
+ERC-7201 namespaced slots **were** verified by recomputation (§15.3).
+
+Two different upgradeability disciplines coexist here, and the difference is the single most
+important thing to understand before writing an upgrade:
+
+| Discipline | Used by | Collision protection |
+|---|---|---|
+| **Sequential slots + reserved gap** | `RewardsController`, `Collector`, everything using `VersionedInitializable` | `uint256[N] ______gap` at the end of each layer |
+| **ERC-7201 namespaced slots** | the stata-token stack | each layer reads from an isolated `keccak`-derived slot |
+
+### 15.1 `RewardsController` — sequential
+
+Inherits `RewardsDistributor` then `VersionedInitializable`, so the parent's slots come first.
+
+| Slot | Type | Name | Declared |
+|---:|---|---|---|
+| — | `address immutable` | `EMISSION_MANAGER` | `RewardsDistributor.sol:19` (bytecode, not storage) |
+| 0 | `address` | `_emissionManager` | `RewardsDistributor.sol:21` |
+| 1 | `mapping(address => AssetData)` | `_assets` | `RewardsDistributor.sol:24` |
+| 2 | `mapping(address => bool)` | `_isRewardEnabled` | `RewardsDistributor.sol:27` |
+| 3 | `address[]` | `_rewardsList` | `RewardsDistributor.sol:30` |
+| 4 | `address[]` | `_assetsList` | `RewardsDistributor.sol:33` |
+| 5 | `uint256` | `lastInitializedRevision` | `VersionedInitializable.sol:29` |
+| 5 | `bool` | `initializing` | `VersionedInitializable.sol:34` — **packs with slot 5?** no: `uint256` fills the slot, so `initializing` takes slot 6 |
+| 6 | `bool` | `initializing` | `VersionedInitializable.sol:34` |
+| 7–56 | `uint256[50]` | `______gap` | `VersionedInitializable.sol:85` |
+| 57 | `mapping(address => address)` | `_authorizedClaimers` | `RewardsController.sol:25` |
+| 58 | `mapping(address => ITransferStrategyBase)` | `_transferStrategy` | `RewardsController.sol:30` |
+| 59 | `mapping(address => AggregatorInterface)` | `_rewardOracle` | `RewardsController.sol:37` |
+
+`_emissionManager` at slot 0 is **vestigial**: `EMISSION_MANAGER` is `immutable` and lives in
+bytecode, so the storage variable is never read. It cannot be removed without shifting every
+slot below it.
+
+`RewardsDataTypes.AssetData` (`RewardsDataTypes.sol:44-53`) contains two mappings plus
+`availableRewardsCount` `uint128` and `decimals` `uint8` — those two pack into one slot of the
+struct, but since `_assets` is a mapping the struct is laid out per-key at
+`keccak256(key . slot)`, not inline.
+
+### 15.2 `Collector` — sequential, with a deliberately large gap
+
+| Slot | Type | Name | Declared |
+|---:|---|---|---|
+| 0…N | — | `AccessControlUpgradeable` + `ReentrancyGuardUpgradeable` state | inherited (OZ upgradeable) |
+| next | `uint256[53]` | `______gap` | `Collector.sol:42` |
+| +53 | `uint256` | `_nextStreamId` | `Collector.sol:47` |
+| +54 | `mapping(uint256 => Stream)` | `_streams` | `Collector.sol:52` |
+
+`ETH_MOCK_ADDRESS` (`:30`) and `FUNDS_ADMIN_ROLE` (`:33`) are `constant` — no storage.
+The `[53]` gap is unusually large because this contract is shared across every Aave market and
+has already been upgraded several times; the gap absorbs the slots freed by removed variables.
+
+### 15.3 The stata-token stack — ERC-7201 namespaced
+
+`StataTokenV2` inherits four independently-upgradeable layers, so sequential slots would be a
+minefield. Instead each layer keeps its state in a struct at a fixed, isolated slot.
+
+| Namespace | Slot | Struct | Declared |
+|---|---|---|---|
+| `aave-dao.storage.ERC20AaveLM` | `0x4fad66563f105be0bff96185c9058c4934b504d3ba15ca31e86294f0b01fd200` | `ERC20AaveLMStorage` | `ERC20AaveLMUpgradeable.sol:30-31` |
+| `aave-dao.storage.ERC4626StataToken` | `0x55029d3f54709e547ed74b2fc842d93107ab1490ab7555dd9dd0bf6451101900` | `ERC4626StataTokenStorage` | `ERC4626StataTokenUpgradeable.sol:31-32` |
+
+Both were **recomputed and confirmed**, not copied:
+
+```bash
+# ERC-7201: keccak256(abi.encode(uint256(keccak256(id)) - 1)) & ~bytes32(uint256(0xff))
+cast keccak "aave-dao.storage.ERC20AaveLM"      # inner
+# minus 1, abi.encode as bytes32, keccak again, clear the low byte
+#  -> 0x4fad66563f105be0bff96185c9058c4934b504d3ba15ca31e86294f0b01fd200  ✓
+```
+
+The low byte is masked to zero so the struct can never begin mid-word, which is what keeps a
+dynamic array or mapping inside the struct from colliding with the next namespace.
+
+`ERC20AaveLMStorage` (`ERC20AaveLMUpgradeable.sol:22-27`), at consecutive offsets from its base slot:
+
+| Offset | Type | Name |
+|---:|---|---|
+| +0 | `address` | `_referenceAsset` |
+| +1 | `address[]` | `_rewardTokens` |
+| +2 | `mapping(address => RewardIndexCache)` | `_startIndex` |
+| +3 | `mapping(address => mapping(address => UserRewardsData))` | `_userRewardsData` |
+
+`ERC4626StataTokenStorage` (`ERC4626StataTokenUpgradeable.sol:26-28`) holds exactly one field,
+`IERC20 _aToken`, at +0.
+
+The OZ layers (`ERC20Upgradeable`, `ERC20PermitUpgradeable`, `PausableUpgradeable`) use their
+own ERC-7201 namespaces from the upgradeable library. So a `StataTokenV2` has **five disjoint
+storage regions and no gaps at all** — adding a field to any layer is safe.
+
+### 15.4 `StataTokenFactory` — almost all immutable
+
+| Slot | Type | Name | Declared |
+|---:|---|---|---|
+| — | `IPool immutable` | `POOL` | `StataTokenFactory.sol:20` |
+| — | `address immutable` | `INITIAL_OWNER` | `:23` |
+| — | `ITransparentProxyFactory immutable` | `TRANSPARENT_PROXY_FACTORY` | `:26` |
+| — | `address immutable` | `STATA_TOKEN_IMPL` | `:29` |
+| 0 | `mapping(address => address)` | `_underlyingToStataToken` | `:31` |
+| 1 | `address[]` | `_stataTokens` | `:32` |
+
+Four immutables live in bytecode, so the proxy's storage holds only the registry — a factory
+upgrade can change deployment logic without touching the index of already-created tokens.
+
+### 15.5 Contracts with no storage at all
+
+`AaveOracle`, `DefaultReserveInterestRateStrategyV2` (it has `_interestRateData` — one mapping
+at slot 0), `AaveProtocolDataProvider`, `UiPoolDataProviderV3`, `UiIncentiveDataProviderV3`,
+`WalletBalanceProvider`, `L2Encoder`, `WrappedTokenGatewayV3`, `LiquidationDataProvider` and
+every config-engine library are **deployed directly, not behind a proxy**. They hold immutables
+and pure logic. Upgrading one means deploying a new instance and repointing whoever references
+it — which for the oracle and the rate strategy is `PoolAddressesProvider` and
+`PoolConfigurator` respectively.
+
+### 15.6 `VersionedInitializable` — the revision gate
+
+`src/contracts/misc/aave-upgradeability/VersionedInitializable.sol`. Two storage variables,
+`lastInitializedRevision` (`:29`) and `initializing` (`:34`), plus a `uint256[50]` gap (`:85`).
+The `initializer` modifier (`:39-56`) reads `getRevision()` (`:64`, abstract) and only allows
+the body to run when `revision > lastInitializedRevision`. That is what makes
+`initialize()` re-runnable **once per upgrade** rather than once ever — each new implementation
+declares a higher revision, so its own initializer fires exactly once.
+
+---
