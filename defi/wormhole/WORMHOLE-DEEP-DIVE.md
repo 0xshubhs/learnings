@@ -674,7 +674,7 @@ pulled from the user. Send `1.2345678901234` ETH and the bridge takes
 that: *"don't deposit dust that can not be bridged due to the decimal shift"*.
 
 The ETH path handles it differently, because there `msg.value` has already
-arrived. [`_wrapAndTransferETH:322-328`](wormhole/ethereum/contracts/bridge/Bridge.sol#L322-L328):
+arrived. [`_wrapAndTransferETH:321-328`](wormhole/ethereum/contracts/bridge/Bridge.sol#L321-L328):
 
 ```solidity
 uint normalizedAmount = normalizeAmount(amount, 18);
@@ -749,7 +749,7 @@ it. The string→`bytes32` conversion is done in assembly at
 **silently truncates** names longer than 32 bytes.
 
 On the far side,
-[`_createWrapped:580-616`](wormhole/ethereum/contracts/bridge/Bridge.sol#L580-L616)
+[`_createWrapped:580-615`](wormhole/ethereum/contracts/bridge/Bridge.sol#L580-L615)
 consumes it. Two guards first,
 [`:581-582`](wormhole/ethereum/contracts/bridge/Bridge.sol#L581-L582):
 
@@ -806,7 +806,7 @@ The ordered checks, [`:680-700`](wormhole/ethereum/contracts/bridge/Bridge.sol#L
    contract could emit a payload-1-shaped message and mint. Note it also rejects
    forks via `if (isFork()) revert InvalidFork()`.
 3. **Payload-3 recipient gate** (section 3.3).
-4. **Replay protection**, [`:694-695`](wormhole/ethereum/contracts/bridge/Bridge.sol#L694-L695):
+4. **Replay protection**, [`:693-694`](wormhole/ethereum/contracts/bridge/Bridge.sol#L693-L694):
    ```solidity
    if (isTransferCompleted(vm.hash)) revert TransferAlreadyCompleted();
    setTransferCompleted(vm.hash);
@@ -823,7 +823,7 @@ decrement outstanding accounting; otherwise look up the wrapped asset and revert
 with `WrappedAssetNotFound` if it was never created.
 
 The arbiter fee is split off at
-[`:723-747`](wormhole/ethereum/contracts/bridge/Bridge.sol#L723-L747), paid to
+[`:724-747`](wormhole/ethereum/contracts/bridge/Bridge.sol#L724-L747), paid to
 `msg.sender` only when the submitter is not the recipient — otherwise it is zeroed
 so you cannot pay yourself. Then the remainder goes to the recipient by mint (if
 wrapped) or transfer (if native), with a WETH-unwrap variant.
