@@ -1,0 +1,114 @@
+type Collateral @entity(immutable: true) {
+  id: ID! # "collIndex", e.g. "0"
+  collIndex: Int!
+  minCollRatio: BigInt!
+  troves: [Trove!]! @derivedFrom(field: "collateral")
+  addresses: CollateralAddresses! @derivedFrom(field: "collateral")
+}
+
+type CollateralAddresses @entity(immutable: false) {
+  id: ID! # "collIndex", e.g. "0"
+  collateral: Collateral!
+  borrowerOperations: Bytes!
+  sortedTroves: Bytes!
+  stabilityPool: Bytes!
+  token: Bytes!
+  troveManager: Bytes!
+  troveNft: Bytes!
+  collSurplusPool: Bytes
+}
+
+type InterestRateBracket @entity(immutable: false) {
+  id: ID! # "collIndex:rateFloored", e.g. "0:44000000000000000"
+  collateral: Collateral!
+  rate: BigInt!
+  totalDebt: BigInt!
+  sumDebtTimesRateD36: BigInt!
+  pendingDebtTimesOneYearD36: BigInt!
+  updatedAt: BigInt!
+}
+
+enum TroveStatus {
+  active
+  closed
+  liquidated
+  redeemed
+}
+
+type Trove @entity(immutable: false) {
+  id: ID! # "collIndex:collId", e.g. 0:0x1731afc858cad2708001a4f71851f9f775729c22f47df7c4360b1e416fd0f2de
+  borrower: Bytes!
+  collateral: Collateral!
+  closedAt: BigInt
+  createdAt: BigInt!
+  mightBeLeveraged: Boolean!
+  status: TroveStatus!
+  updatedAt: BigInt!
+  lastUserActionAt: BigInt!
+  debt: BigInt!
+  deposit: BigInt!
+  interestBatch: InterestBatch
+  interestRate: BigInt!
+  stake: BigInt!
+  troveId: String!
+  previousOwner: Bytes!
+  redemptionCount: Int!
+  redeemedColl: BigInt!
+  redeemedDebt: BigInt!
+  liquidatedColl: BigInt
+  liquidatedDebt: BigInt
+  collSurplus: BigInt
+  priceAtLiquidation: BigInt
+}
+
+type BorrowerInfo @entity(immutable: false) {
+  id: ID! # "borrowerAddress", e.g. "0x0000000000000000000000000000000000000000"
+  nextOwnerIndexes: [Int!]!
+  troves: Int!
+  trovesByCollateral: [Int!]!
+  collSurplusBalance: [BigInt!]!
+  lastCollSurplusClaimAt: [BigInt!]! # a zero element means a claim has never been made in that branch
+}
+
+type InterestBatch @entity(immutable: false) {
+  id: ID! # "collIndex:batchManager", e.g. "0:0x0000000000000000000000000000000000000000"
+  collateral: Collateral!
+  batchManager: Bytes!
+  debt: BigInt!
+  coll: BigInt!
+  annualInterestRate: BigInt!
+  annualManagementFee: BigInt!
+  updatedAt: BigInt!
+  troves: [Trove!]! @derivedFrom(field: "interestBatch")
+}
+
+type GovernanceVotingPower @entity(immutable: false) {
+  id: ID! # userAddress, e.g. "0x0000000000000000000000000000000000000000", or "total"
+  allocatedLQTY: BigInt!
+  allocatedOffset: BigInt!
+  unallocatedLQTY: BigInt!
+  unallocatedOffset: BigInt!
+}
+
+type GovernanceAllocationIndex @entity(immutable: false) {
+  id: ID! # "userAddress:initiativeAddress" or "initiativeAddress"
+  user: String
+  initiative: GovernanceInitiative!
+  latestAllocation: GovernanceAllocation!
+}
+
+type GovernanceAllocation @entity(immutable: false) {
+  id: ID! # "userAddress:initiativeAddress:epoch" or "initiativeAddress:epoch"
+  user: String
+  initiative: GovernanceInitiative!
+  epoch: BigInt!
+  voteLQTY: BigInt!
+  vetoLQTY: BigInt!
+  voteOffset: BigInt!
+  vetoOffset: BigInt!
+}
+
+type GovernanceInitiative @entity(immutable: false) {
+  id: ID! # "initiativeAddress", e.g. "0x0000000000000000000000000000000000000000"
+  registered: Boolean!
+}

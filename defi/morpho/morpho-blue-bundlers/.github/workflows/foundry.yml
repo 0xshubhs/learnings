@@ -1,0 +1,155 @@
+name: Foundry
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: true
+
+jobs:
+  build-via-ir:
+    name: Compilation (via IR)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Generate a token
+        id: generate-token
+        uses: tibdex/github-app-token@v2
+        with:
+          app_id: ${{ secrets.APP_ID }}
+          private_key: ${{ secrets.APP_PRIVATE_KEY }}
+
+      - name: Checkout
+        uses: actions/checkout@v3
+        with:
+          token: ${{ steps.generate-token.outputs.token }}
+          submodules: recursive
+
+      - uses: ./.github/actions/install
+
+      - name: Build contracts via IR & check sizes
+        # don't use compilation cache
+        # skip import files, because we don't care if contracts are too big
+        run: yarn build --force --sizes --skip Import 
+
+
+  build-no-ir:
+    name: Compilation (without IR)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Generate a token
+        id: generate-token
+        uses: tibdex/github-app-token@v2
+        with:
+          app_id: ${{ secrets.APP_ID }}
+          private_key: ${{ secrets.APP_PRIVATE_KEY }}
+
+      - name: Checkout
+        uses: actions/checkout@v3
+        with:
+          token: ${{ steps.generate-token.outputs.token }}
+          submodules: recursive
+
+      - uses: ./.github/actions/install-cache
+
+      - name: Build contracts without IR
+        run: yarn build
+        env:
+          FOUNDRY_PROFILE: test
+
+      - name: Save forge compilation cache
+        uses: actions/cache/save@v3
+        with:
+          path: |
+            cache
+            out
+          key: forge-${{ github.ref_name }}
+
+  test-local:
+    needs: build-no-ir
+
+    name: Local tests
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: true
+      matrix:
+        type: ["slow", "fast"]
+        include:
+          - type: "slow"
+            fuzz-runs: 25000
+            max-test-rejects: 10000
+          - type: "fast"
+            fuzz-runs: 2048
+            max-test-rejects: 65536
+
+    steps:
+      - name: Generate a token
+        id: generate-token
+        uses: tibdex/github-app-token@v2
+        with:
+          app_id: ${{ secrets.APP_ID }}
+          private_key: ${{ secrets.APP_PRIVATE_KEY }}
+
+      - name: Checkout
+        uses: actions/checkout@v3
+        with:
+          token: ${{ steps.generate-token.outputs.token }}
+          submodules: recursive
+
+      - uses: ./.github/actions/install-cache
+
+      - name: Run local tests on chain ${{ matrix.chain }} in ${{ matrix.type }} mode
+        run: yarn test:local
+        env:
+          FOUNDRY_FUZZ_RUNS: ${{ matrix.fuzz-runs }}
+          FOUNDRY_FUZZ_MAX_TEST_REJECTS: ${{ matrix.max-test-rejects }}
+          FOUNDRY_FUZZ_SEED: 0x${{ github.event.pull_request.base.sha || github.sha }}
+
+  test-fork:
+    needs: build-no-ir
+
+    name: Fork tests (chainid=${{ matrix.chain }})
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: true
+      matrix:
+        chain: [1, 8453]
+        type: ["slow", "fast"]
+        include:
+          - type: "slow"
+            fuzz-runs: 96
+            max-test-rejects: 65536
+          - type: "fast"
+            fuzz-runs: 16
+            max-test-rejects: 65536
+
+    steps:
+      - name: Generate a token
+        id: generate-token
+        uses: tibdex/github-app-token@v2
+        with:
+          app_id: ${{ secrets.APP_ID }}
+          private_key: ${{ secrets.APP_PRIVATE_KEY }}
+
+      - name: Checkout
+        uses: actions/checkout@v3
+        with:
+          token: ${{ steps.generate-token.outputs.token }}
+          submodules: recursive
+
+      - uses: ./.github/actions/install-cache
+
+      - name: Run fork tests on chain ${{ matrix.chain }} in ${{ matrix.type }} mode
+        run: yarn test:fork --chain ${{ matrix.chain }}
+        env:
+          ALCHEMY_KEY: ${{ secrets.ALCHEMY_KEY }}
+          FOUNDRY_FUZZ_RUNS: ${{ matrix.fuzz-runs }}
+          FOUNDRY_FUZZ_MAX_TEST_REJECTS: ${{ matrix.max-test-rejects }}
+          FOUNDRY_FUZZ_SEED: 0x${{ github.event.pull_request.base.sha || github.sha }}

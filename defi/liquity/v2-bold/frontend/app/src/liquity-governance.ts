@@ -1,0 +1,994 @@
+import type { Address, Dnum, Initiative } from "@/src/types";
+import type { UseQueryResult } from "@tanstack/react-query";
+import type { Config as WagmiConfig } from "wagmi";
+
+import { BribeInitiative } from "@/src/abi/BribeInitiative";
+import { getProtocolContract } from "@/src/contracts";
+import { dnum18, DNUM_0, jsonStringifyWithDnum } from "@/src/dnum-utils";
+import { CHAIN_CONTRACT_MULTICALL, KNOWN_INITIATIVES_URL, LIQUITY_GOVERNANCE_URL } from "@/src/env";
+import { useSubgraphIsDown } from "@/src/indicators/subgraph-indicator";
+import {
+  getGovernanceGlobalData,
+  getTotalAllocationHistoryFromSubgraph,
+  getUserAllocationHistoryFromSubgraph,
+} from "@/src/subgraph";
+import { jsonStringifyWithBigInt } from "@/src/utils";
+import { vAddress } from "@/src/valibot-utils";
+import { useRaf } from "@liquity2/uikit";
+import { useQuery } from "@tanstack/react-query";
+import * as dn from "dnum";
+import { useMemo } from "react";
+import * as v from "valibot";
+import { InferOutput } from "valibot";
+import { erc20Abi, parseAbi } from "viem";
+import { useConfig as useWagmiConfig, useReadContract, useReadContracts } from "wagmi";
+import { readContract, readContracts } from "wagmi/actions";
+import { combineStatus } from "./query-utils";
+
+export type InitiativeStatus =
+  | "nonexistent"
+  | "warm up"
+  | "skip"
+  | "claimable"
+  | "claimed"
+  | "unregisterable"
+  | "disabled";
+
+export function initiativeStatusFromNumber(status: number): InitiativeStatus {
+  const statuses: Record<number, InitiativeStatus> = {
+    0: "nonexistent",
+    1: "warm up",
+    2: "skip",
+    3: "claimable",
+    4: "claimed",
+    5: "unregisterable",
+    6: "disabled",
+  };
+  return statuses[status] || "nonexistent";
+}
+
+export interface GovernanceState {
+  countedVoteLQTY: bigint;
+  countedVoteOffset: bigint;
+  cutoffStart: bigint;
+  daysLeft: number;
+  daysLeftRounded: number;
+  epoch: bigint;
+  epochEnd: bigint;
+  epochStart: bigint;
+  period: "cutoff" | "voting";
+  secondsWithinEpoch: bigint | undefined;
+}
+
+export function useGovernanceState() {
+  const Governance = getProtocolContract("Governance");
+
+  return useReadContracts({
+    contracts: [{
+      ...Governance,
+      functionName: "epoch",
+    }, {
+      ...Governance,
+      functionName: "epochStart",
+    }, {
+      ...Governance,
+      functionName: "globalState",
+    }, {
+      ...Governance,
+      functionName: "secondsWithinEpoch",
+    }, {
+      ...Governance,
+      functionName: "EPOCH_DURATION",
+    }, {
+      ...Governance,
+      functionName: "EPOCH_VOTING_CUTOFF",
+    }],
+    query: {
+      select: ([
+        epoch_,
+        epochStart_,
+        globalState,
+        secondsWithinEpoch,
+        GOVERNANCE_EPOCH_DURATION,
+        GOVERNANCE_EPOCH_VOTING_CUTOFF,
+      ]): GovernanceState => {
+        const epoch = epoch_.result ?? 0n;
+        const epochStart = epochStart_.result ?? 0n;
+        const epochDuration = GOVERNANCE_EPOCH_DURATION.result ?? 0n;
+        const epochVotingCutoff = GOVERNANCE_EPOCH_VOTING_CUTOFF.result ?? 0n;
+        const cutoffStart = epochStart + epochVotingCutoff;
+
+        const period: "cutoff" | "voting" = (secondsWithinEpoch.result ?? 0n) > epochVotingCutoff
+          ? "cutoff"
+          : "voting";
+
+        const seconds = Number(secondsWithinEpoch.result ?? 0n);
+        const daysLeft = (Number(epochDuration) - seconds) / (24 * 60 * 60);
+        const daysLeftRounded = Math.ceil(daysLeft);
+
+        const data: GovernanceState = {
+          countedVoteLQTY: globalState.result?.[0] ?? 0n,
+          countedVoteOffset: globalState.result?.[1] ?? 0n,
+          cutoffStart,
+          daysLeft,
+          daysLeftRounded,
+          epoch,
+          epochEnd: epochStart + epochDuration,
+          epochStart,
+          period,
+          secondsWithinEpoch: secondsWithinEpoch.result,
+        };
+
+        return data;
+      },
+    },
+  });
+}
+
+const KnownInitiativesSchema = v.record(
+  v.pipe(vAddress(), v.transform((address) => address.toLowerCase())),
+  v.object({
+    name: v.string(),
+    group: v.string(),
+    url: v.nullish(v.pipe(v.string(), v.url()), null),
+  }),
+);
+
+export type KnownInitiatives = InferOutput<typeof KnownInitiativesSchema>;
+
+function useKnownInitiatives(): UseQueryResult<KnownInitiatives | null> {
+  return useQuery({
+    queryKey: ["knownInitiatives"],
+    queryFn: async () => {
+      if (!KNOWN_INITIATIVES_URL) return null;
+
+      const response = await fetch(KNOWN_INITIATIVES_URL);
+      const data = await response.json();
+      return v.parse(KnownInitiativesSchema, data);
+    },
+  });
+}
+
+async function fetchGovernanceGlobalData(subgraphIsDown: boolean) {
+  if (!subgraphIsDown) {
+    return getGovernanceGlobalData();
+  }
+
+  const registeredInitiatives = await getRegisteredInitiatives();
+
+  return {
+    initiatives: registeredInitiatives.map((address) => ({ address, registered: true })),
+    totalVotingPower: null,
+  };
+}
+
+function useGovernanceGlobalData() {
+  const subgraphIsDown = useSubgraphIsDown();
+
+  return useQuery({
+    queryKey: ["governanceGlobalData", subgraphIsDown],
+    queryFn: () => fetchGovernanceGlobalData(subgraphIsDown),
+  });
+}
+
+function useUserVotedInitiatives(userAddress: Address | null) {
+  return useQuery({
+    enabled: !!userAddress,
+    queryKey: ["userVotedInitiatives", userAddress],
+    queryFn: async () => {
+      const history = await getUserAllocationHistory(userAddress!);
+      const uniqueInitiatives = [...new Set(history.map((a) => a.initiative))];
+      return uniqueInitiatives;
+    },
+  });
+}
+
+function useVisibleInitiatives(userAddress: Address | null) {
+  const globalData = useGovernanceGlobalData();
+  const userVoted = useUserVotedInitiatives(userAddress);
+  const status = [globalData.status, userVoted.status].reduce(combineStatus);
+  const isLoading = globalData.isLoading || (!!userAddress && userVoted.isLoading);
+
+  return useMemo(() => {
+    if (!globalData.data) {
+      return {
+        status,
+        isLoading,
+        data: undefined,
+        totalVotingPower: undefined,
+      };
+    }
+
+    const userVotedSet = new Set(userVoted.data ?? []);
+
+    const filteredInitiatives = globalData.data.initiatives.filter(
+      (i) => i.registered || userVotedSet.has(i.address.toLowerCase() as Address),
+    );
+
+    return {
+      status,
+      isLoading,
+      data: filteredInitiatives,
+      totalVotingPower: globalData.data.totalVotingPower,
+    };
+  }, [status, isLoading, globalData.data, userVoted.data]);
+}
+
+export type InitiativeWithRegistration = Initiative & { registered: boolean };
+
+export function useNamedInitiatives(userAddress: Address | null) {
+  const knownInitiatives = useKnownInitiatives();
+  const visibleInitiatives = useVisibleInitiatives(userAddress);
+  const allAddresses = useMemo(
+    () => visibleInitiatives.data?.map((i) => i.address) ?? [],
+    [visibleInitiatives.data],
+  );
+  const initiativeInfo = useInitiativeInfo(allAddresses);
+  const status = [knownInitiatives.status, visibleInitiatives.status, initiativeInfo.status].reduce(combineStatus);
+  const isLoading = [knownInitiatives, visibleInitiatives, initiativeInfo].some((x) => x.isLoading);
+
+  return useMemo(() => {
+    if (
+      knownInitiatives.data === undefined
+      || visibleInitiatives.data === undefined
+      || initiativeInfo.data === undefined
+    ) {
+      return {
+        status,
+        isLoading,
+        data: undefined,
+      };
+    }
+
+    return {
+      status,
+      isLoading,
+
+      data: visibleInitiatives.data.map(({ address, registered }): InitiativeWithRegistration => {
+        const ki = knownInitiatives.data?.[address];
+        const ii = initiativeInfo.data[address];
+
+        return {
+          address,
+          registered,
+          ...(ki ?? { name: null, group: null, url: null }),
+          ...(ii ?? { isBribeInitiative: false, bribeToken: null }),
+        };
+      }),
+    };
+  }, [
+    status,
+    isLoading,
+    visibleInitiatives.data,
+    knownInitiatives.data,
+    initiativeInfo.data,
+  ]);
+}
+
+export type InitiativeState = Record<Address, {
+  status: InitiativeStatus;
+  lastEpochClaim: bigint;
+  claimableAmount: bigint;
+}>;
+
+export async function getInitiativesStates(
+  wagmiConfig: WagmiConfig,
+  initiatives: Address[],
+): Promise<InitiativeState> {
+  if (initiatives.length === 0) return {};
+
+  const Governance = getProtocolContract("Governance");
+
+  const results = await readContracts(wagmiConfig, {
+    contracts: initiatives.map((address) => ({
+      ...Governance,
+      functionName: "getInitiativeState",
+      args: [address],
+    } as const)),
+  });
+
+  const initiativesStates: InitiativeState = {};
+
+  for (const [i, { result }] of results.entries()) {
+    if (result && initiatives[i]) {
+      initiativesStates[initiatives[i]] = {
+        status: initiativeStatusFromNumber(result[0]),
+        lastEpochClaim: result[1],
+        claimableAmount: result[2],
+      };
+    }
+  }
+
+  return initiativesStates;
+}
+
+export function useInitiativesStates(initiatives: Address[]) {
+  const wagmiConfig = useWagmiConfig();
+
+  return useQuery({
+    enabled: initiatives.length > 0,
+    queryKey: ["initiativesStates", initiatives],
+    queryFn: () => getInitiativesStates(wagmiConfig, initiatives),
+  });
+}
+
+export type VoteTotals = {
+  voteLQTY: bigint;
+  voteOffset: bigint;
+  vetoLQTY: bigint;
+  vetoOffset: bigint;
+};
+
+export function useInitiativesVoteTotals(initiatives: Address[]) {
+  const wagmiConfig = useWagmiConfig();
+  const Governance = getProtocolContract("Governance");
+
+  // stabilize the order of addresses (cache improvement and predictable)
+  const sortedAddress = useMemo(
+    () => [...initiatives].filter(Boolean).sort((a, b) => a.localeCompare(b)),
+    [initiatives],
+  );
+
+  return useQuery({
+    queryKey: ["initiativesVoteTotals", sortedAddress.join("")],
+    queryFn: async () => {
+      const voteTotals: Record<Address, VoteTotals> = {};
+
+      const results = await readContracts(wagmiConfig, {
+        contracts: sortedAddress.map((address) => ({
+          ...Governance,
+          functionName: "initiativeStates",
+          args: [address],
+        } as const)),
+      });
+
+      for (const [i, { result }] of results.entries()) {
+        if (result && sortedAddress[i]) {
+          const [voteLQTY, voteOffset, vetoLQTY, vetoOffset] = result;
+          voteTotals[sortedAddress[i]] = {
+            voteLQTY,
+            voteOffset,
+            vetoLQTY,
+            vetoOffset,
+          };
+        }
+      }
+
+      return voteTotals;
+    },
+  });
+}
+
+export interface UserAllocation {
+  voteLQTY: bigint;
+  voteOffset: bigint;
+  vetoLQTY: bigint;
+  vetoOffset: bigint;
+  initiative: Address;
+}
+
+async function getRegisteredInitiatives(): Promise<Address[]> {
+  if (LIQUITY_GOVERNANCE_URL) {
+    const response = await fetch(`${LIQUITY_GOVERNANCE_URL}/initiatives.json`);
+    const parsed = v.parse(InitiativeInfoSchema, await response.json());
+    return Object.keys(parsed) as Address[];
+  }
+
+  const data = await getGovernanceGlobalData();
+  return data.initiatives.filter((i) => i.registered).map((i) => i.address);
+}
+
+export async function getUserAllocations(
+  wagmiConfig: WagmiConfig,
+  account: Address,
+  initiatives?: Address[],
+): Promise<UserAllocation[]> {
+  if (!initiatives) {
+    initiatives = await getRegisteredInitiatives();
+  }
+
+  const Governance = getProtocolContract("Governance");
+
+  const allocationsByInitiative = await readContracts(wagmiConfig, {
+    allowFailure: false,
+    contracts: initiatives.map((address) => ({
+      ...Governance,
+      functionName: "lqtyAllocatedByUserToInitiative",
+      args: [account, address],
+    } as const)),
+  });
+
+  return allocationsByInitiative.map((allocation, index) => {
+    const initiative = initiatives[index];
+    if (!initiative) throw new Error(); // should never happen
+
+    const [voteLQTY, voteOffset, vetoLQTY, vetoOffset] = allocation;
+    return { voteLQTY, voteOffset, vetoLQTY, vetoOffset, initiative };
+  });
+}
+
+export async function getUserAllocatedInitiatives(
+  wagmiConfig: WagmiConfig,
+  account: Address,
+  initiatives?: Address[],
+): Promise<Address[]> {
+  const allocations = await getUserAllocations(wagmiConfig, account, initiatives);
+  return allocations
+    .filter(({ voteLQTY, vetoLQTY }) => (voteLQTY + vetoLQTY) > 0n)
+    .map(({ initiative }) => initiative);
+}
+
+export interface UserState {
+  unallocatedLQTY: bigint;
+  unallocatedOffset: bigint;
+  allocatedLQTY: bigint;
+  allocatedOffset: bigint;
+  stakedLQTY: bigint;
+  stakedOffset: bigint;
+}
+
+export async function getUserStates(
+  wagmiConfig: WagmiConfig,
+  account: Address,
+): Promise<UserState> {
+  const Governance = getProtocolContract("Governance");
+  const result = await readContract(wagmiConfig, {
+    ...Governance,
+    functionName: "userStates",
+    args: [account],
+  });
+
+  const [
+    unallocatedLQTY,
+    unallocatedOffset,
+    allocatedLQTY,
+    allocatedOffset,
+  ] = result;
+
+  return {
+    allocatedLQTY,
+    allocatedOffset,
+    stakedLQTY: allocatedLQTY + unallocatedLQTY,
+    stakedOffset: allocatedOffset + unallocatedOffset,
+    unallocatedLQTY,
+    unallocatedOffset,
+  };
+}
+
+export interface GovernanceUserState extends UserState {
+  allocations: UserAllocation[];
+}
+
+export function useGovernanceUser(account: Address | null): UseQueryResult<GovernanceUserState | null> {
+  const initiatives = useNamedInitiatives(account);
+  const wagmiConfig = useWagmiConfig();
+
+  let queryFn = async () => {
+    if (!account) return null;
+
+    const userState = await getUserStates(wagmiConfig, account);
+    const allocations = initiatives.data
+      ? await getUserAllocations(
+        wagmiConfig,
+        account,
+        initiatives.data.map((i) => i.address),
+      )
+      : [];
+
+    return { ...userState, allocations };
+  };
+
+  return useQuery({
+    queryKey: [
+      "GovernanceUser",
+      account,
+      jsonStringifyWithDnum(initiatives.data),
+    ],
+    queryFn,
+  });
+}
+
+function useLatestBlockTimestampInMilliseconds() {
+  return useReadContract({
+    address: CHAIN_CONTRACT_MULTICALL,
+    abi: parseAbi(["function getCurrentBlockTimestamp() view returns (uint256)"]),
+    functionName: "getCurrentBlockTimestamp",
+    query: { select: (blockTimestamp) => blockTimestamp * 1000n },
+  });
+}
+
+// votingPower(t) = lqty * t - offset
+export function votingPower(
+  stakedLQTY: bigint,
+  offset: bigint,
+  timestampInSeconds: bigint,
+) {
+  return stakedLQTY * timestampInSeconds - offset;
+}
+
+function votingPowerMs(
+  stakedLQTY?: bigint,
+  offset?: bigint,
+  timestampInMilliseconds?: bigint,
+) {
+  return stakedLQTY && offset && timestampInMilliseconds
+    ? (stakedLQTY * timestampInMilliseconds - offset * 1000n) / 1000n
+    : null;
+}
+
+export function useVotingPower(
+  account: Address | null,
+  callback: (share: Dnum | null) => void,
+  updatesPerSecond: number = 30,
+) {
+  const govStats = useGovernanceStats();
+  const govUser = useGovernanceUser(account);
+  const blockTimestamp = useLatestBlockTimestampInMilliseconds();
+  const startTime = useMemo(() => BigInt(Date.now()), []);
+
+  useRaf(() => {
+    if (!govStats.data || !govUser.data || !blockTimestamp.data) {
+      callback(null);
+      return;
+    }
+
+    const { totalLQTYStaked, totalOffset } = govStats.data;
+    const userLQTYStaked = govUser.data.allocatedLQTY + govUser.data.unallocatedLQTY;
+    const userOffset = govUser.data.allocatedOffset + govUser.data.unallocatedOffset;
+
+    const timeElapsed = BigInt(Date.now()) - startTime;
+    const correctedStartTime = startTime > blockTimestamp.data ? startTime : blockTimestamp.data;
+    const timestamp = correctedStartTime + timeElapsed;
+    const userVp = votingPowerMs(userLQTYStaked, userOffset, timestamp);
+    const totalVp = votingPowerMs(totalLQTYStaked, totalOffset, timestamp);
+
+    // pctShare(t) = userVotingPower(t) / totalVotingPower(t)
+    callback(
+      !userVp || !totalVp ? null : dn.div(dnum18(userVp), dnum18(totalVp)),
+    );
+  }, updatesPerSecond);
+}
+
+export function useGovernanceStats() {
+  const governanceGlobal = useGovernanceGlobalData();
+
+  return useQuery({
+    queryKey: ["governanceStats"],
+    enabled: !governanceGlobal.isPending,
+    queryFn: () => {
+      if (governanceGlobal.isError) throw governanceGlobal.error;
+      if (governanceGlobal.isPending) throw new Error("should not happen"); // see enabled
+
+      return {
+        totalLQTYStaked: (
+          governanceGlobal.data.totalVotingPower
+            ? governanceGlobal.data.totalVotingPower.allocatedLQTY
+              + governanceGlobal.data.totalVotingPower.unallocatedLQTY
+            : undefined
+        ),
+        totalOffset: (
+          governanceGlobal.data.totalVotingPower
+            ? governanceGlobal.data.totalVotingPower.allocatedOffset
+              + governanceGlobal.data.totalVotingPower.unallocatedOffset
+            : undefined
+        ),
+      };
+    },
+  });
+}
+
+type ClaimData = {
+  epoch: number;
+  prevLQTYAllocationEpoch: number;
+  prevTotalLQTYAllocationEpoch: number;
+};
+
+type BribeClaim = {
+  bribeTokens: Array<{
+    address: Address;
+    symbol: string;
+    amount: Dnum;
+  }>;
+  claimableInitiatives: Array<{
+    initiative: Address;
+    boldAmount: Dnum;
+    bribeTokenAmount: Dnum;
+    bribeTokenAddress: Address;
+    epochs: number[];
+    claimData: ClaimData[];
+  }>;
+  totalBold: Dnum;
+};
+
+// represents an initiative bribe for a given epoch
+export type InitiativeBribe = {
+  boldAmount: Dnum;
+  tokenAmount: Dnum;
+  tokenAddress: Address;
+  tokenSymbol: string;
+};
+
+export type InitiativeBribeResult = Record<Address, InitiativeBribe>;
+
+export function useCurrentEpochBribes(
+  initiatives: Initiative[],
+): UseQueryResult<InitiativeBribeResult> {
+  const wagmiConfig = useWagmiConfig();
+  const govState = useGovernanceState();
+
+  return useQuery({
+    queryKey: [
+      "currentEpochBribes",
+      initiatives,
+      String(govState.data?.epoch),
+    ],
+
+    queryFn: async () => {
+      if (!govState.data || initiatives.length === 0) {
+        return {};
+      }
+
+      const bribeInitiatives = initiatives.filter((initiative) => initiative.isBribeInitiative);
+
+      if (bribeInitiatives.length === 0) {
+        return {};
+      }
+
+      const bribeAmounts = await readContracts(wagmiConfig, {
+        contracts: bribeInitiatives.map(({ address }) => ({
+          abi: BribeInitiative,
+          address,
+          functionName: "bribeByEpoch",
+          args: [govState.data.epoch],
+        } as const)),
+        allowFailure: false,
+      });
+
+      const tokenSymbols = await readContracts(wagmiConfig, {
+        contracts: bribeInitiatives.map(({ bribeToken }) => ({
+          abi: erc20Abi,
+          address: bribeToken,
+          functionName: "symbol",
+        } as const)),
+        allowFailure: false,
+      });
+
+      const bribes: Record<Address, InitiativeBribe> = {};
+
+      for (const [index, [remainingBold, remainingBribeToken]] of bribeAmounts.entries()) {
+        const bribeInitiative = bribeInitiatives[index];
+        if (!bribeInitiative) continue;
+
+        const { address, bribeToken } = bribeInitiative;
+
+        bribes[address] = {
+          boldAmount: dnum18(remainingBold),
+          tokenAmount: dnum18(remainingBribeToken),
+          tokenAddress: bribeToken,
+          tokenSymbol: tokenSymbols[index] ?? "Unknown",
+        };
+      }
+
+      return bribes;
+    },
+    enabled: Boolean(govState.data && initiatives.length > 0),
+  });
+}
+
+const AllocationSchema = v.object({
+  epoch: v.number(),
+  voteLQTY: v.pipe(v.string(), v.transform((x) => BigInt(x))),
+  vetoLQTY: v.pipe(v.string(), v.transform((x) => BigInt(x))),
+  voteOffset: v.pipe(v.string(), v.transform((x) => BigInt(x))),
+  vetoOffset: v.pipe(v.string(), v.transform((x) => BigInt(x))),
+});
+
+const TotalAllocationHistorySchema = v.array(AllocationSchema);
+
+const UserAllocationSchema = v.object({
+  ...AllocationSchema.entries,
+  initiative: v.pipe(vAddress(), v.transform((address) => address.toLowerCase() as Address)),
+});
+
+const UserAllocationHistorySchema = v.array(UserAllocationSchema);
+
+const InitiativeInfoSchema = v.record(
+  v.pipe(vAddress(), v.transform((address) => address.toLowerCase())),
+  v.union([
+    v.object({
+      isBribeInitiative: v.literal(true),
+      bribeToken: vAddress(),
+    }),
+    v.object({
+      isBribeInitiative: v.literal(false),
+      bribeToken: v.null(),
+    }),
+  ]),
+);
+
+type InitiativeInfo = InferOutput<typeof InitiativeInfoSchema>;
+
+// A user's allocation history ordered by descending epoch
+export async function getUserAllocationHistory(user: Address) {
+  if (LIQUITY_GOVERNANCE_URL) {
+    const response = await fetch(`${LIQUITY_GOVERNANCE_URL}/allocation/user/${user.toLowerCase()}.json`);
+    return v.parse(UserAllocationHistorySchema, await response.json()).sort((a, b) => b.epoch - a.epoch);
+  } else {
+    return getUserAllocationHistoryFromSubgraph(user);
+  }
+}
+
+// An initiative's total allocation history ordered by descending epoch
+async function getTotalAllocationHistory(initiative: Address) {
+  if (LIQUITY_GOVERNANCE_URL) {
+    const response = await fetch(`${LIQUITY_GOVERNANCE_URL}/allocation/total/${initiative.toLowerCase()}.json`);
+    return v.parse(TotalAllocationHistorySchema, await response.json()).sort((a, b) => b.epoch - a.epoch);
+  } else {
+    return getTotalAllocationHistoryFromSubgraph(initiative);
+  }
+}
+
+async function getLatestCompletedEpoch(currentEpoch: bigint) {
+  if (LIQUITY_GOVERNANCE_URL) {
+    const response = await fetch(`${LIQUITY_GOVERNANCE_URL}/latest_completed_epoch.json`);
+    return v.parse(v.number(), await response.json());
+  } else {
+    return Number(currentEpoch) - 1;
+  }
+}
+
+function useInitiativeInfo(initiatives: Address[]) {
+  const useApi = !!LIQUITY_GOVERNANCE_URL;
+
+  const initiativeInfoFromApi = useQuery({
+    queryKey: ["initiativeInfoFromApi"],
+    enabled: useApi,
+
+    queryFn: async () => {
+      const response = await fetch(`${LIQUITY_GOVERNANCE_URL}/initiatives.json`);
+      return v.parse(InitiativeInfoSchema, await response.json());
+    },
+  });
+
+  const initiativeInfoFromMulticall = useReadContracts({
+    allowFailure: true,
+
+    contracts: initiatives.map((initiative) => ({
+      abi: BribeInitiative,
+      address: initiative,
+      functionName: "bribeToken",
+    } as const)),
+
+    query: {
+      enabled: !useApi,
+
+      select: (results): InitiativeInfo =>
+        Object.fromEntries(
+          results.map(({ result }, i) => [
+            initiatives[i],
+            result
+              ? { isBribeInitiative: true, bribeToken: result }
+              : { isBribeInitiative: false, bribeToken: null },
+          ]),
+        ),
+    },
+  });
+
+  return useApi ? initiativeInfoFromApi : initiativeInfoFromMulticall;
+}
+
+// limit checks to the last 52 epochs
+const BRIBING_CHECK_EPOCH_LIMIT = 52;
+
+export function useBribingClaim(
+  account: Address | null,
+): UseQueryResult<BribeClaim | null> {
+  const wagmiConfig = useWagmiConfig();
+  const govState = useGovernanceState();
+  const govUser = useGovernanceUser(account);
+  const initiatives = useNamedInitiatives(account);
+
+  return useQuery({
+    queryKey: [
+      "bribingClaim",
+      account,
+      String(govState.data?.epoch),
+      jsonStringifyWithBigInt(govUser.data),
+      jsonStringifyWithBigInt(initiatives.data),
+    ],
+    queryFn: async () => {
+      if (!account || !govState.data || !govUser.data || !initiatives.data) {
+        return null;
+      }
+
+      const currentEpoch = govState.data.epoch;
+      const epochDuration = govState.data.epochEnd - govState.data.epochStart;
+      const initiativesToCheck = initiatives.data.map(({ address }) => address);
+
+      if (initiativesToCheck.length === 0) {
+        return {
+          bribeTokens: [],
+          claimableInitiatives: [],
+          totalBold: DNUM_0,
+        };
+      }
+
+      const [completedEpochs, userAllocations] = await Promise.all([
+        getLatestCompletedEpoch(currentEpoch),
+        getUserAllocationHistory(account),
+      ]);
+
+      const bribeInitiatives = initiatives.data.filter((initiative) => initiative.isBribeInitiative);
+
+      if (bribeInitiatives.length === 0) {
+        return {
+          bribeTokens: [],
+          claimableInitiatives: [],
+          totalBold: DNUM_0,
+        };
+      }
+
+      // for each bribe initiative, check claimable epochs
+      const claimableInitiatives: BribeClaim["claimableInitiatives"] = [];
+      const bribeTokenData = new Map<Address, { amount: Dnum; symbol?: string }>();
+
+      const bribeDetailsPerInitiative = await Promise.all(
+        bribeInitiatives.map(async ({ address, bribeToken }) => {
+          // no completed epochs yet
+          if (completedEpochs < 1) {
+            return null;
+          }
+
+          const epochsToCheck = Math.min(completedEpochs, BRIBING_CHECK_EPOCH_LIMIT);
+          const startEpoch = Math.max(1, completedEpochs - epochsToCheck + 1);
+          const userAllocationsToInitiative = userAllocations.filter((allocation) => allocation.initiative === address);
+
+          const [totalAllocationsToInitiative, results] = await Promise.all([
+            getTotalAllocationHistory(address),
+            readContracts(wagmiConfig, {
+              contracts: Array.from({ length: epochsToCheck }, (_, index) => {
+                const BribeContract = { abi: BribeInitiative, address } as const;
+                const epoch = BigInt(startEpoch + index);
+                return [{
+                  ...BribeContract,
+                  functionName: "claimedBribeAtEpoch",
+                  args: [account, epoch],
+                }, {
+                  ...BribeContract,
+                  functionName: "bribeByEpoch",
+                  args: [epoch],
+                }] as const;
+              }).flat(),
+              allowFailure: false,
+            }),
+          ]);
+
+          const claimableEpochs: number[] = [];
+          const claimData: ClaimData[] = [];
+          let initiativeBold = DNUM_0;
+          let initiativeBribeToken = DNUM_0;
+
+          // process results in groups of 2 (one per epoch)
+          for (let epochIndex = 0; epochIndex < epochsToCheck; epochIndex++) {
+            const epoch = startEpoch + epochIndex;
+            const resultIndex = epochIndex * 2;
+
+            const hasClaimed = results[resultIndex] as boolean;
+            const [
+              remainingBold,
+              remainingBribeToken,
+              claimedVotes,
+            ] = results[resultIndex + 1] as [bigint, bigint, bigint];
+
+            // allocations are ordered by descending epoch,
+            // so this finds the most recent one at the time of `epoch`
+            const userAllocation = userAllocationsToInitiative.find((allocation) => allocation.epoch <= epoch);
+            const totalAllocation = totalAllocationsToInitiative.find((allocation) => allocation.epoch <= epoch);
+
+            // skip if already claimed or no bribes available
+            if (
+              hasClaimed
+              || (remainingBold === 0n && remainingBribeToken === 0n)
+              || !totalAllocation
+              || !userAllocation || userAllocation.voteLQTY === 0n
+            ) {
+              continue;
+            }
+
+            const epochEnd = govState.data.epochStart
+              - ((currentEpoch - BigInt(epoch)) * epochDuration)
+              + epochDuration;
+
+            // voting power at the end of the epoch
+            const userVp = votingPower(userAllocation.voteLQTY, userAllocation.voteOffset, epochEnd);
+            const totalVp = votingPower(totalAllocation.voteLQTY, totalAllocation.voteOffset, epochEnd);
+            const remainingVp = totalVp - claimedVotes;
+
+            if (remainingVp > 0n && userVp > 0n) {
+              const userShare = userVp <= remainingVp ? userVp : remainingVp;
+              const shareRatio = dn.div(dnum18(userShare), dnum18(remainingVp));
+
+              const boldClaim = dn.mul(dnum18(remainingBold), shareRatio);
+              const bribeTokenClaim = dn.mul(dnum18(remainingBribeToken), shareRatio);
+
+              initiativeBold = dn.add(initiativeBold, boldClaim);
+              initiativeBribeToken = dn.add(initiativeBribeToken, bribeTokenClaim);
+              claimableEpochs.push(epoch);
+              claimData.push({
+                epoch,
+                prevLQTYAllocationEpoch: Number(userAllocation.epoch),
+                prevTotalLQTYAllocationEpoch: Number(totalAllocation.epoch),
+              });
+            }
+          }
+
+          if (claimableEpochs.length === 0) {
+            return null;
+          }
+
+          return {
+            boldAmount: initiativeBold,
+            bribeTokenAddress: bribeToken,
+            bribeTokenAmount: initiativeBribeToken,
+            epochs: claimableEpochs,
+            initiative: address,
+            claimData,
+          };
+        }),
+      );
+
+      // filter out null results and prepare final data
+      let totalBold = DNUM_0;
+      for (const details of bribeDetailsPerInitiative) {
+        if (!details) continue;
+        claimableInitiatives.push(details);
+        bribeTokenData.set(details.bribeTokenAddress, {
+          amount: dn.add(
+            bribeTokenData.get(details.bribeTokenAddress)?.amount ?? DNUM_0,
+            details.bribeTokenAmount,
+          ),
+        });
+        totalBold = dn.add(totalBold, details.boldAmount);
+      }
+
+      // fetch token symbols for all bribe tokens
+      const tokenAddresses = Array.from(bribeTokenData.keys());
+      if (tokenAddresses.length > 0) {
+        const symbols = await readContracts(wagmiConfig, {
+          contracts: tokenAddresses.map((tokenAddress) => ({
+            abi: erc20Abi,
+            address: tokenAddress,
+            functionName: "symbol",
+          } as const)),
+          allowFailure: false,
+        });
+
+        for (const [index, symbol] of symbols.entries()) {
+          const tokenAddress = tokenAddresses[index];
+          if (!tokenAddress) {
+            // should not happen since symbols is derived from tokenAddresses
+            throw new Error("Unexpected undefined token address in bribe token data");
+          }
+          const current = bribeTokenData.get(tokenAddress);
+          if (current) {
+            bribeTokenData.set(tokenAddress, { ...current, symbol });
+          }
+        }
+      }
+
+      return {
+        bribeTokens: [...bribeTokenData.entries()].map(
+          ([address, { amount, symbol }]) => {
+            if (!symbol) {
+              throw new Error(`Failed to fetch symbol for token ${address}`);
+            }
+            return { address, symbol, amount };
+          },
+        ),
+        claimableInitiatives,
+        totalBold,
+      };
+    },
+    enabled: Boolean(account && govState.isSuccess && govUser.isSuccess),
+  });
+}

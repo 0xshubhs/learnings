@@ -1,0 +1,17 @@
+{
+  "name": "@liquity2/subgraph",
+  "author": "Liquity AG",
+  "license": "MIT",
+  "version": "1.0.0",
+  "scripts": {
+    "codegen": "pnpm graph codegen"
+  },
+  "devDependencies": {
+    "@graphprotocol/graph-cli": "^0.97.0"
+  },
+  "dependencies": {
+    "@graphprotocol/graph-ts": "^0.38.0",
+    "tsx": "^4.19.4",
+    "zx": "^8.5.3"
+  }
+}

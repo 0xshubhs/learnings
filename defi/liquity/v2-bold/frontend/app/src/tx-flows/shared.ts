@@ -1,0 +1,101 @@
+import type { Config as WagmiConfig } from "wagmi";
+
+import { subgraphIndicator } from "@/src/indicators/subgraph-indicator";
+import { waitForSafeTransaction } from "@/src/safe-utils";
+import { getIndexedBlockNumber } from "@/src/subgraph";
+import { sleep } from "@/src/utils";
+import * as v from "valibot";
+import { waitForTransactionReceipt } from "wagmi/actions";
+
+export function createRequestSchema<
+  Id extends string,
+  SchemaEntries extends Parameters<typeof v.object>[0],
+>(id: Id, entries: SchemaEntries) {
+  return v.object({
+    flowId: v.literal(id),
+    backLink: v.union([
+      v.null(),
+      v.tuple([
+        v.string(), // path
+        v.string(), // label
+      ]),
+    ]),
+    successLink: v.tuple([
+      v.string(), // path
+      v.string(), // label
+    ]),
+    successMessage: v.string(),
+    ...entries,
+  });
+}
+
+export async function verifyTransaction(
+  wagmiConfig: WagmiConfig,
+  hash: string,
+  isSafe: boolean,
+  waitForSubgraphIndexation: boolean = true,
+) {
+  const subgraphIsDown = subgraphIndicator.hasError();
+  const tx = await (
+    isSafe
+      // safe tx
+      ? waitForSafeTransaction(hash).then((txHash) => (
+        // return the same object than a non-safe tx
+        waitForTransactionReceipt(wagmiConfig, { hash: txHash as `0x${string}` })
+      ))
+      // normal tx
+      : waitForTransactionReceipt(wagmiConfig, {
+        hash: hash as `0x${string}`,
+      })
+  );
+
+  // wait for the block number to be indexed by the subgraph, unless the subgraph is down
+  if (waitForSubgraphIndexation && !subgraphIsDown) {
+    await verifyBlockNumberIndexation(tx.blockNumber);
+  }
+
+  return tx;
+}
+
+export async function verifyBlockNumberIndexation(blockNumber: bigint) {
+  for (let i = 0;; ++i) {
+    const indexedBlockNumber = await getIndexedBlockNumber();
+    if (indexedBlockNumber >= blockNumber) break;
+
+    console.log(`Waiting for subgraph to catch up... (${blockNumber - indexedBlockNumber} blocks behind)`);
+    await sleep((2 ** Math.min(i, 4)) * 1000);
+  }
+}
+
+export function isTroveExistsError(error: unknown): boolean {
+  const errorStr = String(error);
+  return errorStr.includes("0xed58d81a") || errorStr.includes("TroveExists");
+}
+
+export function isGasEstimationRevertError(error: unknown): boolean {
+  const errorStr = String(error);
+  return errorStr.includes("EstimateGasExecutionError")
+    || (errorStr.includes("execution reverted") && errorStr.includes("Estimate Gas"));
+}
+
+export async function withOwnerIndexRetry<T>(
+  initialOwnerIndex: number,
+  fn: (ownerIndex: number) => Promise<T>,
+  maxRetries: number = 20,
+): Promise<T> {
+  let ownerIndex = initialOwnerIndex;
+
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      return await fn(ownerIndex);
+    } catch (error) {
+      if ((isTroveExistsError(error) || isGasEstimationRevertError(error)) && attempt < maxRetries - 1) {
+        ownerIndex++;
+        continue;
+      }
+      throw error;
+    }
+  }
+
+  throw new Error("Failed to open trove after maximum retries");
+}
