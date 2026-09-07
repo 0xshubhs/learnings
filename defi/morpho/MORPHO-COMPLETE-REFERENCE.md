@@ -780,3 +780,47 @@ loan token that the trailing `transferFrom` then pulls. The bundler's `morphoRep
 [`morpho-blue-bundlers/src/MorphoBundler.sol:171`](morpho-blue-bundlers/src/MorphoBundler.sol#L171)
 is built on exactly this.
 
+### 3.13 `supplyCollateral(marketParams, assets, onBehalf, data)`
+
+[`:303-320`](morpho-blue/src/Morpho.sol#L303-L320) · returns nothing.
+
+| | |
+|---|---|
+| **Checks** | market exists; `assets != 0` → `ZERO_ASSETS`; `onBehalf != address(0)` |
+| **Accrues** | **no** — see below |
+| **Writes** | `position[id][onBehalf].collateral += assets` |
+| **Emits** | `SupplyCollateral` |
+| **Callback** | `onMorphoSupplyCollateral(assets, data)` if `data.length > 0` |
+| **Transfer** | `safeTransferFrom(msg.sender, address(this), assets)` last |
+
+The comment at [`:311`](morpho-blue/src/Morpho.sol#L311) — *"Don't accrue interest because it's
+not required and it saves gas"* — is a precise claim, not laziness. Collateral earns no interest
+and is not part of any share pool, so adding collateral cannot change any index. Skipping accrual
+is observably equivalent and cheaper.
+
+There is no assets-or-shares duality here: collateral is tracked as a raw token amount in a
+`uint128`, never as shares. Collateral does not earn yield in Blue, full stop.
+
+This callback plus `borrow` is the leverage primitive: supply collateral you do not yet own,
+and inside `onMorphoSupplyCollateral` borrow the loan token, swap it for the collateral, and let
+the trailing `transferFrom` collect it. That is a one-transaction leveraged position with no
+flash loan. `LeverageWETHZapper` in Liquity does the same trick with a real flash loan; Blue does
+not need one.
+
+### 3.14 `withdrawCollateral(marketParams, assets, onBehalf, receiver)`
+
+[`:323-342`](morpho-blue/src/Morpho.sol#L323-L342) · returns nothing.
+
+| | |
+|---|---|
+| **Checks** | market exists; `assets != 0`; `receiver != address(0)`; `_isSenderAuthorized(onBehalf)` |
+| **Accrues** | **yes** ([`:333`](morpho-blue/src/Morpho.sol#L333)) |
+| **Writes** | `collateral -= assets` |
+| **Post-check** | `_isHealthy` → `INSUFFICIENT_COLLATERAL` ([`:337`](morpho-blue/src/Morpho.sol#L337)) |
+| **Emits** | `WithdrawCollateral` |
+| **Transfer** | `safeTransfer(receiver, assets)` last |
+
+The asymmetry with `supplyCollateral` is deliberate and correct: *withdrawing* collateral must
+accrue first, because the health check compares collateral against debt, and debt grows with
+interest. Skipping accrual here would let a borrower withdraw against a stale, understated debt.
+
