@@ -26,7 +26,7 @@ folder. Paths are relative to `curve/curve-contract/contracts/`.
   - [1.1 The five templates](#11-the-five-templates)
   - [1.2 The 33 pools](#12-the-33-pools)
   - [1.3 The 22 zaps](#13-the-22-zaps)
-  - [1.4 Compiler versions and the July 2023 Vyper bug](#14-compiler-versions)
+  - [1.4 Compiler versions and the July 2023 Vyper bug](#14-compiler-versions-and-the-july-2023-vyper-bug)
 - [2. The shared math, derived](#2-the-shared-math-derived)
   - [2.1 The invariant](#21-the-invariant)
   - [2.2 `_get_D` — Newton on D](#22-_get_d)
@@ -37,12 +37,12 @@ folder. Paths are relative to `curve/curve-contract/contracts/`.
   - [2.7 `get_virtual_price`](#27-get_virtual_price)
   - [2.8 The imbalance fee](#28-the-imbalance-fee)
   - [2.9 `_calc_withdraw_one_coin`](#29-_calc_withdraw_one_coin)
-- [3. `pool-templates/base` — the plain template](#3-pool-templatesbase)
-- [4. `pool-templates/y` — the lending template](#4-pool-templatesy)
-- [5. `pool-templates/a` — the Aave template](#5-pool-templatesa)
-- [6. `pool-templates/eth` — the native-ETH template](#6-pool-templateseth)
-- [7. `pool-templates/meta` — the metapool template](#7-pool-templatesmeta)
-- [8. Pool families, as diffs from their template](#8-pool-families)
+- [3. `pool-templates/base` — the plain template](#3-pool-templatesbase--the-plain-template)
+- [4. `pool-templates/y` — the lending template](#4-pool-templatesy--the-lending-template)
+- [5. `pool-templates/a` — the Aave template](#5-pool-templatesa--the-aave-template)
+- [6. `pool-templates/eth` — the native-ETH template](#6-pool-templateseth--the-native-eth-template)
+- [7. `pool-templates/meta` — the metapool template](#7-pool-templatesmeta--the-metapool-template)
+- [8. Pool families, as diffs from their template](#8-pool-families-as-diffs-from-their-template)
 - [9. The zaps](#9-the-zaps)
 - [10. The LP tokens: CurveTokenV1/V2/V3](#10-the-lp-tokens)
 - [11. Rate calculators and `testing/`](#11-rate-calculators-and-testing)
@@ -1522,3 +1522,472 @@ implementation, reading the ratio from ankrETH.
 `raw_call` safe-transfer in this codebase exists because of tokens shaped like it.
 
 ---
+
+## 12. ABI / selector tables
+
+Selectors computed with `cast sig`. Array-typed parameters make the selector
+depend on `N_COINS`, so those rows are given per coin count.
+
+### 12.1 Core swap interface (all templates)
+
+| Signature | Selector |
+|---|---|
+| `exchange(int128,int128,uint256,uint256)` | `0x3df02124` |
+| `exchange_underlying(int128,int128,uint256,uint256)` | `0xa6417ed6` |
+| `get_dy(int128,int128,uint256)` | `0x5e0d443f` |
+| `get_virtual_price()` | `0xbb7b8b80` |
+| `calc_withdraw_one_coin(uint256,int128)` | `0xcc2b27d7` |
+| `remove_liquidity_one_coin(uint256,int128,uint256)` | `0x1a4d01d2` |
+| `coins(uint256)` | `0xc6610657` |
+| `balances(uint256)` | `0x4903b0d1` |
+| `A()` | `0xf446c1d0` |
+| `A_precise()` | `0x76a2f0f0` |
+| `admin_balances(uint256)` | `0xe2e7d264` |
+
+### 12.2 Array-typed, by coin count
+
+| Signature | Selector |
+|---|---|
+| `add_liquidity(uint256[2],uint256)` | `0x0b4c7e4d` |
+| `add_liquidity(uint256[3],uint256)` | `0x4515cef3` |
+| `remove_liquidity(uint256,uint256[3])` | `0xecb586a5` |
+| `remove_liquidity_imbalance(uint256[3],uint256)` | `0x9fdaea0c` |
+| `calc_token_amount(uint256[3],bool)` | `0x3883e119` |
+
+This is the single most common integration bug against classic Curve: a 2-coin
+pool and a 3-coin pool expose **different selectors for the same function name**.
+A router that hard-codes `0x4515cef3` will revert against every 2-coin pool.
+
+### 12.3 Admin interface
+
+| Signature | Selector |
+|---|---|
+| `ramp_A(uint256,uint256)` | `0x3c157e64` |
+| `stop_ramp_A()` | `0x551a6588` |
+| `withdraw_admin_fees()` | `0x30c54085` |
+| `kill_me()` | `0xe3698853` |
+| `unkill_me()` | `0x3046f972` |
+
+First-generation pools (§8.1) expose `commit_new_parameters` /
+`apply_new_parameters` instead of `commit_new_fee` / `apply_new_fee`, and several
+lack `ramp_A` entirely.
+
+---
+
+## 13. Storage layout tables
+
+Vyper 0.2 lays storage out in declaration order, one slot per scalar, and `n`
+consecutive slots for a fixed array of `n` scalars. No packing.
+
+### 13.1 `SwapTemplateBase` (N = 3)
+
+| Slot | Variable | Type |
+|---|---|---|
+| 0-2 | `coins` | `address[3]` |
+| 3-5 | `balances` | `uint256[3]` |
+| 6 | `fee` | `uint256` |
+| 7 | `admin_fee` | `uint256` |
+| 8 | `owner` | `address` |
+| 9 | `lp_token` | `address` |
+| 10 | `initial_A` | `uint256` |
+| 11 | `future_A` | `uint256` |
+| 12 | `initial_A_time` | `uint256` |
+| 13 | `future_A_time` | `uint256` |
+| 14 | `admin_actions_deadline` | `uint256` |
+| 15 | `transfer_ownership_deadline` | `uint256` |
+| 16 | `future_fee` | `uint256` |
+| 17 | `future_admin_fee` | `uint256` |
+| 18 | `future_owner` | `address` |
+| 19 | `is_killed` | `bool` |
+| 20 | `kill_deadline` | `uint256` |
+
+### 13.2 Template deltas
+
+| Template | Added storage |
+|---|---|
+| `y` | `underlying_coins: address[N]` after `coins` |
+| `a` | `admin_balances: uint256[N]` (an array, not a computed getter), `offpeg_fee_multiplier`, `future_offpeg_fee_multiplier`, `aave_referral` |
+| `eth` | none (but `balances` is unnormalised) |
+| `meta` | `base_pool`, `base_virtual_price`, `base_cache_updated`, `base_coins: address[BASE_N_COINS]` |
+
+### 13.3 Pool-specific additions
+
+| Pool | Added storage | Lines |
+|---|---|---|
+| `link`, `ib` | `previous_balances: uint256[N]`, `block_timestamp_last: uint256` | `pools/link/StableSwapLINK.vy:99-100` |
+| `steth` | `admin_balances: uint256[N]` (rebasing) | — |
+
+---
+
+## 14. Events reference
+
+All seven events are declared identically in every template
+(`pool-templates/base/SwapTemplateBase.vy:20-78`).
+
+| Event | Line | Fields | Emitted by |
+|---|---|---|---|
+| `TokenExchange` | 20 | `buyer` (indexed), `sold_id`, `tokens_sold`, `bought_id`, `tokens_bought` | `exchange`, `exchange_underlying` |
+| `AddLiquidity` | 27 | `provider` (indexed), `token_amounts[N]`, `fees[N]`, `invariant`, `token_supply` | `add_liquidity` |
+| `RemoveLiquidity` | 34 | `provider` (indexed), `token_amounts[N]`, `fees[N]`, `token_supply` | `remove_liquidity` (fees always zero) |
+| `RemoveLiquidityOne` | 40 | `provider` (indexed), `token_amount`, `coin_amount`, `token_supply` | `remove_liquidity_one_coin` |
+| `RemoveLiquidityImbalance` | 46 | `provider` (indexed), `token_amounts[N]`, `fees[N]`, `invariant`, `token_supply` | `remove_liquidity_imbalance` |
+| `CommitNewAdmin` | 53 | `deadline` (indexed), `admin` (indexed) | `commit_transfer_ownership` |
+| `NewAdmin` | 57 | `admin` (indexed) | `apply_transfer_ownership` |
+| `CommitNewFee` | 60 | `deadline` (indexed), `fee`, `admin_fee` | `commit_new_fee` |
+| `NewFee` | 65 | `fee`, `admin_fee` | `apply_new_fee` |
+| `RampA` | 69 | `old_A`, `new_A`, `initial_time`, `future_time` | `ramp_A` |
+| `StopRampA` | 75 | `A`, `t` | `stop_ramp_A` |
+
+**Notes for indexers.**
+
+- Only `provider` / `buyer` and the admin fields are indexed. There is no indexed
+  coin id, so filtering by traded pair requires decoding the data.
+- `AddLiquidity` and `RemoveLiquidityImbalance` carry `invariant` (`D1`), which
+  together with `token_supply` lets you reconstruct virtual price at that block
+  without an archive call.
+- `RemoveLiquidity` emits an all-zero `fees` array because proportional
+  withdrawal is free — do not treat the zero as missing data.
+- **No event is emitted** by `withdraw_admin_fees`, `donate_admin_fees`,
+  `kill_me`, `unkill_me`, `revert_new_parameters` or `revert_transfer_ownership`.
+  Admin fee collection is invisible to log-based indexers; it must be inferred
+  from balance deltas.
+
+---
+
+## 15. Revert-message table
+
+Two mechanisms are in play. Quoted strings are real revert reasons visible
+on-chain. `# dev:` comments are Vyper's dev-revert annotations: they compile to a
+bare revert, and the message is only recoverable through a tool that maps
+program counters back to source.
+
+### 15.1 Quoted revert strings
+
+| Message | Count | Where |
+|---|---|---|
+| `"Slippage screwed you"` | 76 | `add_liquidity`, `remove_liquidity_imbalance` |
+| `"Too few coins in result"` | 45 | Zaps |
+| `"Not enough coins removed"` | 39 | `remove_liquidity_one_coin` |
+| `"Exchange resulted in fewer coins than expected"` | 36 | `exchange`, `exchange_underlying` |
+| `"Withdrawal resulted in fewer coins than expected"` | 24 | `remove_liquidity` |
+| `"Not enough coins withdrawn"` | 7 | Lending zaps |
+| `"Could not redeem coin"` | 6 | Lending zaps (unwrap leg) |
+| `"Could not mint coin"` | 6 | Lending zaps (wrap leg) |
+
+Counts are occurrences across `pools/` and `pool-templates/`. Every one of these
+is a **slippage guard**, which is the point worth internalising: classic Curve has
+essentially no other user-facing error surface. If a call reverts with a string,
+the user's minimum was not met.
+
+### 15.2 `# dev:` annotations
+
+| Annotation | Count | Meaning |
+|---|---|---|
+| `only owner` | 61 | `msg.sender != self.owner` |
+| `failed transfer` | 21 | A `raw_call` transfer returned `False` |
+| `is killed` | 20 | Pool is killed; only `remove_liquidity` works |
+| `insufficient time` | 15 | Timelock or ramp duration not satisfied |
+| `insufficient funds` | 15 | `burnFrom` failed — caller lacks LP tokens |
+| `zero tokens burned` | 5 | `remove_liquidity_imbalance` rounded to zero |
+| `same coin` | 5 | `i == j` in `_get_y` |
+| `no active transfer` / `no active action` | 5 each | `apply_*` with no pending commit |
+| `active transfer` / `active action` | 5 each | `commit_*` while one is pending |
+| `j below zero` / `j above N_COINS` | 5 each | Coin index out of range |
+| `i below zero` / `i above N_COINS` | 5 each | Coin index out of range |
+| `initial deposit requires all coins` | 5 | First `add_liquidity` had a zero amount |
+| `fee exceeds maximum` | 5 | `> MAX_FEE` |
+| `admin fee exceeds maximum` | 5 | `> MAX_ADMIN_FEE` |
+| `deadline has passed` | 5 | `kill_me` after `kill_deadline` |
+| `offpeg multiplier exceeds maximum` | 1 | Aave template only (`a:1012`) |
+| `uint16 overflow` | 1 | `set_aave_referral` |
+
+Unannotated bare asserts also exist — `assert D1 > D0` in `add_liquidity`
+(`base:322`) and the two "should be unreachable" index checks in `_get_y`
+(`base:396-397`) revert with no information at all.
+
+---
+
+## 16. Use-case index
+
+### 16.1 Swap in a plain pool
+
+`exchange(i, j, _dx, _min_dy)` → `base:447`.
+
+```
+exchange
+ ├── assert not is_killed                          base:457
+ ├── _xp_mem(old_balances)                         base:197
+ ├── _get_y(i, j, x, xp)                           base:379
+ │     └── _get_D(_xp, A)                          base:206
+ ├── dy = xp[j] - y - 1;  fee;  denormalise        base:466-470
+ ├── assert dy >= _min_dy                          base:471
+ ├── balances[i] += _dx;  balances[j] -= dy+admin  base:477-479
+ ├── raw_call transferFrom(sender → pool, _dx)     base:481
+ └── raw_call transfer(pool → sender, dy)          base:494
+```
+
+Quote first with `get_dy(i, j, _dx)` (`base:434`) and set `_min_dy` below it.
+
+### 16.2 Swap underlying in a lending pool
+
+`exchange_underlying(i, j, _dx, _min_dy)` → `y:603`.
+
+```
+exchange_underlying
+ ├── _stored_rates()  → getPricePerFullShare per coin   y:222
+ ├── dx = _dx * PRECISION / (rates[i]/precisions[i])    y:616
+ ├── _exchange(i, j, dx, rates)      (the local swap)
+ ├── transferFrom underlying in
+ ├── yERC20(coins[i]).deposit(_dx)                      y:634
+ ├── yERC20(coins[j]).withdraw(dy_)                     y:635
+ ├── dy = balanceOf(underlying[j])   ← re-read, not predicted  y:638
+ └── transfer underlying out
+```
+
+### 16.3 Swap underlying in a metapool
+
+`exchange_underlying(i, j, _dx, _min_dy)` → `meta:640`.
+
+Indices `0..MAX_COIN-1` are metapool coins; `MAX_COIN` and above are base-pool
+coins. Three routes (§7.3): both-meta, one-of-each, both-base. `rates[MAX_COIN]`
+is set from `_vp_rate()` (`meta:652`) before any math runs.
+
+For GUSD → USDC on `gusd`: `i = 0` (GUSD), `j = 2` (USDC, since 3pool is
+DAI/USDC/USDT and `MAX_COIN = 1`).
+
+### 16.4 Deposit via zap
+
+Metapool: `Deposit*.add_liquidity(_amounts[N_ALL_COINS], _min_mint_amount)` →
+`pool-templates/meta/DepositTemplateMeta.vy:101`. Adds to the base pool first,
+then the metapool. Two imbalance fees.
+
+Lending: `Deposit*.add_liquidity(_underlying_amounts, _min_mint_amount)` →
+`pool-templates/y/DepositTemplateY.vy:99`. Wraps each coin, then deposits.
+
+### 16.5 Withdraw in one coin
+
+`remove_liquidity_one_coin(_token_amount, i, _min_amount)` → `base:704`.
+
+```
+remove_liquidity_one_coin
+ ├── _calc_withdraw_one_coin(_token_amount, i)     base:661
+ │     ├── _get_D(xp, amp)                → D0
+ │     ├── D1 = D0 - amount*D0/supply
+ │     ├── _get_y_D(amp, i, xp, D1)       → new_y  base:614   (first solve)
+ │     ├── per-coin imbalance fee → xp_reduced
+ │     └── _get_y_D(amp, i, xp_reduced, D1)        base:614   (second solve)
+ ├── assert dy >= _min_amount                      base:718
+ ├── balances[i] -= dy + admin share of fee        base:720
+ ├── burnFrom(sender, _token_amount)               base:721
+ └── raw_call transfer(pool → sender, dy)          base:723
+```
+
+Preview with `calc_withdraw_one_coin` (`base:692`). Unlike `calc_token_amount`,
+this one **does** account for fees, so it is safe as a settlement estimate.
+
+### 16.6 Withdraw proportionally
+
+`remove_liquidity(_amount, _min_amounts)` → `base:513`. No fee, no invariant
+solve, works even when killed or when a coin balance is zero. This is the exit of
+last resort.
+
+### 16.7 Read the virtual price safely
+
+`get_virtual_price()` → `base:252`.
+
+**Do not call this from inside a callback.** See §17.1. If you are integrating a
+pool that holds native ETH, either read it only at the top of your own
+transaction, or force the pool's `lock` first by calling a `@nonreentrant`
+function such as `withdraw_admin_fees()` or `remove_liquidity(0, [0,...])`.
+
+### 16.8 Claim admin fees
+
+`withdraw_admin_fees()` → `base:854`, owner only, sends to `msg.sender`. In
+production the owner is the DAO's `PoolProxy`. `admin_balances(i)` (`base:849`)
+previews the amount and is callable by anyone.
+
+### 16.9 Ramp A
+
+`ramp_A(_future_A, _future_time)` → `base:742`, owner only. At least one day
+since the last ramp began, at least one day of duration, at most 10× change.
+`stop_ramp_A()` (`base:765`) freezes at the current interpolated value.
+
+### 16.10 Kill a pool
+
+`kill_me()` → `base:882`, owner only, and only within ~60 days of deployment
+(`KILL_DEADLINE_DT`, `base:119`). After that the pool can never be killed.
+`unkill_me()` (`base:889`) has no deadline.
+
+---
+
+## 17. Security notes
+
+### 17.1 Read-only reentrancy through `get_virtual_price`
+
+This is the most important thing in this document.
+
+Take `pools/steth/StableSwapSTETH.vy`. Its `remove_liquidity` (`:477-505`) does
+the following, in this order:
+
+```python
+amounts: uint256[N_COINS] = self._balances()
+lp_token: address = self.lp_token
+total_supply: uint256 = ERC20(lp_token).totalSupply()
+CurveToken(lp_token).burnFrom(msg.sender, _amount)          # :491  supply drops
+
+for i in range(N_COINS):
+    value: uint256 = amounts[i] * _amount / total_supply
+    assert value >= _min_amounts[i], "Withdrawal resulted in fewer coins than expected"
+    amounts[i] = value
+    if i == 0:
+        raw_call(msg.sender, b"", value=value)              # :499  ETH out, full gas
+    else:
+        assert ERC20(self.coins[1]).transfer(msg.sender, value)   # :501  stETH out
+```
+
+At the moment of the `raw_call` on `:499`:
+
+- LP `totalSupply` has already been reduced (`:491`).
+- The pool's ETH balance has already been reduced (the call is sending it).
+- The pool's **stETH balance has not yet been reduced** — that happens on the next
+  loop iteration, at `:501`.
+
+The recipient has full gas and full control. `remove_liquidity` carries
+`@nonreentrant('lock')` (`:476`), so it cannot re-enter any *mutating* function.
+But `get_virtual_price` (`:251`) is declared:
+
+```python
+@view
+@external
+def get_virtual_price() -> uint256:
+```
+
+with **no** `@nonreentrant`. It reads `_balances()` (`:190-194`), which pulls
+`self.balance` and `ERC20(coins[1]).balanceOf(self)` live, and divides `D` by the
+already-reduced `totalSupply`. The numerator is missing only the ETH; the
+denominator is missing the whole burn. The result is transiently **inflated**.
+
+The attacker's own position is unaffected. The victim is any third party that
+prices something off `get_virtual_price` during that window — most damagingly, a
+lending market accepting the LP token as collateral, which can be induced to
+over-lend. Hence "read-only": the exploit never writes to Curve at all.
+
+**Which pools in this tree are exposed.** Any pool that sends native ETH inside a
+loop before the loop finishes, and exposes an unguarded view over the same state.
+That is the four ETH pools: `seth`, `steth`, `aeth`, `reth`. Plain ERC20 pools are
+exposed only if a coin yields control on transfer. Metapools over an ETH base pool
+inherit it through `_vp_rate` (§7.2).
+
+**Mitigations.**
+
+- *As an integrator:* before reading `get_virtual_price`, call a
+  `@nonreentrant('lock')` function on the pool so a reentrant read reverts.
+  `withdraw_admin_fees()` is owner-only, so the usual choice is
+  `remove_liquidity(0, [0, 0])`, which locks, does nothing, and unlocks.
+- *As a protocol designer:* this is why StableSwap-NG marks `get_virtual_price`,
+  `totalSupply`, `price_oracle` and `D_oracle` as `@view @nonreentrant('lock')`,
+  and why it refuses native ETH outright. See
+  [`STABLESWAP-NG-COMPLETE-REFERENCE.md`](STABLESWAP-NG-COMPLETE-REFERENCE.md).
+
+### 17.2 The Vyper `@nonreentrant` compiler bug (30 July 2023)
+
+Vyper 0.2.15, 0.2.16 and 0.3.0 generated broken reentrancy locks when one lock
+key was shared across functions of differing mutability. Four Curve pools were
+drained for roughly $70M.
+
+**No contract in this repository uses an affected version.** The sweep in §1.4
+shows a range of 0.1.0b16 to 0.2.12. The drained pools were factory-deployed and
+live elsewhere.
+
+Keep the general lesson: `@nonreentrant` is a compiler-emitted guard, so its
+correctness is a property of the toolchain, not of the source. Read the pragma
+before you trust the decorator.
+
+### 17.3 `A` ramp manipulation
+
+Changing `A` re-prices the pool with no trade (§2.6). The guards in `ramp_A`
+(`base:742-761`) — one day minimum since the last ramp, one day minimum duration,
+10× maximum change, owner-only — exist to make front-running a ramp unprofitable
+relative to the arbitrage cost of moving the pool.
+
+`MAX_A = 10**6` (`base:91`) is not arbitrary either. At extreme `A` the pool
+behaves as a constant sum, and the scarce coin can be drained at nearly 1:1;
+the Newton iterations also lose precision.
+
+First-generation pools (§8.1) have no `ramp_A` and change `A` through
+`commit_new_parameters`, which is subject only to the 3-day timelock.
+
+### 17.4 Donations and admin fees are the same thing
+
+`admin_balances(i)` is `balanceOf(self) - self.balances[i]` (`base:849`). The
+contract cannot distinguish a fee from a gift. Anyone who transfers tokens
+directly to a classic pool has donated them to the **owner**, not to LPs, until
+someone calls `donate_admin_fees()` (`base:875`).
+
+There is no share-inflation attack of the ERC-4626 kind here, because the
+numeraire is `D` — computed from `self.balances`, which a donation does not touch
+— rather than `balanceOf`. The first depositor receives exactly `D1` LP tokens
+(`base:347-348`), fixing the initial virtual price at 1e18.
+
+### 17.5 Rate oracles are trusted absolutely
+
+The lending templates read an external rate on every quote:
+`getPricePerFullShare` (`y:225`), `exchangeRateStored` extrapolated by
+`supplyRatePerBlock` (`ib:231-232`), `exchangeRateCurrent` (`ren:172`).
+
+None is bounded, smoothed, or checked for staleness. A wrapper that misreports
+its rate mis-prices the pool immediately and completely. `ib`'s extrapolation
+additionally trusts a *forward-looking* number, `supplyRatePerBlock`, which is
+itself a projection.
+
+### 17.6 Fee-on-transfer and rebasing tokens
+
+Classic Curve assumes a transfer moves exactly the requested amount. The single
+exception is the metapool template's hard-coded `FEE_ASSET` handling
+(`meta:678-698`), which measures balances before and after — and it applies to one
+specific address, not to fee-on-transfer tokens generally.
+
+Rebasing tokens are handled only where the template was built for them: the Aave
+template derives balances live (`a:273-277`) and `steth` does the same
+(`steth:190-194`). Putting a rebasing token into a plain pool would strand every
+rebase as claimable admin fee.
+
+### 17.7 Slippage guards are the only protection
+
+Every mutating function takes a minimum or maximum: `_min_dy`, `_min_mint_amount`,
+`_min_amounts`, `_max_burn_amount`, `_min_amount`. There is no deadline parameter
+anywhere in classic Curve, so a transaction can sit in the mempool and execute at
+a much later price — the guard must be sized for that, not just for one block.
+
+The classic sandwich target is a large `remove_liquidity_one_coin`, which moves
+the pool the most per unit of value.
+
+### 17.8 Killed pools
+
+While `is_killed`, only `remove_liquidity` works — `add_liquidity` (`base:303`),
+`exchange` (`base:457`), `remove_liquidity_imbalance` (`base:559`) and
+`remove_liquidity_one_coin` (`base:712`) all revert. The switch is owner-only and
+expires about 60 days after deployment (`base:119`), after which the pool is
+permanently unkillable. `unkill_me` never expires.
+
+---
+
+## Appendix: reproducing the sweeps
+
+```bash
+cd curve/curve-contract/contracts
+
+# compiler versions
+for f in pool-templates/*/Swap*.vy pools/*/StableSwap*.vy; do
+  echo "$f $(grep -m1 '@version' "$f")"
+done
+
+# quoted revert strings
+grep -rhoE '"[^"]{4,60}"' --include='*.vy' pools pool-templates | sort | uniq -c | sort -rn
+
+# dev annotations
+grep -rhoE '# dev: [a-zA-Z0-9 _]+' --include='*.vy' pool-templates | sort | uniq -c | sort -rn
+
+# what a given pool changed relative to its template
+diff pool-templates/base/SwapTemplateBase.vy pools/3pool/StableSwap3Pool.vy
+```

@@ -1,8 +1,7 @@
 # Session log — how these documents were produced
 
-A record of what was run, what each agent produced, what is finished, and what
-is still owed. Written so the work can be picked up later without re-deriving
-the plan.
+A record of what was run and what came out of it. Everything planned was
+completed; nothing is outstanding.
 
 ## What was set up
 
@@ -12,7 +11,7 @@ removed, giving one flat greppable corpus:
 ```
 uni/     v1-contracts  v2-core  v2-periphery  v3-core  v3-periphery  v4-core
 curve/   curve-contract  stableswap-ng  curve-dao-contracts
-aave/    v1-aave-protocol  v2-protocol  v3-core-original  aave-v3-origin (v3.6)  v4-aave
+aave/    v1-aave-protocol  v2-protocol  v3-core-original  aave-v3-origin  v4-aave
 lifi/    contracts
 ```
 
@@ -21,81 +20,96 @@ Aave v4 turned out to be public at `aave/aave-v4`, with audits dated through
 
 ## How the work was split
 
-Twenty agent runs in total, each given one file to own and told not to touch any
-other. Two layers were commissioned: **deep dives** that teach the ideas and
-derive the math, and **complete references** that walk every contract and every
-function. Running them in parallel meant the whole set landed in roughly the
-time one document takes, rather than in sequence over several hours.
+Twenty-nine agent runs across three waves, each owning exactly one file. Two
+layers were commissioned: **deep dives** that teach the ideas and derive the
+math, and **complete references** that walk every contract and every function.
+Running them in parallel meant each wave landed in roughly the time one document
+takes rather than in sequence over many hours.
 
-One early wave of six agents was lost to a session rate limit before any of them
-wrote output. Three were resumed from their own transcripts the next day and
-finished; the other three had already written their files.
+Wave one lost six agents to a session rate limit; three were resumed from their
+own transcripts and finished. Wave two produced eleven finished documents and
+eight partial ones before it was stopped to conserve budget. Wave three finished
+all eight partials and wrote the one document that had never been started.
 
-## Finished and verified
+The single most common failure was a Bash heredoc exceeding the exec limit
+mid-write. Wave three briefs required chunked appends and none hit it.
 
-| Document | Lines | Notes |
+## The documents
+
+All twenty are complete. Deep dives first, then references.
+
+| Document | Lines | Coverage |
 |---|---|---|
-| `uni/UNISWAP-V1-DEEP-DIVE.md` | 1,327 | All 44 functions across both contracts, confirmed by script |
+| `uni/UNISWAP-V1-DEEP-DIVE.md` | 1,327 | all 44 functions of both contracts |
 | `uni/UNISWAP-DEEP-DIVE.md` | 874 | v2, v3, v4 |
-| `curve/CURVE-DEEP-DIVE.md` | 988 | StableSwap classic and NG, plus the veCRV flywheel |
+| `curve/CURVE-DEEP-DIVE.md` | 988 | StableSwap classic and NG, the veCRV flywheel |
 | `aave/AAVE-V1-V2-DEEP-DIVE.md` | 960 | |
 | `aave/AAVE-DEEP-DIVE.md` | 773 | v3.6 |
-| `aave/AAVE-V4-DEEP-DIVE.md` | 1,255 | Hub and Spoke, from source |
+| `aave/AAVE-V4-DEEP-DIVE.md` | 1,255 | Hub and Spoke |
 | `lifi/LIFI-DEEP-DIVE.md` | 1,204 | |
-| `uni/V2-COMPLETE-REFERENCE.md` | 2,447 | All 35 files |
-| `uni/V3-CORE-COMPLETE-REFERENCE.md` | 2,689 | All 62 files |
-| `uni/V4-COMPLETE-REFERENCE.md` | 2,638 | All 84 files |
-| `lifi/FACETS-COMPLETE-REFERENCE.md` | 2,239 | All 42 facets |
+| `aave/V3-PROTOCOL-COMPLETE-REFERENCE.md` | 4,102 | 60 files |
+| `aave/V3-PERIPHERY-COMPLETE-REFERENCE.md` | 3,756 | 154 files |
+| `aave/V1-V2-COMPLETE-REFERENCE.md` | 3,498 | 73 v1 + 121 v2 files |
+| `curve/DAO-COMPLETE-REFERENCE.md` | 3,428 | 68 files |
+| `lifi/LIBRARIES-PERIPHERY-COMPLETE-REFERENCE.md` | 3,271 | 97 files |
+| `uni/V3-PERIPHERY-COMPLETE-REFERENCE.md` | 3,181 | 76 files |
+| `curve/STABLESWAP-NG-COMPLETE-REFERENCE.md` | 3,126 | 21 files |
+| `aave/V4-COMPLETE-REFERENCE.md` | 2,900 | 119 files |
+| `uni/V3-CORE-COMPLETE-REFERENCE.md` | 2,689 | 62 files |
+| `uni/V4-COMPLETE-REFERENCE.md` | 2,638 | 84 files |
+| `uni/V2-COMPLETE-REFERENCE.md` | 2,447 | 35 files |
+| `lifi/FACETS-COMPLETE-REFERENCE.md` | 2,239 | all 42 facets |
+| `curve/CLASSIC-POOLS-COMPLETE-REFERENCE.md` | 1,993 | 33 pools, 5 templates, 22 zaps, 77 files |
 
-## Stopped mid-write
+Every reference ends with selector tables computed rather than transcribed, a
+storage-layout table, an events reference, a revert decoder, and a use-case
+index mapping intents to full internal call chains.
 
-The run was halted to conserve budget. These files are substantial and readable,
-but each is missing its closing sections and none got a final citation sweep.
-Treat their line citations as unverified.
+## Verified rather than assumed
 
-| Document | Lines | Reached | Still owed |
-|---|---|---|---|
-| `curve/STABLESWAP-NG-COMPLETE-REFERENCE.md` | 3,125 | §19 of 19 | Was applying its own correction pass; content essentially complete |
-| `aave/V3-PROTOCOL-COMPLETE-REFERENCE.md` | 3,136 | §18 | Configuration contracts, tables, use cases |
-| `lifi/LIBRARIES-PERIPHERY-COMPLETE-REFERENCE.md` | 2,660 | §19 | Cross-cutting tables, use cases |
-| `aave/V3-PERIPHERY-COMPLETE-REFERENCE.md` | 2,570 | §12 | Deployments walkthrough, tables, use cases |
-| `aave/V4-COMPLETE-REFERENCE.md` | 2,413 | §17 | Use cases, v3 to v4 migration table |
-| `uni/V3-PERIPHERY-COMPLETE-REFERENCE.md` | 2,313 | §8 | Tables, revert decoder, use cases |
-| `curve/DAO-COMPLETE-REFERENCE.md` | 1,590 | §6 | Proxies, vesting, streamers, tables, flywheel diagram |
-| `aave/V1-V2-COMPLETE-REFERENCE.md` | 1,492 | §1.16 | All of Part II (Aave v2) and the v1 to v2 migration table |
+These are the claims most likely to be wrong in notes written from memory, so
+each was checked against the compiler, `cast`, or a real grep:
 
-## Not started
-
-`curve/CLASSIC-POOLS-COMPLETE-REFERENCE.md` — the classic pool templates and the
-roughly 35 deployed pool families. That agent was still surveying and diffing
-pools against their templates when the run was stopped, so no file exists.
-`curve/CURVE-DEEP-DIVE.md` §1 already covers the 3pool in depth, which is the
-canonical instance of the base template.
-
-## Things that were verified rather than assumed
-
-Worth keeping, because these are the claims most likely to be wrong in notes
-written from memory:
-
-- The `v3-core` tree was compiled with solc 0.7.6 and its pool creation code
-  hashes to the value hardcoded as `POOL_INIT_CODE_HASH` in the periphery. The
-  cloned source is the deployed protocol.
-- Uniswap v4 function selectors were recomputed with `cast sig`. The repo's own
+- The `v3-core` tree compiles to the canonical mainnet `POOL_INIT_CODE_HASH`, so
+  the cloned source is the deployed protocol.
+- Uniswap v4 selectors were recomputed with `cast sig`. The repo's own
   `signatures/` JSON is wrong for `swap`, having hashed the literal word
   `PoolKey` instead of the expanded tuple.
-- `UniswapV2Router01.getAmountIn` calls `UniswapV2Library.getAmountOut`. This is
-  a real upstream bug, fixed in Router02. Only the public view helper was
-  affected, since swaps call `getAmountsIn` directly.
-- Aave v4 has no `calculateCompoundedInterest` anywhere in `src/`, and no
-  e-mode. Supply uses ERC-4626 shares with a virtual offset while debt uses a ray
-  index, so there is no `liquidityIndex`.
-- Uniswap v1 moves ETH with `send` at exactly four sites, which is what makes
-  the missing reentrancy lock survivable.
+- Aave `supply(address,uint256,address,uint16)` computes to `0x617ba037`,
+  matching mainnet, which validates the whole extracted selector table.
+- Curve classic pools span Vyper 0.1.0b16 to 0.2.12, so none is affected by the
+  July 2023 `@nonreentrant` compiler bug. The DAO tree does contain affected
+  versions, but none of those contracts uses `@nonreentrant`.
+- `aave/aave-v3-origin` says 3.6.0 in `package.json` but ships a `docs/3.7/`
+  changelog describing this code, so it is unreleased 3.7.
 
-## If you pick this up again
+## Things the exhaustive pass found that the conceptual pass did not
 
-The eight stopped documents each need their remaining sections plus a citation
-sweep. The pattern that worked: give one agent one file, tell it to enumerate
-every source file first, verify every `path:line` with `grep -n` before writing,
-and append in chunks rather than one heredoc. The heredoc limit was the single
-most common failure mode.
+Real defects and hazards in shipped code, each confirmed against source:
+
+- `UniswapV2Router01.getAmountIn` calls `UniswapV2Library.getAmountOut`. Fixed in
+  Router02. Only the public view helper was affected.
+- `Quoter` and `QuoterV2` share selectors for `quoteExactInput` and
+  `quoteExactOutput`. Return types are not part of a selector, so a V1 ABI
+  pointed at a V2 quoter decodes garbage instead of reverting.
+- `LibSwap.swap` performs no allowlist check of its own; the gate lives in its
+  callers. `Executor` has no allowlist at all and is safe only because it holds
+  no funds and rejects `callTo == erc20Proxy`.
+- `PoolProxySidechain.bridge` asserts `minimum >= balance` while its message and
+  docstring say the balance must exceed the minimum, and it transfers before
+  checking.
+- `CRVInfo.add_contract` is a no-op: the constructor sets `num_contracts = 18`
+  without populating the array, so writes land past where reads stop.
+- Aave v2's `AaveOracle` calls `latestAnswer()` with no staleness or
+  round-completeness check, so a frozen feed is undetectable.
+- Aave v2 `Errors.sol` codes are not in declaration order. Match on the
+  identifier, not the number.
+
+## Known limits
+
+- Storage layouts in the Aave references are hand-derived, not compiler-checked,
+  because `lib/` holds only submodule stubs so `forge inspect` cannot run. The
+  documents say so where it applies.
+- Audit PDFs are inventoried but unread.
+- Curve classic pool `A` and fee values are recorded only where `pooldata.json`
+  states them; the 0.1.0b generation set those at deploy time.
