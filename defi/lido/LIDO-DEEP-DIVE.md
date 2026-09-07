@@ -588,3 +588,117 @@ reporting a small lie repeatedly is still a malicious quorum; section 7 returns
 to this.
 
 ---
+
+## 4. Withdrawals
+
+### 4.1 Why there is a queue at all
+
+The protocol cannot pay you instantly because most of its ether is not liquid. It
+is 32-ETH chunks locked in validators, and getting it back means asking the
+beacon chain to exit them. That takes time bounded by the network's exit churn
+limit, not by anything Lido controls.
+
+So withdrawals are a **queue**, paid from whatever the protocol can assemble:
+buffered ether that has not been staked, incoming execution-layer rewards, and
+ether from validators that have actually exited into the `WithdrawalVault`.
+
+### 4.2 Requesting
+
+`requestWithdrawals` ([`WithdrawalQueue.sol:125`](core/contracts/0.8.9/WithdrawalQueue.sol#L125))
+takes an array of amounts, with variants for wstETH
+([`:144`](core/contracts/0.8.9/WithdrawalQueue.sol#L144)) and permit-based
+approval ([`:171`](core/contracts/0.8.9/WithdrawalQueue.sol#L171),
+[`:186`](core/contracts/0.8.9/WithdrawalQueue.sol#L186)). Each request is bounded:
+
+```solidity
+uint256 public constant MIN_STETH_WITHDRAWAL_AMOUNT = 100;
+uint256 public constant MAX_STETH_WITHDRAWAL_AMOUNT = 1000 * 1e18;
+```
+
+[`:52`](core/contracts/0.8.9/WithdrawalQueue.sol#L52) and
+[`:57`](core/contracts/0.8.9/WithdrawalQueue.sol#L57). The cap is why large exits
+arrive as many requests: it bounds the work of finalizing any single one.
+
+Your stETH is transferred to the queue contract and you receive an **ERC-721**
+(`WithdrawalQueueERC721`), which makes an in-flight withdrawal transferable and
+tradeable. Someone wanting out faster can sell the NFT rather than wait.
+
+### 4.3 The cumulative-sum trick
+
+The request struct stores running totals, not per-request amounts:
+
+```solidity
+struct WithdrawalRequest {
+    uint128 cumulativeStETH;
+    uint128 cumulativeShares;
+    address owner;
+    uint40 timestamp;
+    bool claimed;
+    uint40 reportTimestamp;
+}
+```
+
+[`WithdrawalQueueBase.sol:46-59`](core/contracts/0.8.9/WithdrawalQueueBase.sol#L46-L59)
+
+Any single request's amount is the difference between its cumulative and the
+previous one's. That means finalizing a *batch* of requests costs a subtraction
+rather than a loop, and `_calcBatch` reads exactly two entries no matter how many
+requests sit between them. This is the same prefix-sum idea as Liquity's `L_ETH`
+accumulator and Uniswap's fee growth: store running totals, take differences.
+
+### 4.4 Finalization and the discount
+
+The oracle decides which batches to finalize and Lido sends the ether. The
+subtle part is what happens if the share rate **fell** between your request and
+its finalization.
+
+Your request locked a number of shares. If stETH lost value in the meantime, the
+protocol must not pay you the higher pre-loss amount, because that would hand
+your loss to everyone else. `Checkpoint` records the rate cap in force for a range
+of requests:
+
+```solidity
+struct Checkpoint {
+    uint256 fromRequestId;
+    uint256 maxShareRate;
+}
+```
+
+[`WithdrawalQueueBase.sol:62-65`](core/contracts/0.8.9/WithdrawalQueueBase.sol#L62-L65)
+
+and the claim applies it:
+
+```solidity
+if (batchShareRate > checkpoint.maxShareRate) {
+    eth = shares * checkpoint.maxShareRate / E27_PRECISION_BASE;
+}
+```
+
+[`:508-510`](core/contracts/0.8.9/WithdrawalQueueBase.sol#L508-L510)
+
+You are paid at `min(rate at request, rate at finalization)`. Note the direction:
+a *positive* rebase between request and finalization does not benefit you either,
+since your shares were already locked. Queued withdrawals stop earning.
+
+The `_hint` parameter threaded through claiming
+([`:484-504`](core/contracts/0.8.9/WithdrawalQueueBase.sol#L484-L504)) is a
+binary-search index into the checkpoint array, supplied off-chain so the contract
+does not pay to search. The checks around it are all bounds assertions that the
+supplied hint really does bracket the request.
+
+### 4.5 Bunker mode
+
+If the protocol is losing money, for example through mass slashing, honouring
+withdrawals at face value first-come-first-served would let early exiters escape
+whole while stragglers absorb everything. **Bunker mode**
+([`WithdrawalQueue.sol:328-338`](core/contracts/0.8.9/WithdrawalQueue.sol#L328-L338))
+is the oracle-triggered switch that pauses finalization so losses can be shared
+rather than raced.
+
+It is the same insight as Liquity's Recovery Mode: under stress, the protocol
+changes the rules to stop a bank run, at the cost of predictability for
+individual users. Compare
+`liquity/LIQUITY-DEEP-DIVE.md`, which describes v2 removing Recovery Mode
+entirely by capping liquidation penalties instead.
+
+---
