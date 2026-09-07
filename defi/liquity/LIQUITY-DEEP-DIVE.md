@@ -526,4 +526,153 @@ N records; move one global number and let each record remember where it came in.
 Once you see it, you see it everywhere.
 
 ---
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             ### 1.7 Redemption: the mechanism that actually holds the peg
+
+Liquidation protects solvency. **Redemption** is what makes LUSD worth a dollar.
+
+Any holder can hand LUSD to the protocol and receive an equal dollar value of
+ETH, taken from the *riskiest* Troves first, walking the sorted list from its
+low-ICR end. `redeemCollateral`
+([`TroveManager.sol:925`](v1-dev/packages/contracts/contracts/TroveManager.sol#L925))
+loops Trove by Trove; each step runs `_redeemCollateralFromTrove`
+([`TroveManager.sol:816-873`](v1-dev/packages/contracts/contracts/TroveManager.sol#L816-L873)).
+
+Two outcomes per Trove. If the redemption consumes all the borrower's net debt,
+the Trove closes: the 200 LUSD reserve is burned, and whatever ETH remains
+becomes a claimable surplus
+([`_redeemCloseTrove`, TroveManager.sol:882-891](v1-dev/packages/contracts/contracts/TroveManager.sol#L882-L891)).
+Otherwise it is a partial redemption and the Trove must be re-inserted at its new
+position. That re-insertion needs a hint, and if the hint is stale the contract
+does not guess:
+
+```solidity
+            if (newNICR != _partialRedemptionHintNICR || _getNetDebt(newDebt) < MIN_NET_DEBT) {
+                singleRedemption.cancelledPartial = true;
+                return singleRedemption;
+            }
+```
+
+Bailing out is deliberate. Searching the list on-chain without a hint would
+likely run out of gas, so a stale hint cancels that one Trove rather than
+reverting the whole redemption.
+
+**Redemption is not a liquidation.** The redeemed borrower loses collateral but
+loses debt of exactly equal dollar value, so their net worth is unchanged. What
+changes is their leverage: they are left with a *higher* collateral ratio and less
+exposure to ETH. It is still hostile if you did not want it, since you were
+force-deleveraged at the worst possible moment, and it always targets whoever ran
+the thinnest margin. The system is telling you that the price of running at 111%
+is that you are first in line to be closed.
+
+### 1.8 Fees: one base rate, two uses
+
+A single `baseRate` variable prices both borrowing and redemption
+([`TroveManager.sol:59`](v1-dev/packages/contracts/contracts/TroveManager.sol#L59)).
+It rises with redemption volume and decays with time.
+
+`_updateBaseRateFromRedemption`
+([`TroveManager.sol:1358-1377`](v1-dev/packages/contracts/contracts/TroveManager.sol#L1358-L1377)):
+
+```solidity
+        uint redeemedLUSDFraction = _ETHDrawn.mul(_price).div(_totalLUSDSupply);
+
+        uint newBaseRate = decayedBaseRate.add(redeemedLUSDFraction.div(BETA));
+        newBaseRate = LiquityMath._min(newBaseRate, DECIMAL_PRECISION); // cap baseRate at a maximum of 100%
+```
+
+Redeem 10% of the LUSD supply and, with `BETA = 2`
+([`TroveManager.sol:57`](v1-dev/packages/contracts/contracts/TroveManager.sol#L57)),
+the base rate jumps by 5 percentage points. Decay is exponential with a 12-hour
+half-life, implemented by exponentiation-by-squaring over elapsed minutes
+([`_calcDecayedBaseRate`, TroveManager.sol:1463-1468](v1-dev/packages/contracts/contracts/TroveManager.sol#L1463-L1468)
+calling [`LiquityMath._decPow`](v1-dev/packages/contracts/contracts/Dependencies/LiquityMath.sol#L63)).
+The constant `MINUTE_DECAY_FACTOR = 999037758833783000` is just `(1/2)^(1/720)`
+([`TroveManager.sol:46`](v1-dev/packages/contracts/contracts/TroveManager.sol#L46)).
+
+Both fees are the base rate plus a 0.5% floor, borrowing additionally capped at
+5% ([`TroveManager.sol:1387`](v1-dev/packages/contracts/contracts/TroveManager.sol#L1387)
+and [`:1418`](v1-dev/packages/contracts/contracts/TroveManager.sol#L1418)).
+
+The design intent is a self-regulating throttle. Heavy redemption means LUSD is
+below peg, so redemption gets more expensive as it proceeds, and borrowing does
+too, discouraging fresh supply while the peg recovers. Note what is *not* here:
+no interest rate. A v1 Trove costs a one-off fee at open and then nothing,
+forever. That is why v1 needed no per-Trove accrual machinery at all, and it is
+the single biggest thing v2 changes.
+
+Redemptions are also blocked for the first 14 days after deployment
+([`_requireAfterBootstrapPeriod`, TroveManager.sol:1500-1503](v1-dev/packages/contracts/contracts/TroveManager.sol#L1500-L1503)),
+so early borrowers are not instantly redeemed against a thin market.
+
+### 1.9 LQTY: rewards without governance
+
+LQTY is not a governance token, because there is nothing to govern. It captures
+fees and nothing else.
+
+`CommunityIssuance`
+([`LQTY/CommunityIssuance.sol`](v1-dev/packages/contracts/contracts/LQTY/CommunityIssuance.sol))
+pays LQTY to Stability Pool depositors on an exponentially decaying schedule that
+asymptotically approaches a 32 million cap
+([`:45`](v1-dev/packages/contracts/contracts/LQTY/CommunityIssuance.sol#L45)),
+with `ISSUANCE_FACTOR = 999998681227695000`
+([`:37`](v1-dev/packages/contracts/contracts/LQTY/CommunityIssuance.sol#L37)),
+a one-year half-life. Cumulative issuance is computed from deployment time
+rather than accumulated incrementally
+([`:107-113`](v1-dev/packages/contracts/contracts/LQTY/CommunityIssuance.sol#L107-L113)),
+so the schedule cannot drift regardless of how often it is poked.
+
+`LQTYStaking` ([`LQTY/LQTYStaking.sol`](v1-dev/packages/contracts/contracts/LQTY/LQTYStaking.sol))
+receives the borrowing fees, in LUSD, and the redemption fees, in ETH, and
+distributes them with the same running-sum trick used everywhere else. Staking
+LQTY confers no voting rights, only a claim on fee flow.
+
+### 1.10 `PriceFeed`: an oracle that expects to be lied to
+
+`PriceFeed` ([`PriceFeed.sol`](v1-dev/packages/contracts/contracts/PriceFeed.sol))
+is a five-state machine over two independent oracles
+([`:71-77`](v1-dev/packages/contracts/contracts/PriceFeed.sol#L71-L77)):
+
+```solidity
+    enum Status {
+        chainlinkWorking, 
+        usingTellorChainlinkUntrusted, 
+        bothOraclesUntrusted,
+        usingTellorChainlinkFrozen, 
+        usingChainlinkTellorUntrusted
+    }
+```
+
+`fetchPrice` ([`:129`](v1-dev/packages/contracts/contracts/PriceFeed.sol#L129))
+reads Chainlink and Tellor, classifies each as working, frozen or broken, and
+transitions. "Broken" means a reverted call, a zero round id, a zero or future
+timestamp, or a non-positive answer
+([`_badChainlinkResponse`, :350-361](v1-dev/packages/contracts/contracts/PriceFeed.sol#L350-L361)).
+"Frozen" means older than the 4-hour `TIMEOUT`
+([`:42`](v1-dev/packages/contracts/contracts/PriceFeed.sol#L42)). There is also a
+sanity check that rejects a round which moved more than 50% from the previous one
+([`:45`](v1-dev/packages/contracts/contracts/PriceFeed.sol#L45),
+[`_chainlinkPriceChangeAboveMax`, :367-383](v1-dev/packages/contracts/contracts/PriceFeed.sol#L367-L383)),
+and a 5% agreement band between the two oracles
+([`:51`](v1-dev/packages/contracts/contracts/PriceFeed.sol#L51)).
+
+Set that beside Aave v2, where `getAssetPrice` is
+[`aave/v2-protocol/contracts/misc/AaveOracle.sol:96`](../aave/v2-protocol/contracts/misc/AaveOracle.sol#L96):
+
+```solidity
+      int256 price = IChainlinkAggregator(source).latestAnswer();
+```
+
+`latestAnswer()` returns no timestamp and no round id. It cannot distinguish a
+fresh price from one frozen for a week. Aave v2 falls back only when the source
+is unset or the answer is non-positive. Liquity checks staleness, round validity,
+inter-round deviation and cross-oracle agreement, and degrades through explicit
+named states.
+
+The asymmetry is not because Liquity's authors were smarter. It is forced by
+immutability. Aave can respond to a bad feed by having governance swap the source;
+that escape hatch is a real mitigation. Liquity has no governance, so every
+failure mode it wants to survive has to be handled in code written before launch.
+**Removing the admin key does not remove the risk, it relocates it into the
+source, where it must be enumerated in advance.**
+
+---
