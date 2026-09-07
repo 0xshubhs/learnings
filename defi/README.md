@@ -1,13 +1,14 @@
-# DeFi Deep Dives — Uniswap, Curve, Aave, LI.FI
+# DeFi Deep Dives — Uniswap, Curve, Aave, LI.FI, Morpho, Liquity
 
-Source-first study notes on four protocols that between them cover the three big
-primitives of on-chain finance: **exchange** (Uniswap, Curve), **credit** (Aave)
-and **routing across chains** (LI.FI).
+Source-first study notes on six protocols covering five primitives of on-chain
+finance: **exchange** (Uniswap, Curve), **credit** (Aave), **routing across
+chains** (LI.FI), **minimal lending** (Morpho Blue) and **CDP stablecoins**
+(Liquity).
 
 Every protocol's real source is cloned into this folder with its `.git` removed,
 so the tree is one flat, greppable corpus.
 
-**Every citation is a working link.** All 1,381 of them are clickable and jump
+**Every citation is a working link.** All 2,553 of them are clickable and jump
 to the exact line, on GitHub and in most editors. Each was verified twice: that
 the target file exists and the line is in range, and that the line actually says
 what the surrounding prose claims. Open the code next to the prose — the notes
@@ -34,6 +35,8 @@ understand a protocol; read its reference to have seen all of it.
 | [`aave/AAVE-DEEP-DIVE.md`](aave/AAVE-DEEP-DIVE.md) | Aave V3.6: Pool + logic libraries, index math, liquidations, eMode, flash loans |
 | [`aave/AAVE-V4-DEEP-DIVE.md`](aave/AAVE-V4-DEEP-DIVE.md) | Aave V4: the Hub & Spoke redesign, shares accounting, risk premiums |
 | [`lifi/LIFI-DEEP-DIVE.md`](lifi/LIFI-DEEP-DIVE.md) | LI.FI: EIP-2535 Diamond, bridge facets, Executor/Receivers, DEX aggregator |
+| [`morpho/MORPHO-DEEP-DIVE.md`](morpho/MORPHO-DEEP-DIVE.md) | Morpho Blue, written as a sustained comparison against Aave |
+| [`liquity/LIQUITY-DEEP-DIVE.md`](liquity/LIQUITY-DEEP-DIVE.md) | Liquity v1 and v2: immutable CDP stablecoin, stability pool, redistribution |
 
 ### Complete references — every contract, every function
 
@@ -52,8 +55,10 @@ understand a protocol; read its reference to have seen all of it.
 | [`aave/V4-COMPLETE-REFERENCE.md`](aave/V4-COMPLETE-REFERENCE.md) | v4 Hub, Spoke, liquidation, position managers, access control |
 | [`lifi/FACETS-COMPLETE-REFERENCE.md`](lifi/FACETS-COMPLETE-REFERENCE.md) | All 42 facets: every bridge integration and every infrastructure facet |
 | [`lifi/LIBRARIES-PERIPHERY-COMPLETE-REFERENCE.md`](lifi/LIBRARIES-PERIPHERY-COMPLETE-REFERENCE.md) | Diamond internals, LibSwap/LibAsset/allowlists, Executor, receivers |
+| [`morpho/MORPHO-COMPLETE-REFERENCE.md`](morpho/MORPHO-COMPLETE-REFERENCE.md) | All 102 files: Blue, MetaMorpho, oracles, bundlers |
+| [`liquity/LIQUITY-COMPLETE-REFERENCE.md`](liquity/LIQUITY-COMPLETE-REFERENCE.md) | Liquity v1 and v2 in full, plus a v1 to v2 migration map |
 
-All twenty documents are complete and have had a citation sweep. See
+All twenty-four documents are complete and have had a citation sweep. See
 [`SESSION-LOG.md`](SESSION-LOG.md) for coverage counts and the defects the
 exhaustive pass turned up in shipped code.
 
@@ -72,6 +77,8 @@ Uniswap v4 and Aave v3 suites executable.
 
 ```
 uni/     v1-contracts/  v2-core/  v2-periphery/  v3-core/  v3-periphery/  v4-core/
+morpho/  morpho-blue/  metamorpho/  morpho-blue-oracles/  morpho-blue-bundlers/
+liquity/ v1-dev/  v2-bold/
 curve/   curve-contract/  stableswap-ng/  curve-dao-contracts/
 aave/    v1-aave-protocol/  v2-protocol/  v3-core-original/  aave-v3-origin/ (v3.6)  v4-aave/
 lifi/    contracts/
@@ -110,7 +117,14 @@ If you read these front to back you will build each idea on the previous one.
    two current-generation redesigns. Both move from "one contract per market" to
    "one shared core plus pluggable modules". Read them together; the parallel is
    not a coincidence.
-8. **`lifi/LIFI-DEEP-DIVE.md`** — the integration layer. Everything above is a
+8. **`morpho/MORPHO-DEEP-DIVE.md`** — the counter-argument. Roughly what Aave
+   does, in 557 lines of core instead of 10,000. Read it straight after the Aave
+   documents, because it is written as a sustained comparison against them and
+   the lesson is that less code is itself a security property.
+9. **`liquity/LIQUITY-DEEP-DIVE.md`** — a CDP stablecoin with no governance and
+   no admin keys, and a liquidation design unlike anything else here: the
+   stability pool absorbs first, then debt is redistributed to survivors in O(1).
+10. **`lifi/LIFI-DEEP-DIVE.md`** — the integration layer. Everything above is a
    callee here. This is also where you see what production infrastructure code
    actually looks like: allowlists, upgrade governance, emergency pauses.
 

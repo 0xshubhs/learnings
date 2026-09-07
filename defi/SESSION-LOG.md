@@ -60,6 +60,10 @@ All twenty are complete. Deep dives first, then references.
 | `uni/V2-COMPLETE-REFERENCE.md` | 2,447 | 35 files |
 | `lifi/FACETS-COMPLETE-REFERENCE.md` | 2,239 | all 42 facets |
 | `curve/CLASSIC-POOLS-COMPLETE-REFERENCE.md` | 1,993 | 33 pools, 5 templates, 22 zaps, 77 files |
+| `morpho/MORPHO-COMPLETE-REFERENCE.md` | 2,521 | 102 files across four repos |
+| `liquity/LIQUITY-COMPLETE-REFERENCE.md` | 2,119 | v1 and v2 in full |
+| `morpho/MORPHO-DEEP-DIVE.md` | 1,237 | written as a comparison against Aave |
+| `liquity/LIQUITY-DEEP-DIVE.md` | 1,078 | v1 and v2 |
 
 Every reference ends with selector tables computed rather than transcribed, a
 storage-layout table, an events reference, a revert decoder, and a use-case
@@ -113,3 +117,41 @@ Real defects and hazards in shipped code, each confirmed against source:
 - Audit PDFs are inventoried but unread.
 - Curve classic pool `A` and fee values are recorded only where `pooldata.json`
   states them; the 0.1.0b generation set those at deploy time.
+
+
+## Round two: Morpho and Liquity
+
+Added after the original four, to fill the two clearest gaps. Morpho Blue does
+roughly what Aave v3 does in 557 lines of core rather than 10,000, and DefiLlama
+ranks it 9th overall at $9.72B. Liquity is a fully immutable CDP stablecoin with
+no governance.
+
+This round hit a different failure mode: **the Claude Code session restarted
+three times**, killing every writing agent each time. The first restart cost an
+entire document, which had been written in one large heredoc and never saved. The
+fix was to have each agent commit after every section it finished, so a restart
+costs one section instead of the whole file. After that change, two further
+restarts cost nothing.
+
+One restart also **injected NUL bytes into two documents mid-write**, 2,701 into
+the Liquity deep dive and 1,470 into the Liquity reference. Both were detected by
+a byte-level check rather than by reading, and both were repaired. Every document
+in the repo is now verified NUL-free. If agents are writing files here again, keep
+that check in the finish criteria.
+
+### What round two found
+
+- **Morpho Blue has zero reentrancy guards** across all 557 lines, and is still
+  sound: state is written before every callback, the only post-callback work is
+  transferring a pre-computed amount, and health is asserted last.
+- **Its anti-inflation defence is not the virtual shares everyone cites.** The
+  contract never reads `balanceOf` for accounting at all, so donations are simply
+  lost. Verified: `grep balanceOf src/Morpho.sol` returns nothing.
+- **This Liquity tree has no epoch machinery.** `grep -c 'epoch'` on the v1
+  StabilityPool returns 0, and the `Snapshots` struct is `{S, P, G, scale}`. The
+  epoch design every write-up describes was replaced by `MIN_LUSD_IN_SP = 1e18`,
+  which keeps the pool from emptying so `P` can never reach zero. Both Liquity
+  agents initially described epochs; both corrected themselves against the source.
+- **Liquity v2's price feed returns two different prices**, the max of market and
+  canonical for redemptions and the min for everything else, so an oracle
+  discrepancy always prices against whoever is acting.
