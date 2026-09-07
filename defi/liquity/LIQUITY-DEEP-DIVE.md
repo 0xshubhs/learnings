@@ -885,3 +885,46 @@ price for redemption priority rather than leaving the peg to depend on whoever
 was least careful.
 
 ---
+## 3. Liquity versus Aave: two answers to the same problem
+
+Both protocols let you borrow against volatile collateral and both must handle
+the case where collateral falls below debt. Almost every other decision differs.
+
+| | Liquity | Aave v3 |
+|---|---|---|
+| **Liquidation trigger** | ICR < 110%, a fixed constant ([`LiquityBase.sol:22`](v1-dev/packages/contracts/contracts/Dependencies/LiquityBase.sol#L22)) | health factor < 1, from per-asset thresholds in a config bitmap |
+| **Who absorbs the loss** | Stability Pool depositors first, then all remaining borrowers by redistribution ([`TroveManager.sol:431`](v1-dev/packages/contracts/contracts/TroveManager.sol#L431)) | an external liquidator with capital, at the moment of stress |
+| **Close factor** | always 100%, the whole Trove | 50% by default, 100% below a 0.95 health factor ([`LiquidationLogic.sol:43`](../aave/aave-v3-origin/src/contracts/protocol/libraries/logic/LiquidationLogic.sol#L43), [`:49`](../aave/aave-v3-origin/src/contracts/protocol/libraries/logic/LiquidationLogic.sol#L49)) |
+| **Liquidator incentive** | pre-funded: 200 LUSD reserve plus 0.5% of collateral, paid regardless of collateral value | a bonus carved out of seized collateral, which fails when collateral is short |
+| **Who can liquidate** | anyone, no capital needed, the pool pays | only someone holding the debt asset |
+| **Governance surface** | none; every contract renounces ownership ([`TroveManager.sol:287`](v1-dev/packages/contracts/contracts/TroveManager.sol#L287)) | six live ACL roles ([`ACLManager.sol:15-20`](../aave/aave-v3-origin/src/contracts/protocol/configuration/ACLManager.sol#L15-L20)) plus a large configurator surface |
+| **Oracle handling** | five-state machine, two oracles, staleness and deviation checks ([`PriceFeed.sol:71`](v1-dev/packages/contracts/contracts/PriceFeed.sol#L71)) | Chainlink with a fallback; v2 used bare `latestAnswer()` ([`AaveOracle.sol:96`](../aave/v2-protocol/contracts/misc/AaveOracle.sol#L96)) |
+| **Interest rate** | v1 none; v2 chosen by each borrower ([`Constants.sol:46-47`](v2-bold/contracts/src/Dependencies/Constants.sol#L46-L47)) | a utilisation curve, parameters set by governance |
+| **Collateral types** | v1 ETH only; v2 one branch per asset | many assets in one pool, with caps, eMode and isolation mode |
+| **Upgradeability** | none, no proxies anywhere | proxies throughout; implementations replaceable by governance |
+| **Bad debt** | socialised immediately and automatically via redistribution | accrues as a deficit; needs governance or an external module to clear |
+| **Black swan** | Recovery Mode (v1) or branch shutdown (v2); mechanical, no human input | governance can freeze, pause or re-parameterise; requires humans to act in time |
+
+**How to read this.** Liquity's design assumes nobody will be available to help.
+The Stability Pool is capital committed *in advance* to absorbing liquidations,
+so no bidder has to appear during a crash. Redistribution is a backstop that
+needs no participants at all. Recovery Mode and branch shutdown fire on a number,
+not a vote.
+
+Aave's design assumes a functioning market and an attentive DAO. Liquidators
+arrive because the bonus is profitable. Parameters adapt because a risk team
+proposes changes. That is genuinely more capable in normal conditions: Aave
+supports dozens of assets with tuned risk, which Liquity structurally cannot.
+
+The trade is legibility against adaptability. Liquity's entire risk surface is
+readable in one afternoon and then fixed forever. Aave's is larger and never
+final, but it can respond to a world its authors did not foresee. Neither is the
+right answer in general. Knowing which you are looking at is the point.
+
+One concrete lesson worth carrying: **Liquity pre-funds its liquidation
+incentive in the debt asset, Aave pays it out of the collateral.** When
+collateral gaps below debt in a fast crash, Aave's incentive shrinks exactly when
+it is most needed, while Liquity's 200 LUSD reserve is untouched. That single
+choice explains much of the behavioural difference between the two under stress.
+
+---
