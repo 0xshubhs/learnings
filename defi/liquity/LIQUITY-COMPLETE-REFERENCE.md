@@ -1654,3 +1654,135 @@ be global: one BOLD peg, one fee.
 
 ---
 
+
+## 2.7 `StabilityPool` — [`v2-bold/contracts/src/StabilityPool.sol:1-603`](v2-bold/contracts/src/StabilityPool.sol#L1-L603)
+
+Same product-sum core as v1, plus a third revenue stream and a friendlier
+withdrawal model.
+
+### 2.7.1 What is new
+
+**Yield.** v1 depositors earned liquidation gains and LQTY emissions. v2
+depositors also earn **75% of all interest paid** by borrowers
+([`v2-bold/contracts/src/Dependencies/Constants.sol:81`](v2-bold/contracts/src/Dependencies/Constants.sol#L81)). `triggerBoldRewards` at [`v2-bold/contracts/src/StabilityPool.sol:353`](v2-bold/contracts/src/StabilityPool.sol#L353) is
+called when interest is minted, and `_updateYieldRewardsSum` at [`v2-bold/contracts/src/StabilityPool.sol:358`](v2-bold/contracts/src/StabilityPool.sol#L358) folds it
+into a `B` accumulator, the BOLD twin of `S`.
+
+There is now no LQTY token and no `CommunityIssuance`. The pool is paid in real
+yield instead of emissions, which is the single biggest economic change between
+versions.
+
+**Stashed collateral.** Every deposit-mutating call takes a `bool _doClaim`. If
+false, collateral gains are *stashed* inside the pool rather than sent. This
+matters because v2 collateral is an ERC-20, not native ETH, so an unwanted
+transfer costs gas and may be unwelcome. `claimAllCollGains` at [`v2-bold/contracts/src/StabilityPool.sol:336`](v2-bold/contracts/src/StabilityPool.sol#L336) exists
+for the case where a user has fully exited but still has stashed gains.
+
+### 2.7.2 Functions
+
+| Function | Line | Purpose |
+|---|---|---|
+| `getCollBalance` | [`v2-bold/contracts/src/StabilityPool.sol:203`](v2-bold/contracts/src/StabilityPool.sol#L203) | |
+| `getTotalBoldDeposits` | [`v2-bold/contracts/src/StabilityPool.sol:207`](v2-bold/contracts/src/StabilityPool.sol#L207) | |
+| `getYieldGainsOwed` | [`v2-bold/contracts/src/StabilityPool.sol:211`](v2-bold/contracts/src/StabilityPool.sol#L211) | Accrued and accounted |
+| `getYieldGainsPending` | [`v2-bold/contracts/src/StabilityPool.sol:215`](v2-bold/contracts/src/StabilityPool.sol#L215) | Accrued but not yet folded in |
+| `provideToSP` | [`v2-bold/contracts/src/StabilityPool.sol:227`](v2-bold/contracts/src/StabilityPool.sol#L227) | `(uint256 _topUp, bool _doClaim)` |
+| `_getYieldToKeepOrSend` | [`v2-bold/contracts/src/StabilityPool.sol:264`](v2-bold/contracts/src/StabilityPool.sol#L264) | Splits by `_doClaim` |
+| `withdrawFromSP` | [`v2-bold/contracts/src/StabilityPool.sol:286`](v2-bold/contracts/src/StabilityPool.sol#L286) | `(uint256 _amount, bool _doClaim)` |
+| `_getNewStashedCollAndCollToSend` | [`v2-bold/contracts/src/StabilityPool.sol:321`](v2-bold/contracts/src/StabilityPool.sol#L321) | |
+| `claimAllCollGains` | [`v2-bold/contracts/src/StabilityPool.sol:336`](v2-bold/contracts/src/StabilityPool.sol#L336) | Zero-deposit exit path |
+| `triggerBoldRewards` | [`v2-bold/contracts/src/StabilityPool.sol:353`](v2-bold/contracts/src/StabilityPool.sol#L353) | ActivePool only |
+| `_updateYieldRewardsSum` | [`v2-bold/contracts/src/StabilityPool.sol:358`](v2-bold/contracts/src/StabilityPool.sol#L358) | |
+| `offset` | [`v2-bold/contracts/src/StabilityPool.sol:383`](v2-bold/contracts/src/StabilityPool.sol#L383) | TroveManager only |
+| `_moveOffsetCollAndDebt` | [`v2-bold/contracts/src/StabilityPool.sol:419`](v2-bold/contracts/src/StabilityPool.sol#L419) | |
+| `_updateTotalBoldDeposits` | [`v2-bold/contracts/src/StabilityPool.sol:436`](v2-bold/contracts/src/StabilityPool.sol#L436) | |
+| `_decreaseYieldGainsOwed` | [`v2-bold/contracts/src/StabilityPool.sol:445`](v2-bold/contracts/src/StabilityPool.sol#L445) | |
+| `getDepositorCollGain` | [`v2-bold/contracts/src/StabilityPool.sol:453`](v2-bold/contracts/src/StabilityPool.sol#L453) | |
+| `getDepositorYieldGain` | [`v2-bold/contracts/src/StabilityPool.sol:470`](v2-bold/contracts/src/StabilityPool.sol#L470) | |
+| `getDepositorYieldGainWithPending` | [`v2-bold/contracts/src/StabilityPool.sol:487`](v2-bold/contracts/src/StabilityPool.sol#L487) | Includes not-yet-folded yield |
+| `getCompoundedBoldDeposit` | [`v2-bold/contracts/src/StabilityPool.sol:517`](v2-bold/contracts/src/StabilityPool.sol#L517) | |
+| `_sendCollGainToDepositor` | [`v2-bold/contracts/src/StabilityPool.sol:538`](v2-bold/contracts/src/StabilityPool.sol#L538) | |
+| `_sendBoldtoDepositor` | [`v2-bold/contracts/src/StabilityPool.sol:548`](v2-bold/contracts/src/StabilityPool.sol#L548) | |
+| `_updateDepositAndSnapshots` | [`v2-bold/contracts/src/StabilityPool.sol:555`](v2-bold/contracts/src/StabilityPool.sol#L555) | |
+
+Access guards at [`v2-bold/contracts/src/StabilityPool.sol:583`](v2-bold/contracts/src/StabilityPool.sol#L583) and [`v2-bold/contracts/src/StabilityPool.sol:587`](v2-bold/contracts/src/StabilityPool.sol#L587); `_requireUserHasDeposit` at [`v2-bold/contracts/src/StabilityPool.sol:591`](v2-bold/contracts/src/StabilityPool.sol#L591).
+
+### 2.7.3 Three accumulators now
+
+| Symbol | Tracks |
+|---|---|
+| `P` | Product, the proportional haircut from liquidations |
+| `S` | Sum of collateral gained per unit deposited |
+| `B` | Sum of BOLD yield per unit deposited |
+
+`B` behaves exactly like `S`: additive, divided by `P_snapshot` on read. The
+snapshot struct carries all three. Adding a revenue stream to a product-sum pool
+costs one accumulator and one snapshot field, which is why the pattern is worth
+knowing well.
+
+`MIN_BOLD_IN_SP = 1e18` ([`v2-bold/contracts/src/Dependencies/Constants.sol:83`](v2-bold/contracts/src/Dependencies/Constants.sol#L83)) is the v2 name for
+v1's `MIN_LUSD_IN_SP`, serving the same purpose: `P` never reaches zero, so no
+epoch machinery is needed here either.
+
+---
+
+## 2.8 Pools, registry, NFT and helpers
+
+### `ActivePool` — [`v2-bold/contracts/src/ActivePool.sol:1-345`](v2-bold/contracts/src/ActivePool.sol#L1-L345)
+
+Larger than v1's because it now owns **aggregate interest accounting**. It tracks
+`aggRecordedDebt`, `aggWeightedDebtSum` and `lastAggUpdateTime`, so the system
+can compute total debt and the average interest rate without iterating Troves.
+It also mints interest and routes the 75% split to the Stability Pool via
+`triggerBoldRewards`.
+
+The weighted sum is the trick: with per-Trove rates there is no single index, but
+`aggWeightedDebtSum / aggRecordedDebt` gives the debt-weighted average rate,
+which is what `_calcUpfrontFee` charges against.
+
+### `DefaultPool` — [`v2-bold/contracts/src/DefaultPool.sol:1`](v2-bold/contracts/src/DefaultPool.sol#L1) and `CollSurplusPool` — [`v2-bold/contracts/src/CollSurplusPool.sol:1`](v2-bold/contracts/src/CollSurplusPool.sol#L1)
+
+Same roles as v1. `CollSurplusPool` is busier in v2 because every liquidation
+above the penalty leaves a surplus.
+
+### `GasPool` — [`v2-bold/contracts/src/GasPool.sol:1`](v2-bold/contracts/src/GasPool.sol#L1)
+
+Still trivial. v2 keeps a separate ETH gas compensation alongside the capped
+collateral share.
+
+### `AddressesRegistry` — [`v2-bold/contracts/src/AddressesRegistry.sol:1-137`](v2-bold/contracts/src/AddressesRegistry.sol#L1-L137)
+
+Replaces v1's per-contract `setAddresses`. One registry holds every address for a
+branch and is passed to each contract's constructor, so wiring is declared once
+instead of eleven times.
+
+### `BoldToken` — [`v2-bold/contracts/src/BoldToken.sol:1-131`](v2-bold/contracts/src/BoldToken.sol#L1-L131)
+
+Same shape as `LUSDToken`, but minting is authorised per branch: each branch's
+`BorrowerOperations`, `TroveManager`, `ActivePool` and `StabilityPool` may mint.
+One token, many collateral branches.
+
+### `TroveNFT` — [`v2-bold/contracts/src/TroveNFT.sol:1-63`](v2-bold/contracts/src/TroveNFT.sol#L1-L63)
+
+ERC-721 over Troves. `tokenURI` delegates to the metadata contracts in
+`NFTMetadata/`, which render an on-chain SVG. The same on-chain-art pattern as
+Uniswap V3's position manager; see
+[`../uni/V3-PERIPHERY-COMPLETE-REFERENCE.md`](../uni/V3-PERIPHERY-COMPLETE-REFERENCE.md).
+
+### `RedemptionHelper` — [`v2-bold/contracts/src/RedemptionHelper.sol:1-173`](v2-bold/contracts/src/RedemptionHelper.sol#L1-L173) and `DebtInFrontHelper` — [`v2-bold/contracts/src/DebtInFrontHelper.sol:1-117`](v2-bold/contracts/src/DebtInFrontHelper.sol#L1-L117)
+
+Off-chain read helpers. `DebtInFrontHelper` answers "how much debt sits ahead of
+me in the redemption queue", which is exactly the question a borrower needs to
+answer when choosing an interest rate.
+
+### `SortedTroves` — [`v2-bold/contracts/src/SortedTroves.sol:1-553`](v2-bold/contracts/src/SortedTroves.sol#L1-L553)
+
+Now ordered by **annual interest rate**, ascending, and it supports batch
+insertion so a batch manager's rate change can move many Troves at once.
+
+### `HintHelpers` — [`v2-bold/contracts/src/HintHelpers.sol:1-259`](v2-bold/contracts/src/HintHelpers.sol#L1-L259) and `MultiTroveGetter` — [`v2-bold/contracts/src/MultiTroveGetter.sol:1-154`](v2-bold/contracts/src/MultiTroveGetter.sol#L1-L154)
+
+Same purpose as v1, adapted to `troveId` and multi-branch.
+
+---
+
