@@ -515,3 +515,230 @@ That contract unwraps the *entire* stETH balance of the wrapper rather than the
 requested amount, which is worth knowing if you route through it.
 
 ---
+## 5. `Lido.sol` — every function
+
+[`core/contracts/0.4.24/Lido.sol`](core/contracts/0.4.24/Lido.sol) — 1,572 lines, solc 0.4.24.
+
+`Lido is StETHPermit is StETH is AragonApp`. It supplies the total pooled ether
+that `StETH` divides by, holds the buffered ETH, and is the only contract that
+may mint or burn shares.
+
+### 5.1 Roles
+
+All four are precomputed keccaks, declared at
+[`:97-102`](core/contracts/0.4.24/Lido.sol#L97-L102). These are **Aragon ACL**
+roles, checked through `_auth`, not OpenZeppelin roles.
+
+| Role | Gates |
+|---|---|
+| `PAUSE_ROLE` | `stop()` |
+| `RESUME_ROLE` | `resume()` |
+| `STAKING_PAUSE_ROLE` | `pauseStaking()` |
+| `STAKING_CONTROL_ROLE` | `resumeStaking()`, `setStakingLimit()`, `removeStakingLimit()` |
+| `BUFFER_RESERVE_MANAGER_ROLE` | `setDepositsReserveTarget()` |
+
+`_auth(bytes32)` at [`:1389`](core/contracts/0.4.24/Lido.sol#L1389) is the role
+check; the overload `_auth(address)` at
+[`:1394`](core/contracts/0.4.24/Lido.sol#L1394) is a plain caller check used for
+the contract-to-contract entry points.
+
+### 5.2 Storage, all packed, all verified
+
+Nine unstructured slots. Every one of the eight below was confirmed with
+`cast keccak` against its declared constant; all eight match.
+
+| Slot name | Preimage | Layout |
+|---|---|---|
+| `TOTAL_AND_EXTERNAL_SHARES_POSITION` [`:113`](core/contracts/0.4.24/Lido.sol#L113) | `lido.StETH.totalAndExternalShares` | Aliased to `StETH`'s slot. Low 128 total shares, high 128 external shares. |
+| `LOCATOR_AND_MAX_EXTERNAL_RATIO_POSITION` [`:120`](core/contracts/0.4.24/Lido.sol#L120) | `lido.Lido.lidoLocatorAndMaxExternalRatio` | 160-bit locator address plus the max external ratio in bp. |
+| `BUFFERED_ETHER_AND_DEPOSITED_POST_REPORT_POSITION` [`:131`](core/contracts/0.4.24/Lido.sol#L131) | `lido.Lido.bufferedEtherAndDepositedPostReport` | Low 128 buffered ether, high 128 deposited since the report. |
+| `DEPOSITED_NEXT_REPORT_AND_LAST_DEPOSIT_NONCE_POSITION` [`:137`](core/contracts/0.4.24/Lido.sol#L137) | `lido.Lido.depositedNextReportAndLastDepositNonce` | Accrues deposits for the *next* frame plus the frame's refSlot as a nonce. |
+| `CL_VALIDATORS_BALANCE_AND_CL_PENDING_BALANCE_POSITION` [`:144`](core/contracts/0.4.24/Lido.sol#L144) | `lido.Lido.clValidatorsBalanceAndClPendingBalance` | Low 128 CL validators balance, high 128 CL pending balance. |
+| `SEED_DEPOSITS_COUNT_POSITION` [`:149`](core/contracts/0.4.24/Lido.sol#L149) | `lido.Lido.seedDepositsCount` | Count of initial seed deposits. |
+| `STAKING_STATE_POSITION` [`:154`](core/contracts/0.4.24/Lido.sol#L154) | `lido.Lido.stakeLimit` | Packed `StakeLimitState.Data`; see [§12.3](#123-stakelimitutils). |
+| `TOTAL_EL_REWARDS_COLLECTED_POSITION` [`:159`](core/contracts/0.4.24/Lido.sol#L159) | `lido.Lido.totalELRewardsCollected` | Lifetime EL rewards. |
+| `DEPOSITS_RESERVE_POSITION` [`:169`](core/contracts/0.4.24/Lido.sol#L169) | `lido.Lido.depositsReserve` | Buffered ether kept depositable despite withdrawal demand. |
+| `DEPOSITS_RESERVE_TARGET_POSITION` [`:176`](core/contracts/0.4.24/Lido.sol#L176) | `lido.Lido.depositsReserveTarget` | Governance target the reserve is restored to each report. |
+
+**The v3 accounting change.** v2 tracked `beaconValidators` and `beaconBalance`.
+v3 replaced that with **balance-based** accounting: `clValidatorsBalance` plus
+`clPendingBalance`, so in-flight deposits are represented directly rather than
+inferred. `_migrateStorage_v3_to_v4`
+([`:311`](core/contracts/0.4.24/Lido.sol#L311)) rewrites the old slots, and you
+can see the previous constants named inline at
+[`:314-317`](core/contracts/0.4.24/Lido.sol#L314-L317).
+
+### 5.3 The share rate, and why it excludes vault shares
+
+This is the most consequential piece of v3 and it is easy to miss.
+
+```solidity
+function _getShareRateNumerator() internal view returns (uint256) {
+    return _getInternalEther();
+}
+function _getShareRateDenominator() internal view returns (uint256) {
+    (uint256 totalShares, uint256 externalShares) = _getTotalAndExternalShares();
+    uint256 internalShares = totalShares - externalShares;
+    return internalShares;
+}
+```
+
+[`:1298-1306`](core/contracts/0.4.24/Lido.sol#L1298-L1306). Both overrides
+replace `StETH`'s defaults ([§2.3](#23-the-conversion-functions)).
+
+The rate is **internal ether over internal shares**, not total over total. The
+reason, given in the comment at
+[`:1293-1297`](core/contracts/0.4.24/Lido.sol#L1293-L1297), is to avoid a second
+rounding step: external ether is itself derived from the ratio, so dividing by
+totals would apply the same division twice and lose precision. The two are
+mathematically equal but not equal in integer arithmetic.
+
+The supporting functions:
+
+- **`_getInternalEther()`** [`:1271`](core/contracts/0.4.24/Lido.sol#L1271) —
+  `bufferedEther + clValidatorsBalance + clPendingBalance + depositedPostReport`.
+  The comment notes pending deposits are already inside `clPendingBalance`, so
+  the v2 "transient ether" term is gone.
+- **`_getExternalEther(uint256 _internalEther)`** [`:1281`](core/contracts/0.4.24/Lido.sol#L1281) —
+  `externalShares * internalEther / internalShares`.
+- **`_getTotalPooledEther()`** [`:1289`](core/contracts/0.4.24/Lido.sol#L1289) —
+  the sum, and the implementation of `StETH`'s abstract hook.
+
+`internalShares` can never be zero because of the "stone in the elevator", the
+initial holder seeded by `_bootstrapInitialHolder`
+([`:1459`](core/contracts/0.4.24/Lido.sol#L1459)). The comment at
+[`:1305`](core/contracts/0.4.24/Lido.sol#L1305) says so explicitly. This is Lido's
+answer to the first-depositor inflation attack, the same problem Morpho solves by
+never reading `balanceOf` and Uniswap V2 solves by burning `MINIMUM_LIQUIDITY`.
+
+### 5.4 The external-shares cap
+
+**`_getMaxMintableExternalShares() internal view`** —
+[`:1321`](core/contracts/0.4.24/Lido.sol#L1321). Solves
+
+```
+(externalShares + x) / (totalShares + x) <= maxRatioBP / totalBP
+x <= (totalShares * maxRatioBP - externalShares * totalBP) / (totalBP - maxRatioBP)
+```
+
+with the derivation written out in the docstring at
+[`:1313-1320`](core/contracts/0.4.24/Lido.sol#L1313-L1320). Returns 0 when the
+ratio is 0 or already breached, and `2^256-1` at 100%. This is the ceiling on how
+much of stETH's supply may be backed by stVaults rather than by pooled ETH.
+
+### 5.5 Staking: user entry points
+
+| Function | Line | Behaviour |
+|---|---|---|
+| `submit(address _referral) payable` | [`:508`](core/contracts/0.4.24/Lido.sol#L508) | The way ETH enters. Delegates to `_submit`. |
+| `_submit(address) internal` | [`:1253`](core/contracts/0.4.24/Lido.sol#L1253) | `"ZERO_DEPOSIT"` on zero value, `_decreaseStakingLimit(msg.value)`, mint `getSharesByPooledEth(msg.value)` shares, add to buffered ether, emit `Submitted` then the synthetic `Transfer`. |
+| `receiveELRewards() payable` | [`:517`](core/contracts/0.4.24/Lido.sol#L517) | Only the EL rewards vault. Adds to buffer and to the lifetime counter, emits `ELRewardsReceived`. |
+| `receiveWithdrawals() payable` | [`:530`](core/contracts/0.4.24/Lido.sol#L530) | Only the withdrawal vault. Emits `WithdrawalsReceived`. |
+
+There is no `receive()`; ETH sent bare reverts. That is deliberate, because
+untracked ETH would silently change the share rate.
+
+### 5.6 Staking limits
+
+A leaky-bucket rate limit, so a whale cannot dilute the deposit queue in one
+block. State lives packed in `STAKING_STATE_POSITION`; the arithmetic is in
+[`StakeLimitUtils`](#123-stakelimitutils).
+
+| Function | Line | Access |
+|---|---|---|
+| `pauseStaking()` | [`:349`](core/contracts/0.4.24/Lido.sol#L349) | `STAKING_PAUSE_ROLE` |
+| `resumeStaking()` | [`:363`](core/contracts/0.4.24/Lido.sol#L363) | `STAKING_CONTROL_ROLE` |
+| `setStakingLimit(uint256 _maxStakeLimit, uint256 _stakeLimitIncreasePerBlock)` | [`:392`](core/contracts/0.4.24/Lido.sol#L392) | `STAKING_CONTROL_ROLE`. Emits `StakingLimitSet`. |
+| `removeStakingLimit()` | [`:408`](core/contracts/0.4.24/Lido.sol#L408) | `STAKING_CONTROL_ROLE`. Emits `StakingLimitRemoved`. |
+| `isStakingPaused()` | [`:421`](core/contracts/0.4.24/Lido.sol#L421) | view |
+| `getCurrentStakeLimit()` | [`:431`](core/contracts/0.4.24/Lido.sol#L431) | view, regenerated to the current block |
+| `getStakeLimitFullInfo()` | [`:446`](core/contracts/0.4.24/Lido.sol#L446) | view, the whole packed struct decoded |
+| `_decreaseStakingLimit` / `_increaseStakingLimit` | [`:1361`](core/contracts/0.4.24/Lido.sol#L1361), [`:1377`](core/contracts/0.4.24/Lido.sol#L1377) | internal |
+
+### 5.7 Buffered ether and the deposits reserve
+
+New in v3: buffered ETH is no longer a single pot. It is split between what may
+be deposited to the beacon chain and what is held back for withdrawals.
+
+| Function | Line | Notes |
+|---|---|---|
+| `getBufferedEther()` | [`:562`](core/contracts/0.4.24/Lido.sol#L562) | Total buffer. |
+| `_getBufferedEtherAllocation()` | [`:605`](core/contracts/0.4.24/Lido.sol#L605) | Splits the buffer into its parts. |
+| `getDepositsReserve()` | [`:623`](core/contracts/0.4.24/Lido.sol#L623) | Reserve kept depositable regardless of withdrawal demand. |
+| `getWithdrawalsReserve()` | [`:640`](core/contracts/0.4.24/Lido.sol#L640) | The complement. |
+| `getDepositsReserveTarget()` | [`:648`](core/contracts/0.4.24/Lido.sol#L648) | Governance target. |
+| `setDepositsReserveTarget(uint256)` | [`:656`](core/contracts/0.4.24/Lido.sol#L656) | `BUFFER_RESERVE_MANAGER_ROLE`. Emits `DepositsReserveTargetSet`. |
+| `canDeposit()` | [`:815`](core/contracts/0.4.24/Lido.sol#L815) | Not stopped, not bunker mode. |
+| `getDepositableEther()` | [`:823`](core/contracts/0.4.24/Lido.sol#L823) | How much may go to the beacon chain now. |
+| `_spendDepositableEther(uint256)` | [`:839`](core/contracts/0.4.24/Lido.sol#L839) | Debits buffer and reserve together. |
+| `withdrawDepositableEther(uint256 _amount, uint256 _seedDepositsCount)` | [`:869`](core/contracts/0.4.24/Lido.sol#L869) | Called by the staking router to pull ETH for deposits. |
+| `_updateBufferedEtherAllocation()` | [`:1125`](core/contracts/0.4.24/Lido.sol#L1125) | Restores the reserve to target at each report. |
+
+### 5.8 Minting and burning
+
+| Function | Line | Caller | Notes |
+|---|---|---|---|
+| `mintShares(address,uint256)` | [`:894`](core/contracts/0.4.24/Lido.sol#L894) | `Accounting` | Protocol fee minting during a report. |
+| `burnShares(uint256)` | [`:907`](core/contracts/0.4.24/Lido.sol#L907) | `Burner` | Burns from the burner's own balance. |
+| `mintExternalShares(address,uint256)` | [`:927`](core/contracts/0.4.24/Lido.sol#L927) | `VaultHub` | Mints stETH backed by a stVault. Checks the cap from §5.4. Emits `ExternalSharesMinted`. |
+| `burnExternalShares(uint256)` | [`:949`](core/contracts/0.4.24/Lido.sol#L949) | `VaultHub` | The inverse. Emits `ExternalSharesBurnt`. |
+| `rebalanceExternalEtherToInternal(uint256) payable` | [`:978`](core/contracts/0.4.24/Lido.sol#L978) | `VaultHub` | Converts vault-backed shares into pool-backed by paying ETH in. Emits `ExternalEtherTransferredToBuffer`. |
+| `internalizeExternalBadDebt(uint256)` | [`:1037`](core/contracts/0.4.24/Lido.sol#L1037) | `VaultHub` | Socialises an unrecoverable vault deficit onto stETH holders. Emits `ExternalBadDebtInternalized`. |
+
+That last one is the sharp edge of the vaults design: a vault that goes bad
+dilutes every stETH holder. It is the analogue of Aave's `deficit` and Liquity's
+redistribution, and it is worth reading next to both.
+
+### 5.9 The report path
+
+Two functions, both callable only by `Accounting`.
+
+**`processClStateUpdate(uint256 _reportTimestamp, uint256 _clValidatorsBalance, uint256 _clPendingBalance) external`** —
+[`:1012`](core/contracts/0.4.24/Lido.sol#L1012). Writes the packed CL slot and
+emits `CLBalancesUpdated`.
+
+**`collectRewardsAndProcessWithdrawals(...) external`** —
+[`:1072`](core/contracts/0.4.24/Lido.sol#L1072). Eight parameters. In order it:
+
+1. `_whenNotStopped()`, then `_auth(_accounting(locator))`.
+2. Pulls EL rewards from the vault if any ([`:1088`](core/contracts/0.4.24/Lido.sol#L1088)).
+3. Pulls withdrawn ETH from the withdrawal vault if any ([`:1093`](core/contracts/0.4.24/Lido.sol#L1093)).
+4. Finalises withdrawal requests, forwarding ETH with the call ([`:1098-1101`](core/contracts/0.4.24/Lido.sol#L1098-L1101)).
+5. Recomputes the buffer as `buffered + elRewards + withdrawals − lockedOnQueue` ([`:1104-1107`](core/contracts/0.4.24/Lido.sol#L1104-L1107)).
+6. `_updateBufferedEtherAllocation()`, then emits `ETHDistributed`.
+
+**`emitTokenRebase(...)`** at [`:1154`](core/contracts/0.4.24/Lido.sol#L1154)
+emits `TokenRebased`, the event any indexer should watch, since a rebase produces
+no ERC-20 `Transfer`.
+
+### 5.10 Views and plumbing
+
+| Function | Line | Returns |
+|---|---|---|
+| `getExternalEther()` / `getExternalShares()` | [`:685`](core/contracts/0.4.24/Lido.sol#L685), [`:692`](core/contracts/0.4.24/Lido.sol#L692) | Vault-backed portions. |
+| `getMaxMintableExternalShares()` | [`:699`](core/contracts/0.4.24/Lido.sol#L699) | The §5.4 cap. |
+| `getMaxExternalRatioBP()` / `setMaxExternalRatioBP(uint256)` | [`:475`](core/contracts/0.4.24/Lido.sol#L475), [`:483`](core/contracts/0.4.24/Lido.sol#L483) | Governance-set ceiling; emits `MaxExternalRatioBPSet`. |
+| `getTotalELRewardsCollected()` | [`:708`](core/contracts/0.4.24/Lido.sol#L708) | Lifetime EL rewards. |
+| `getLidoLocator()` | [`:715`](core/contracts/0.4.24/Lido.sol#L715) | The address book. |
+| `getBeaconStat()` | [`:726`](core/contracts/0.4.24/Lido.sol#L726) | Legacy-shaped CL stats. |
+| `getBalanceStats()` | [`:746`](core/contracts/0.4.24/Lido.sol#L746) | The v3 balance-based view. |
+| `getWithdrawalCredentials()` | [`:1199`](core/contracts/0.4.24/Lido.sol#L1199) | Forwarded from the staking router. |
+| `getTreasury()` | [`:1207`](core/contracts/0.4.24/Lido.sol#L1207) | From the locator. |
+| `getFee()` / `getFeeDistribution()` | [`:1218`](core/contracts/0.4.24/Lido.sol#L1218), [`:1234`](core/contracts/0.4.24/Lido.sol#L1234) | Aggregate fee and its split, both from the staking router. |
+| `transferToVault(...)` | [`:1183`](core/contracts/0.4.24/Lido.sol#L1183) | Legacy; reverts in v3. |
+| `stop()` / `resume()` | [`:539`](core/contracts/0.4.24/Lido.sol#L539), [`:550`](core/contracts/0.4.24/Lido.sol#L550) | `PAUSE_ROLE` / `RESUME_ROLE`. |
+
+Initialisation is `initialize(address _lidoLocator, address _eip712StETH, uint256 _depositsReserveTarget) payable onlyInit`
+at [`:276`](core/contracts/0.4.24/Lido.sol#L276), with
+`finalizeUpgrade_v4(uint256)` at
+[`:296`](core/contracts/0.4.24/Lido.sol#L296) for the migration. The latter
+refuses to run if the last oracle report is missing, so deposits cannot resume
+against stale accounting.
+
+The remaining internals from [`:1473`](core/contracts/0.4.24/Lido.sol#L1473) to
+[`:1569`](core/contracts/0.4.24/Lido.sol#L1569) are getter/setter pairs for each
+packed slot, plus the locator shortcuts `_stakingRouter`, `_withdrawalQueue`,
+`_vaultHub`, `_burner`, `_accounting`, `_accountingOracle`, `_elRewardsVault` and
+`_withdrawalVault` at [`:1398-1446`](core/contracts/0.4.24/Lido.sol#L1398-L1446).
+
+---
