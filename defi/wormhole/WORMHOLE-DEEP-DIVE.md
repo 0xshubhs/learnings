@@ -1310,3 +1310,351 @@ message, created in the same transaction. Where EVM emits a log and forgets,
 Solana **allocates an account per message** and pays rent for it. Messages are
 state on Solana and ephemera on EVM, which is the single starkest illustration
 of the two models.
+
+---
+
+## 6. Wormhole from LI.FI's perspective
+
+Time to close the loop. In
+[`lifi/FACETS-COMPLETE-REFERENCE.md`](../lifi/FACETS-COMPLETE-REFERENCE.md) you
+read every LI.FI bridge facet as a call that goes into a bridge and is never seen
+again. Now you can follow one all the way through.
+
+LI.FI has no `WormholeFacet`. It reaches Wormhole **indirectly**, through
+[`MayanFacet`](../lifi/contracts/src/Facets/MayanFacet.sol) — Mayan is an
+auction/intent protocol that settles over Wormhole. That indirection is itself
+the lesson: by the time a route reaches a user, Wormhole is usually two layers
+down.
+
+### 6.1 The handoff
+
+`MayanFacet._startBridge` ends in one of three calls. The ERC20 path,
+[`MayanFacet.sol:287-293`](../lifi/contracts/src/Facets/MayanFacet.sol#L287-L293):
+
+```solidity
+MAYAN.forwardERC20(
+    _bridgeData.sendingAssetId,
+    _bridgeData.minAmount,
+    emptyPermitParams,
+    _mayanData.mayanProtocol,
+    _mayanData.protocolData
+);
+```
+
+`protocolData` is opaque ABI-encoded calldata for whichever Mayan contract is
+being targeted. LI.FI does not construct it; the API does. What LI.FI *does* is
+refuse to forward it blindly — `_parseReceiver`
+([`MayanFacet.sol:335-345`](../lifi/contracts/src/Facets/MayanFacet.sol#L335-L345))
+decodes the destination address out of that blob by selector and asserts it
+matches `_bridgeData.receiver`.
+
+Look at the selector table in that function
+([`MayanFacet.sol:355-435`](../lifi/contracts/src/Facets/MayanFacet.sol#L355-L435))
+and you can read Wormhole's fingerprints directly:
+
+```
+// 0x6111ad25 swap((uint64,uint64,uint64),(bytes32,uint16,bytes32,[*bytes32*],uint16,bytes32,bytes32),bytes32,uint16,...)
+```
+
+Every address is `bytes32` and every chain id is `uint16`. Those are exactly the
+VAA body conventions from section 1.2 — 32-byte addresses so a Solana pubkey
+fits, and `uint16` Wormhole chain ids rather than EIP-155 ids. The type signature
+of a struct three protocols away still carries the shape of the message format
+underneath.
+
+### 6.2 The full path
+
+```
+ SOURCE CHAIN                                    DESTINATION CHAIN
+ ────────────                                    ─────────────────
+ user
+  │ swapAndStartBridgeTokensViaMayan
+  ▼
+ LiFiDiamond ──delegatecall──► MayanFacet
+  │   _depositAndSwap (SwapperV2)
+  │   _parseReceiver  (assert receiver matches)
+  │   maxApproveERC20
+  ▼
+ Mayan Forwarder.forwardERC20
+  │
+  ▼
+ Mayan protocol contract
+  │  locks/escrows, builds payload
+  ▼
+ Wormhole Core: publishMessage(nonce, payload, finality())
+  │   require(msg.value == messageFee())
+  │   sequence = useSequence(msg.sender)
+  │   emit LogMessagePublished                    Implementation.sol:15-26
+  ▼
+ ══ 19 Guardians observe, wait consistencyLevel, sign keccak²(body) ══
+  │
+  │  VAA assembled once ≥13 signatures exist
+  ▼
+ relayer / solver submits VAA ───────────────────►  Wormhole Core
+                                                     parseAndVerifyVM       Messages.sol:16-20
+                                                       ├ parseVM
+                                                       ├ guardian set live?
+                                                       ├ quorum?
+                                                       └ 13× ecrecover
+                                                          │
+                                                          ▼
+                                                    Token Bridge / Mayan
+                                                     _completeTransfer      Bridge.sol:679-762
+                                                       ├ verifyBridgeVM
+                                                       ├ payload-3 sender gate
+                                                       ├ isTransferCompleted(vm.hash)
+                                                       ├ setTransferCompleted(vm.hash)
+                                                       └ mint or release
+                                                          │
+                                                          ▼
+                                                       recipient
+```
+
+### 6.3 Two things this makes obvious
+
+**LI.FI's `transactionId` and Wormhole's `sequence` are unrelated.** LI.FI emits
+`LiFiTransferStarted` with its own id for API tracking. Wormhole assigns
+`(emitterChain, emitterAddress, sequence)`. Neither knows about the other, which
+is why cross-referencing a stuck transfer means correlating by token, amount and
+block rather than by a shared identifier.
+
+**The destination-call pattern you saw in LI.FI is payload 3.** LI.FI's
+`ReceiverStargateV2` and `ReceiverAcrossV4` authenticate their bridge, then call
+`Executor`. Wormhole's equivalent is the `msg.sender != transferRecipient` gate
+at [`Bridge.sol:687-691`](wormhole/ethereum/contracts/bridge/Bridge.sol#L687-L691):
+the tokens and the instructions arrive together and only the addressed contract
+can redeem them. Same problem, same shape, solved one layer lower.
+
+---
+
+## 7. Security notes
+
+### 7.1 The guardian trust model is the whole model
+
+Thirteen of nineteen keys can mint any message on any connected chain. There is
+no fraud window, no light client, no fallback. Everything else in this document
+is downstream of that number.
+
+What a compromised quorum could do, concretely: forge a `Transfer` VAA for every
+token the bridge custodies and drain them; sign a `submitContractUpgrade` VAA
+replacing the implementation with anything, on any chain, with no timelock
+(section 4.4); or sign a `submitNewGuardianSet` making the compromise permanent.
+
+Mitigations that exist are organisational, not cryptographic: geographic and
+client diversity across Guardians, and the accountant/governor systems described
+in [`whitepapers/0007_governor.md`](wormhole/whitepapers/0007_governor.md) and
+[`0011_accountant.md`](wormhole/whitepapers/0011_accountant.md) which impose rate
+limits and cross-chain supply invariants **off-chain**, in Guardian software.
+Those are real defence in depth, but they are enforced by the same parties.
+
+### 7.2 The February 2022 Solana bug ($326M)
+
+The most instructive bug in cross-chain history, and section 5.1 has already
+given you everything needed to understand it.
+
+Recall that on Solana the Wormhole program does not verify signatures itself. It
+inspects the **instructions sysvar** to confirm that a sibling instruction asked
+the native `secp256k1_program` to do so.
+
+That inspection has two prerequisites, and both must hold:
+
+1. The account you are reading instructions from really is the instructions
+   sysvar.
+2. The instruction you read really was addressed to the secp256k1 program.
+
+Check 2 was present. **Check 1 was not.** The account arrives as an ordinary
+unchecked account — you can still see its permissive type today at
+[`verify_signature.rs:35-36`](wormhole/solana/bridge/program/src/api/verify_signature.rs#L35-L36):
+
+```rust
+/// Instruction reflection account (special sysvar)
+pub instruction_acc: Info<'b>,
+```
+
+`Info` carries no constraint. At the time, the load helper used to read it did
+not validate the account's address either. Solana lets a caller pass *any*
+account in that position. So an attacker could construct an account that merely
+*looked* like the instructions sysvar, containing a fabricated "secp256k1
+verification" instruction that had never run, and the program would conclude that
+signatures it had never seen were valid. From there: a forged VAA, a mint of
+120,000 wETH on Solana, and no lock backing it.
+
+The fix is visible in the current source as the `_checked` suffixes at
+[`:91-103`](wormhole/solana/bridge/program/src/api/verify_signature.rs#L91-L103) —
+`load_current_index_checked` and `load_instruction_at_checked`, which validate
+that the account actually is the sysvar before trusting its contents.
+
+The class of bug generalises far beyond Solana: **on any chain where callers
+supply the objects a program reads, "is this the object I think it is?" is a
+check you must write explicitly.** Solidity developers get this for free because
+storage is intrinsic to the contract. It is the single biggest mental adjustment
+when moving to an account model, and section 5.0's fact 1 is the whole warning.
+
+The scar tissue is still in the code. `post_vaa.rs` carries a hardcoded
+blocklist, [`:176-194`](wormhole/solana/bridge/program/src/api/post_vaa.rs#L176-L194):
+
+```rust
+// Static list of invalid signature accounts that are not allowed to post VAAs.
+static INVALID_SIGNATURES: &[&str; 16] = &[
+    "18eK1799CaNMGCUnnCt1Kq2uwKkax6T2WmtrDsZuVFQ",
+    ...
+];
+```
+
+Sixteen `SignatureSet` accounts, permanently rejected at
+[`:206-209`](wormhole/solana/bridge/program/src/api/post_vaa.rs#L206-L209). Right
+beside it sits another artifact, [`:157-160`](wormhole/solana/bridge/program/src/api/post_vaa.rs#L157-L160):
+
+```rust
+// IMPORTANT - this is a fix for mainnet wormhole
+// The initial guardian set was never expired so we block it here.
+if guardian_set.index == 0 && guardian_set.creation_time == 1628099186 {
+    return Err(PostVAAGuardianSetExpired.into());
+}
+```
+
+Guardian set 0 was created without an expiry and would otherwise have remained
+valid forever, so it is special-cased by creation timestamp. Both of these are
+worth reading as a reminder that production protocols carry history in their
+source.
+
+### 7.3 Replay protection depends on a hash derivation nobody may change
+
+Section 1.3's warning is not stylistic. `vm.hash` is the replay key for the token
+bridge ([`Bridge.sol:693-694`](wormhole/ethereum/contracts/bridge/Bridge.sol#L693-L694)),
+for governance ([`State.sol:38`](wormhole/ethereum/contracts/State.sol#L38)), and
+for an unknown number of third-party integrations that were told to key on it.
+
+The double-keccak, the exact field order, and the "body is the rest of the
+buffer" rule are all consensus-critical in the strongest sense: changing any of
+them produces a *different but still valid* hash for the same observation,
+turning every replay-guard table in the ecosystem into a table of stale keys.
+
+Note that EVM and Solana key on **different things** — `vm.hash` versus
+`(emitter_address, emitter_chain, sequence)`. Both are sound, but an integrator
+porting logic between the two must not assume the replay key transfers.
+
+### 7.4 VAA malleability and the unsigned header
+
+The version byte is not covered by the signature
+([`Messages.sol:152-157`](wormhole/ethereum/contracts/Messages.sol#L152-L157)).
+Neither is `guardianSetIndex`, nor the signature array itself. Today that is
+contained by `require(vm.version == 1)`, but it means a VAA's header is *mutable
+by anyone* without invalidating it.
+
+Concretely: signatures can be **reordered or dropped** by a third party. Dropping
+below quorum makes the VAA fail, and reordering violates the ascending-index rule
+so it also fails — but the point is that the *bytes* of a VAA are not unique per
+observation. Only the body hash is. Any integration that fingerprints a VAA by
+`keccak256(encodedVM)` rather than by `vm.hash` will see the same message under
+multiple identities, which is precisely the replay hole the source warns about.
+
+### 7.5 The wrapped-asset trust chain
+
+A wrapped token's value rests on a chain of assumptions, any one of which breaks
+it: the Guardians are honest; the `AssetMeta` attestation was truthful; the
+origin token is not itself malicious or rebasing; and the origin chain has not
+reorganised away the lock.
+
+`attestToken` reads metadata via `staticcall` and truncates names to 32 bytes in
+assembly ([`Bridge.sol:234-238`](wormhole/ethereum/contracts/bridge/Bridge.sol#L234-L238)),
+and **anyone may call it**. It is permissionless by design, so wrapped-token
+metadata is attacker-influenced. Two different tokens can present the same name
+and symbol; only `(tokenChain, tokenAddress)` is authoritative. Front-ends that
+display symbol rather than canonical origin are showing users an attacker-chosen
+string.
+
+Note also `_createWrapped` is callable by anyone with a valid attestation VAA, so
+wrapped-asset deployment is permissionless too — which is fine, because the
+CREATE2 salt pins the address to the canonical origin (section 3.4).
+
+### 7.6 Decimal normalization edge cases
+
+Section 3.2 covered the mechanism. The hazards:
+
+- **Amounts below 10^(d-8) are unbridgeable.** For an 18-decimal token that is
+  anything under 0.00000001. `_transferTokens` floors silently at
+  [`Bridge.sol:432`](wormhole/ethereum/contracts/bridge/Bridge.sol#L432); a
+  contract that computes an exact expected amount will be off.
+- **ETH dust is refunded with a 2300-gas `.transfer`**
+  ([`Bridge.sol:325-327`](wormhole/ethereum/contracts/bridge/Bridge.sol#L325-L327)).
+  A smart-contract caller with a non-trivial `receive()` will have the whole
+  bridge call revert. Pre-floor your amounts.
+- **The `uint64` outstanding cap** ([`Bridge.sol:766`](wormhole/ethereum/contracts/bridge/Bridge.sol#L766))
+  is a hard ceiling on how much of a given native token can ever be bridged out
+  at once, in normalized units.
+- **Tokens with >18 decimals or dynamic decimals** are not handled; `decimals()`
+  is re-read on the destination at redemption time, so a token that changes its
+  decimals between attestation and redemption breaks the round trip.
+
+### 7.7 Governance capture, and the absence of a timelock
+
+`submitContractUpgrade` takes effect immediately (section 4.4). There is no
+challenge period, no delay, and no on-chain veto. The only guard is that the
+signing set must be current.
+
+The 24-hour guardian-set grace window (section 4.3) is a deliberate,
+well-reasoned trade — without it, in-flight VAAs would strand locked funds — but
+it does mean a retired set retains message-signing power for a day. It cannot
+sign governance, which is the important restriction.
+
+The fork detection in section 4.5 is the one place the protocol behaves
+*conservatively by default*, freezing rather than degrading. It is a good pattern
+worth stealing: if your contract can tell it is running somewhere it did not
+expect, refusing to act is usually the right answer.
+
+---
+
+## 8. Exercises to trace yourself
+
+1. **Parse a VAA by hand.** Take the byte layout in section 1.2 and
+   [`parseVM`](wormhole/ethereum/contracts/Messages.sol#L147-L208). Given a VAA
+   with 13 signatures, compute the byte offset at which the body begins, and
+   therefore which byte range gets hashed. Confirm against the slice at
+   [`Messages.sol:185`](wormhole/ethereum/contracts/Messages.sol#L185).
+
+2. **Break quorum on paper.** Delete the ascending-index requirement at
+   [`Messages.sol:122`](wormhole/ethereum/contracts/Messages.sol#L122) and
+   describe the cheapest forgery a single compromised guardian key could then
+   produce. Then explain why the `signatory != address(0)` check at
+   [`:119`](wormhole/ethereum/contracts/Messages.sol#L119) is a *separate*
+   defence and not redundant with it.
+
+3. **The `verifyVM` foot-gun.** Write the shortest integration you can that calls
+   [`verifyVM`](wormhole/ethereum/contracts/Messages.sol#L30) instead of
+   `parseAndVerifyVM` and is exploitable. Then find the single line that stops it
+   and explain the `WARNING` comment at
+   [`:46-48`](wormhole/ethereum/contracts/Messages.sol#L46-L48) in your own words.
+
+4. **Follow the dust.** For an 18-decimal token, trace `1234567890123456789` wei
+   through `normalizeAmount` → the VAA → `deNormalizeAmount` on a chain where the
+   wrapped token has 8 decimals. How much arrives? Where did the remainder go, and
+   at which line
+   ([`Bridge.sol:432`](wormhole/ethereum/contracts/bridge/Bridge.sol#L432))?
+
+5. **Predict a wrapped address.** Using the CREATE2 salt at
+   [`Bridge.sol:604`](wormhole/ethereum/contracts/bridge/Bridge.sol#L604),
+   compute where wrapped-USDC-from-Ethereum would deploy on another chain. Then
+   explain why `_createWrapped` being permissionless is safe.
+
+6. **Rust: find the missing check.** Read
+   [`verify_signature.rs:25-37`](wormhole/solana/bridge/program/src/api/verify_signature.rs#L25-L37)
+   and identify which account has the weakest type constraint. Explain, from the
+   type alone, why the February 2022 bug was possible, then find the two `_checked`
+   calls at [`:91-103`](wormhole/solana/bridge/program/src/api/verify_signature.rs#L91-L103)
+   that close it.
+
+7. **Rust vs Solidity: the same quorum, twice.** Compute both
+   [`Messages.sol:216`](wormhole/ethereum/contracts/Messages.sol#L216) and
+   [`post_vaa.rs:126-136`](wormhole/solana/bridge/program/src/api/post_vaa.rs#L126-L136)
+   for n = 1..25 and find every n where they disagree, if any. Then explain why
+   the EVM version needs the ascending-index rule and the Solana version does not
+   (hint: [`verify_signature.rs:172`](wormhole/solana/bridge/program/src/api/verify_signature.rs#L172)).
+
+8. **Rust vs Solidity: replay keys.** EVM keys replay on `vm.hash`
+   ([`Bridge.sol:693`](wormhole/ethereum/contracts/bridge/Bridge.sol#L693));
+   Solana keys on a PDA over `(emitter_address, emitter_chain, sequence)`
+   ([`claim.rs:108-120`](wormhole/solana/bridge/program/src/accounts/claim.rs#L108-L120)).
+   Construct a scenario where the two disagree about whether a message is a
+   duplicate, or prove they cannot. Then explain who pays rent for the Solana
+   version and why `close_signature_set_and_posted_vaa` exists.
