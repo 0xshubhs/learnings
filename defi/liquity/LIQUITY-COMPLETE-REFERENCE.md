@@ -166,7 +166,6 @@ inventoried at the end rather than documented function by function.
 
 ---
 
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         
 
 ## 1.2 Architecture and access control
 
@@ -631,7 +630,6 @@ removal O(1).
 
 ---
 
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     
 
 ## 1.5 `BorrowerOperations`
 
@@ -984,7 +982,7 @@ execution, `_findInsertPosition` walks from the hint, which is usually a short
 distance. A wrong hint costs gas but never correctness, because
 `_validInsertPosition` re-checks on-chain.
 
-`HintHelpers` at [`v1-dev/packages/contracts/contracts/HintHelpers.sol:10-171`](v1-dev/packages/contracts/contracts/HintHelpers.sol#L10-L171) is the off-chain helper: 
+`HintHelpers` at [`v1-dev/packages/contracts/contracts/HintHelpers.sol:10-171`](v1-dev/packages/contracts/contracts/HintHelpers.sol#L10-L171) is the off-chain helper:
 `getApproxHint` at [`v1-dev/packages/contracts/contracts/HintHelpers.sol:56`](v1-dev/packages/contracts/contracts/HintHelpers.sol#L56) samples the list with a
 pseudo-random walk to find a starting point, and
 `getRedemptionHints` at [`v1-dev/packages/contracts/contracts/HintHelpers.sol:22`](v1-dev/packages/contracts/contracts/HintHelpers.sol#L22) computes the redemption entry
