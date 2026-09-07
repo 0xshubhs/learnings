@@ -742,3 +742,169 @@ packed slot, plus the locator shortcuts `_stakingRouter`, `_withdrawalQueue`,
 `_withdrawalVault` at [`:1398-1446`](core/contracts/0.4.24/Lido.sol#L1398-L1446).
 
 ---
+## 6. `Accounting.sol` — the rebase engine
+
+[`core/contracts/0.8.9/Accounting.sol`](core/contracts/0.8.9/Accounting.sol) — 536 lines, solc 0.8.9.
+
+New in v3. In v2, `Lido.handleOracleReport` did all of this itself in Solidity
+0.4.24. v3 lifts the arithmetic into a 0.8.9 contract that computes the entire
+rebase in memory, sanity-checks it, and only then calls back into `Lido` to apply
+it. `Lido` is left holding state and permissions; `Accounting` holds the maths.
+
+### 6.1 Structures
+
+**`Contracts`** [`:39`](core/contracts/0.8.9/Accounting.sol#L39) — the locator
+addresses needed for one report, loaded once by `_loadOracleReportContracts`
+([`:510`](core/contracts/0.8.9/Accounting.sol#L510)) so the report path makes no
+repeated locator calls.
+
+**`PreReportState`** [`:50`](core/contracts/0.8.9/Accounting.sol#L50) — the
+protocol as it stands before the report: `clValidatorsBalance`,
+`clPendingBalance`, `depositedBalance`, `totalPooledEther`, `totalShares`,
+`externalShares`, `externalEther`, `badDebtToInternalize`.
+
+**`CalculatedValues`** [`:62`](core/contracts/0.8.9/Accounting.sol#L62) — the
+fourteen numbers a report produces, including the pre/post pairs for both shares
+and ether and, crucially, the **internal** post values that feed the share rate
+from [§5.3](#53-the-share-rate-and-why-it-excludes-vault-shares):
+`postInternalShares` and `postInternalEther`.
+
+**`FeeDistribution`** [`:98`](core/contracts/0.8.9/Accounting.sol#L98) — recipients,
+module ids, per-module shares and the treasury remainder.
+
+### 6.2 Entry points
+
+**`handleOracleReport(ReportValues calldata _report) external`** —
+[`:137`](core/contracts/0.8.9/Accounting.sol#L137). The only mutating entry.
+Callable solely by the accounting oracle; reverts
+`NotAuthorized(string,address)` otherwise. It snapshots, simulates, then applies.
+
+**`simulateOracleReport(...)`** — [`:125`](core/contracts/0.8.9/Accounting.sol#L125).
+The same computation with no writes, used off-chain to derive
+`simulatedShareRate` before submitting.
+
+**`_snapshotPreReportState(Contracts memory, bool isSimulation)`** —
+[`:147`](core/contracts/0.8.9/Accounting.sol#L147). Reads the pre-state. The
+`isSimulation` flag is what lets one code path serve both.
+
+**`_simulateOracleReport(...)`** — [`:179`](core/contracts/0.8.9/Accounting.sol#L179).
+Orchestrates: withdrawals, then fees, then the post totals.
+
+### 6.3 The fee formula, derived
+
+This is the piece worth working through by hand.
+
+`_calculateTotalProtocolFeeShares` — [`:306`](core/contracts/0.8.9/Accounting.sol#L306):
+
+```solidity
+uint256 unifiedClBalance = _report.clValidatorsBalance + _report.clPendingBalance
+                         + _update.withdrawalsVaultTransfer;
+if (unifiedClBalance > _update.principalClBalance) {
+    uint256 totalRewards = unifiedClBalance - _update.principalClBalance
+                         + _update.elRewardsVaultTransfer;
+    uint256 feeEther = (totalRewards * _totalFee) / _feePrecisionPoints;
+    sharesToMintAsFees = (feeEther * _internalSharesBeforeFees)
+                       / (_update.postInternalEther - feeEther);
+}
+```
+
+**The guard first.** The `if` implements LIP-12: no fee is taken when the
+consensus-layer delta is zero or negative. A loss-making report mints nothing, so
+the protocol never charges for going backwards. The source cites the proposal at
+[`:355-357`](core/contracts/0.8.9/Accounting.sol#L355-L357).
+
+**Now the formula.** The protocol wants `feeEther` of value, but it cannot pay
+itself in ether without removing ether from the pool, so it mints shares instead
+and dilutes. How many shares is that?
+
+If the fee *were* taken as an ether deduction, existing holders would end up at
+the rate
+
+```
+r_target = (postInternalEther − feeEther) / sharesBefore
+```
+
+Instead the ether stays and `x` new shares are minted, giving
+
+```
+r_actual = postInternalEther / (sharesBefore + x)
+```
+
+Set them equal, since the whole point is that holders are left exactly as they
+would have been:
+
+```
+postInternalEther / (sharesBefore + x) = (postInternalEther − feeEther) / sharesBefore
+postInternalEther · sharesBefore = (postInternalEther − feeEther)(sharesBefore + x)
+postInternalEther · sharesBefore = postInternalEther · sharesBefore
+                                 + postInternalEther · x
+                                 − feeEther · sharesBefore
+                                 − feeEther · x
+feeEther · sharesBefore = x · (postInternalEther − feeEther)
+x = feeEther · sharesBefore / (postInternalEther − feeEther)
+```
+
+which is the line of code exactly. The comment at
+[`:359-364`](core/contracts/0.8.9/Accounting.sol#L359-L364) describes this in
+prose; the algebra above is the same statement.
+
+Note `_internalSharesBeforeFees`, not total shares. Vault-backed external shares
+are excluded, consistent with [§5.3](#53-the-share-rate-and-why-it-excludes-vault-shares).
+
+### 6.4 Splitting the fee
+
+`_calculateProtocolFees` — [`:265`](core/contracts/0.8.9/Accounting.sol#L265).
+Asks `StakingRouter.getStakingRewardsDistribution()` for recipients, module ids,
+per-module fees in `uint96`, the aggregate `totalFee`, and `precisionPoints`. Two
+`assert`s confirm the three arrays are the same length.
+
+`_calculateFeeDistribution` — [`:335`](core/contracts/0.8.9/Accounting.sol#L335):
+
+```solidity
+uint256 moduleFeeShares = (_totalSharesToMintAsFees * moduleFee) / _totalFee;
+...
+treasurySharesToMint = _totalSharesToMintAsFees - totalModuleFeeShares;
+```
+
+Each module gets its pro-rata slice rounded down, and **the treasury takes the
+remainder**. That is a deliberate choice: all truncation dust accrues to the DAO
+rather than being lost or over-paid to a module. Note `assert(_totalFee > 0)` at
+[`:341`](core/contracts/0.8.9/Accounting.sol#L341) — a zero total fee with a
+non-zero mint would divide by zero, and the assert makes that a panic rather than
+a silent wrap.
+
+### 6.5 Applying the report
+
+`_applyOracleReportContext` — [`:360`](core/contracts/0.8.9/Accounting.sol#L360).
+The order matters and is worth reading as a sequence:
+
+1. `_sanityChecks(...)` ([`:432`](core/contracts/0.8.9/Accounting.sol#L432)) — everything in [§7](#7-oraclereportsanitychecker-and-the-limiters). Nothing has been written yet, so a failed check reverts the whole report cleanly.
+2. If finalising withdrawals, request the burn of the queue's shares and note the last request id ([`:369-375`](core/contracts/0.8.9/Accounting.sol#L369-L375)).
+3. `LIDO.processClStateUpdate(...)` — write the new CL balances ([`:377`](core/contracts/0.8.9/Accounting.sol#L377)).
+4. If a vault has bad debt, `vaultHub.decreaseInternalizedBadDebt(...)` then `LIDO.internalizeExternalBadDebt(...)` ([`:383-386`](core/contracts/0.8.9/Accounting.sol#L383-L386)).
+5. `burner.commitSharesToBurn(...)` ([`:388-390`](core/contracts/0.8.9/Accounting.sol#L388-L390)).
+6. `LIDO.collectRewardsAndProcessWithdrawals(...)` — the eight-argument call from [§5.9](#59-the-report-path) ([`:392`](core/contracts/0.8.9/Accounting.sol#L392)).
+7. If fees are due: `LIDO.mintShares(address(this), ...)`, `_distributeFee(...)`, then `stakingRouter.reportRewardsMinted(...)` ([`:403-411`](core/contracts/0.8.9/Accounting.sol#L403-L411)).
+8. `_notifyRebaseObserver(...)` ([`:490`](core/contracts/0.8.9/Accounting.sol#L490)).
+9. `LIDO.emitTokenRebase(...)` last, so the event carries final numbers.
+
+`_distributeFee` — [`:471`](core/contracts/0.8.9/Accounting.sol#L471). `Accounting`
+mints the whole fee to **itself** first, then transfers shares out to each module
+recipient and the treasury. That keeps the mint a single operation and makes the
+distribution a set of ordinary share transfers.
+
+`_calculateWithdrawals` — [`:251`](core/contracts/0.8.9/Accounting.sol#L251).
+Works out how much ether to lock and how many shares to burn for the finalised
+batch.
+
+### 6.6 Errors
+
+Three, all at [`:533-535`](core/contracts/0.8.9/Accounting.sol#L533-L535):
+
+| Error | Cause |
+|---|---|
+| `NotAuthorized(string operation, address addr)` | Caller is not the accounting oracle. |
+| `IncorrectReportTimestamp(uint256 reportTimestamp, uint256 upperBoundTimestamp)` | Report timestamp is in the future. |
+| `InternalSharesCantBeZero()` | Internal shares reached zero, which would make the share rate undefined. The "stone in the elevator" exists to make this unreachable. |
+
+---
