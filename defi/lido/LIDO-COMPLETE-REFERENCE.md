@@ -2118,3 +2118,273 @@ lines) for monitoring; [`SepoliaDepositAdapter`](core/contracts/tooling/sepolia/
 pinned in this repository.
 
 ---
+## 19. Reference tables
+
+### 19.1 Selectors
+
+Computed with `cast sig`, not transcribed. `handleOracleReport` takes the
+nine-field [`ReportValues`](core/contracts/common/interfaces/ReportValues.sol)
+struct, expanded to its ABI tuple.
+
+**`Lido` / `StETH`**
+
+| Signature | Selector |
+|---|---|
+| `submit(address)` | `0xa1903eab` |
+| `balanceOf(address)` | `0x70a08231` |
+| `sharesOf(address)` | `0xf5eb42dc` |
+| `getSharesByPooledEth(uint256)` | `0x19208451` |
+| `getPooledEthByShares(uint256)` | `0x7a28fb88` |
+| `transferShares(address,uint256)` | `0x8fcb4e5b` |
+| `transferSharesFrom(address,address,uint256)` | `0x6d780459` |
+| `getTotalShares()` | `0xd5002f2e` |
+| `getTotalPooledEther()` | `0x37cfdaca` |
+| `getBufferedEther()` | `0x47b714e0` |
+| `getExternalShares()` | `0x63021d8b` |
+| `mintShares(address,uint256)` | `0x528c198a` |
+| `burnShares(uint256)` | `0x853c637d` |
+| `mintExternalShares(address,uint256)` | `0x06f187a4` |
+| `burnExternalShares(uint256)` | `0x72e62e56` |
+| `permit(address,address,uint256,uint256,uint8,bytes32,bytes32)` | `0xd505accf` |
+
+**`WstETH`**
+
+| Signature | Selector |
+|---|---|
+| `wrap(uint256)` | `0xea598cb0` |
+| `unwrap(uint256)` | `0xde0e9a3e` |
+| `stEthPerToken()` | `0x035faf82` |
+| `tokensPerStEth()` | `0x9576a0c8` |
+
+**`WithdrawalQueue`**
+
+| Signature | Selector |
+|---|---|
+| `requestWithdrawals(uint256[],address)` | `0xd6681042` |
+| `requestWithdrawalsWstETH(uint256[],address)` | `0x19aa6257` |
+| `claimWithdrawals(uint256[],uint256[])` | `0xe3afe0a3` |
+| `claimWithdrawal(uint256)` | `0xf8444436` |
+| `findCheckpointHints(uint256[],uint256,uint256)` | `0x62abe3fa` |
+| `getWithdrawalStatus(uint256[])` | `0xb8c4b85a` |
+
+**`VaultHub`, `StakingRouter`, `Accounting`**
+
+| Signature | Selector |
+|---|---|
+| `connectVault(address)` | `0x9ae15ac8` |
+| `fund(address)` | `0x23024408` |
+| `withdraw(address,address,uint256)` | `0xd9caed12` |
+| `rebalance(address,uint256)` | `0x3da9b9d0` |
+| `forceRebalance(address)` | `0x37749ad4` |
+| `isVaultHealthy(address)` | `0x176aa847` |
+| `totalValue(address)` | `0x30b0680b` |
+| `deposit(uint256,bytes)` | `0x5d303519` |
+| `handleOracleReport((uint256,uint256,uint256,uint256,uint256,uint256,uint256,uint256[],uint256))` | `0xd68bcf5c` |
+
+### 19.2 Storage positions
+
+Every value below was recomputed with `cast keccak` and matches the declared
+constant. This is the table to reach for when decoding Lido storage directly.
+
+| Slot | Preimage | Contract |
+|---|---|---|
+| `0x6038150aecaa250d524370a0fdcdec13f2690e0723eaf277f41d7cae26b359e6` | `lido.StETH.totalAndExternalShares` | `StETH` / `Lido` (split 128/128) |
+| `0x81a11fa1111afa59b50051f60ccf604a39d96acb484dc467ad8eadb4a63f0a5f` | `lido.Lido.bufferedEtherAndDepositedPostReport` | `Lido` |
+| `0x8d3ed945c7718edcdb639b1235f2bbe3fa81f4a6cec7a436d8ea13fbc502d957` | `lido.Lido.depositedNextReportAndLastDepositNonce` | `Lido` |
+| `0x096e465397f38e659238ccd5d5a2c434ced54a63fd8d694045bfb058ab9d8112` | `lido.Lido.clValidatorsBalanceAndClPendingBalance` | `Lido` |
+| `0x3f0eaa2c0f16ff9775c078f3df30470d8c042317b24ad1defa240b1c3e10b238` | `lido.Lido.seedDepositsCount` | `Lido` |
+| `0xa3678de4a579be090bed1177e0a24f77cc29d181ac22fd7688aca344d8938015` | `lido.Lido.stakeLimit` | `Lido` |
+| `0xafe016039542d12eec0183bb0b1ffc2ca45b027126a494672fba4154ee77facb` | `lido.Lido.totalELRewardsCollected` | `Lido` |
+| `0xda4fbe3b9cbd98dfae5dff538bbff4ba61f38979d4d7419bcd006f3e6250ec13` | `lido.Lido.depositsReserve` | `Lido` |
+| `0x3d3e9bd6e90e5d1f1c6839835bcbe5746a47c9a013d1eae6e80c248264c06a81` | `lido.Lido.depositsReserveTarget` | `Lido` |
+
+Plus `lido.Lido.lidoLocatorAndMaxExternalRatio` at
+[`Lido.sol:120`](core/contracts/0.4.24/Lido.sol#L120) and the eight
+`lido.WithdrawalQueue.*` positions at
+[`WithdrawalQueueBase.sol:28-44`](core/contracts/0.8.9/WithdrawalQueueBase.sol#L28-L44),
+which use inline `keccak256("...")` rather than literals.
+
+**Packing summary.** Four of the nine `Lido` slots hold two values each:
+
+```
+totalAndExternalShares                       [ external (128) | totalShares (128) ]
+bufferedEtherAndDepositedPostReport          [ depositedPostReport (128) | bufferedEther (128) ]
+clValidatorsBalanceAndClPendingBalance       [ clPending (128) | clValidators (128) ]
+depositedNextReportAndLastDepositNonce       [ lastDepositNonce | depositedNextReport ]
+```
+
+The vaults subsystem does not use this pattern; it uses ERC-7201 namespaced
+storage instead ([`OperatorGrid.sol:139`](core/contracts/0.8.25/vaults/OperatorGrid.sol#L139)).
+
+### 19.3 Events
+
+The set an indexer actually needs.
+
+| Event | Contract | Emitted when |
+|---|---|---|
+| `TokenRebased(...)` | [`Lido.sol:210`](core/contracts/0.4.24/Lido.sol#L210) | **Every report.** The only signal that balances changed; no ERC-20 `Transfer` accompanies a rebase. |
+| `ETHDistributed(...)` | [`Lido.sol:200`](core/contracts/0.4.24/Lido.sol#L200) | Rewards and withdrawals moved during a report. |
+| `Submitted(address indexed sender, uint256 amount, address referral)` | [`Lido.sol:230`](core/contracts/0.4.24/Lido.sol#L230) | ETH staked. |
+| `TransferShares(address indexed from, address indexed to, uint256 sharesValue)` | [`StETH.sol:105`](core/contracts/0.4.24/StETH.sol#L105) | Paired with every `Transfer`; rate-independent. |
+| `SharesBurnt(address indexed account, uint256 preRebaseTokenAmount, uint256 postRebaseTokenAmount, uint256 sharesAmount)` | [`StETH.sol:123`](core/contracts/0.4.24/StETH.sol#L123) | Shares destroyed. Two token amounts because the burn moves the rate. |
+| `CLBalancesUpdated(uint256 indexed reportTimestamp, uint256 clValidatorsBalance, uint256 clPendingBalance)` | [`Lido.sol:189`](core/contracts/0.4.24/Lido.sol#L189) | CL state written. |
+| `ELRewardsReceived` / `WithdrawalsReceived` | [`Lido.sol:224`](core/contracts/0.4.24/Lido.sol#L224), [`:227`](core/contracts/0.4.24/Lido.sol#L227) | Vault drains. |
+| `ExternalSharesMinted` / `ExternalSharesBurnt` | [`Lido.sol:244`](core/contracts/0.4.24/Lido.sol#L244), [`:247`](core/contracts/0.4.24/Lido.sol#L247) | Vault-backed supply changed. |
+| `ExternalBadDebtInternalized(uint256 amountOfShares)` | [`Lido.sol:256`](core/contracts/0.4.24/Lido.sol#L256) | A vault loss was socialised onto stETH holders. Worth alerting on. |
+| `ExternalEtherTransferredToBuffer(uint256 amount)` | [`Lido.sol:253`](core/contracts/0.4.24/Lido.sol#L253) | Vault-backed converted to pool-backed. |
+| `StakingPaused` / `StakingResumed` / `StakingLimitSet` / `StakingLimitRemoved` | [`Lido.sol:180`](core/contracts/0.4.24/Lido.sol#L180)–[`:186`](core/contracts/0.4.24/Lido.sol#L186) | Staking limit lifecycle. |
+| `DepositsReserveSet` / `DepositsReserveTargetSet` | [`Lido.sol:261`](core/contracts/0.4.24/Lido.sol#L261), [`:265`](core/contracts/0.4.24/Lido.sol#L265) | Buffer allocation changed. |
+| `InternalShareRateUpdated(...)` | [`Lido.sol:236`](core/contracts/0.4.24/Lido.sol#L236) | The internal rate from [§5.3](#53-the-share-rate-and-why-it-excludes-vault-shares). |
+| `LidoLocatorSet(address lidoLocator)` | [`Lido.sol:221`](core/contracts/0.4.24/Lido.sol#L221) | Address book replaced. |
+
+**The trap.** A rebase changes every `balanceOf` and emits **no** `Transfer`. An
+accounting system that reconstructs balances purely from ERC-20 transfer logs
+will drift from reality on every report. Track `TokenRebased` and recompute from
+`sharesOf`, or index shares rather than balances.
+
+### 19.4 Revert reasons
+
+The 0.4.24 contracts use short string requires; the 0.8.x contracts use custom
+errors. A selection with their causes; the full set is discoverable per contract
+with `grep -n 'revert\|require' <file>`.
+
+| Reason | Where | Cause |
+|---|---|---|
+| `"ZERO_DEPOSIT"` | [`Lido.sol:1254`](core/contracts/0.4.24/Lido.sol#L1254) | `submit` with zero value. |
+| `"SHARES_OVERFLOW"` | [`Lido/StETH.sol:523`](core/contracts/0.4.24/StETH.sol#L523) | Total shares would exceed 128 bits and collide with external shares. |
+| `"ETH_TOO_LARGE"` / `"SHARES_TOO_LARGE"` | [`StETH.sol:318`](core/contracts/0.4.24/StETH.sol#L318), [`:330`](core/contracts/0.4.24/StETH.sol#L330) | Conversion input above `UINT128_MAX`. |
+| `"BALANCE_EXCEEDED"` | [`StETH.sol:501`](core/contracts/0.4.24/StETH.sol#L501), [`:552`](core/contracts/0.4.24/StETH.sol#L552) | Insufficient shares to transfer or burn. |
+| `"TRANSFER_TO_STETH_CONTRACT"` | [`StETH.sol:497`](core/contracts/0.4.24/StETH.sol#L497) | Transfer to the token itself, which would strand funds. |
+| `"TRANSFER_FROM_ZERO_ADDR"` / `"TRANSFER_TO_ZERO_ADDR"` | [`StETH.sol:495`](core/contracts/0.4.24/StETH.sol#L495), [`:496`](core/contracts/0.4.24/StETH.sol#L496) | Zero-address transfer. |
+| `"MINT_TO_ZERO_ADDR"` / `"MINT_TO_STETH_CONTRACT"` | [`StETH.sol:519`](core/contracts/0.4.24/StETH.sol#L519), [`:520`](core/contracts/0.4.24/StETH.sol#L520) | Bad mint target. |
+| `"BURN_FROM_ZERO_ADDR"` | [`StETH.sol:548`](core/contracts/0.4.24/StETH.sol#L548) | Bad burn source. |
+| `"ALLOWANCE_BELOW_ZERO"` | [`StETH.sol:289`](core/contracts/0.4.24/StETH.sol#L289) | `decreaseAllowance` underflow. |
+| `"DEADLINE_EXPIRED"` | [`StETHPermit.sol:107`](core/contracts/0.4.24/StETHPermit.sol#L107) | Permit past its deadline. |
+| `"wstETH: can't wrap zero stETH"` | [`WstETH.sol:54`](core/contracts/0.6.12/WstETH.sol#L54) | Zero wrap. |
+| `NotAuthorized(string,address)` | [`Accounting.sol:533`](core/contracts/0.8.9/Accounting.sol#L533) | Caller is not the accounting oracle. |
+| `IncorrectReportTimestamp(uint256,uint256)` | [`Accounting.sol:534`](core/contracts/0.8.9/Accounting.sol#L534) | Report timestamp in the future. |
+| `InternalSharesCantBeZero()` | [`Accounting.sol:535`](core/contracts/0.8.9/Accounting.sol#L535) | Internal shares hit zero; share rate undefined. |
+| `InvalidHint(uint256)` | [`WithdrawalQueueBase.sol:489`](core/contracts/0.8.9/WithdrawalQueueBase.sol#L489) | Checkpoint hint does not bracket the request id. |
+| `InitialEpochIsYetToArrive()` | [`HashConsensus.sol:689`](core/contracts/0.8.9/oracle/HashConsensus.sol#L689) | Frame computed before the configured initial epoch. |
+
+### 19.5 Role matrix
+
+| Contract | Roles | System |
+|---|---|---|
+| `Lido` | `PAUSE_ROLE`, `RESUME_ROLE`, `STAKING_PAUSE_ROLE`, `STAKING_CONTROL_ROLE`, `BUFFER_RESERVE_MANAGER_ROLE` | Aragon ACL |
+| `NodeOperatorsRegistry` | `MANAGE_SIGNING_KEYS`, `SET_NODE_OPERATOR_LIMIT_ROLE`, `MANAGE_NODE_OPERATOR_ROLE`, `STAKING_ROUTER_ROLE` | Aragon ACL |
+| `StakingRouter` | 9 roles, [§13.1](#131-roles) | OZ `AccessControl` |
+| `OracleReportSanityChecker` | 16 roles, [§7.2](#72-roles) | OZ `AccessControl` |
+| `HashConsensus` | `MANAGE_MEMBERS_AND_QUORUM_ROLE`, `DISABLE_CONSENSUS_ROLE`, `MANAGE_FRAME_CONFIG_ROLE`, `MANAGE_FAST_LANE_CONFIG_ROLE`, `MANAGE_REPORT_PROCESSOR_ROLE` | OZ |
+| `BaseOracle` | `MANAGE_CONSENSUS_CONTRACT_ROLE`, `MANAGE_CONSENSUS_VERSION_ROLE` | OZ |
+| `AccountingOracle` | `SUBMIT_DATA_ROLE` | OZ |
+| `ValidatorsExitBus` | `SUBMIT_REPORT_HASH_ROLE`, `EXIT_REQUEST_LIMIT_MANAGER_ROLE`, `PAUSE_ROLE`, `RESUME_ROLE` | OZ |
+| `WithdrawalQueue` | `PAUSE_ROLE`, `RESUME_ROLE`, `FINALIZE_ROLE`, `ORACLE_ROLE` | OZ |
+| `Burner` | `REQUEST_BURN_MY_STETH_ROLE`, `REQUEST_BURN_SHARES_ROLE` | OZ |
+| `VaultHub` | `VAULT_MASTER_ROLE`, `REDEMPTION_MASTER_ROLE`, `VALIDATOR_EXIT_ROLE`, `BAD_DEBT_MASTER_ROLE` | OZ 5.2 (immutable) |
+| `OperatorGrid` | `REGISTRY_ROLE` | OZ 5.2 |
+| `Permissions` (vault dashboard) | 10 roles, [§14.4](#144-dashboard-permissions-nodeoperatorfee) | OZ 5.2 |
+| `NodeOperatorFee` | `NODE_OPERATOR_MANAGER_ROLE`, `NODE_OPERATOR_FEE_EXEMPT_ROLE` | OZ 5.2 |
+| `LazyOracle` | `UPDATE_SANITY_PARAMS_ROLE` | OZ 5.2 |
+| `DepositSecurityModule` | none; a single `owner` plus a guardian set | bespoke |
+
+---
+
+## 20. Use-case index
+
+Each entry names the entry point and the full internal chain.
+
+**Stake ETH.**
+`Lido.submit(referral)` [`:508`](core/contracts/0.4.24/Lido.sol#L508)
+→ `_submit` [`:1253`](core/contracts/0.4.24/Lido.sol#L1253)
+→ `_decreaseStakingLimit` → `getSharesByPooledEth` → `_mintShares` → `_setBufferedEther`
+→ emits `Submitted` and a synthetic `Transfer`.
+
+**Wrap to wstETH.**
+`stETH.approve(wstETH, amount)` → `WstETH.wrap(amount)` [`:53`](core/contracts/0.6.12/WstETH.sol#L53)
+→ `getSharesByPooledEth` → `_mint` → `transferFrom`.
+
+**Unwrap.** `WstETH.unwrap(amount)` [`:69`](core/contracts/0.6.12/WstETH.sol#L69)
+→ `_burn` → `getPooledEthByShares` → `stETH.transfer`.
+
+**Request a withdrawal.**
+`WithdrawalQueue.requestWithdrawals(amounts, owner)` [`:125`](core/contracts/0.8.9/WithdrawalQueue.sol#L125)
+→ `_requestWithdrawal` [`:373`](core/contracts/0.8.9/WithdrawalQueue.sol#L373)
+→ `_enqueue` [`:364`](core/contracts/0.8.9/WithdrawalQueueBase.sol#L364)
+→ mints the ERC-721. Use `requestWithdrawalsWithPermit` [`:171`](core/contracts/0.8.9/WithdrawalQueue.sol#L171) to skip the approval.
+
+**Claim it.** `findCheckpointHints(ids, 1, getLastCheckpointIndex())` [`:298`](core/contracts/0.8.9/WithdrawalQueue.sol#L298)
+→ `claimWithdrawals(ids, hints)` [`:266`](core/contracts/0.8.9/WithdrawalQueue.sol#L266)
+→ `_claim` [`:460`](core/contracts/0.8.9/WithdrawalQueueBase.sol#L460)
+→ `_calculateClaimableEther` [`:484`](core/contracts/0.8.9/WithdrawalQueueBase.sol#L484) (applies the discount)
+→ `_sendValue`. Skipping the hint via `claimWithdrawal(id)` works but costs far more gas.
+
+**Submit an oracle report.**
+`HashConsensus.submitReport(slot, hash, version)` [`:609`](core/contracts/0.8.9/oracle/HashConsensus.sol#L609) until quorum
+→ `BaseOracle.submitConsensusReport` [`:174`](core/contracts/0.8.9/oracle/BaseOracle.sol#L174)
+→ `AccountingOracle.submitReportData` [`:360`](core/contracts/0.8.9/oracle/AccountingOracle.sol#L360)
+→ `_handleConsensusReportData` [`:477`](core/contracts/0.8.9/oracle/AccountingOracle.sol#L477)
+→ `Accounting.handleOracleReport` [`:137`](core/contracts/0.8.9/Accounting.sol#L137)
+→ `_snapshotPreReportState` → `_simulateOracleReport` → `_applyOracleReportContext` [`:360`](core/contracts/0.8.9/Accounting.sol#L360)
+→ sanity checks → `Lido.processClStateUpdate` → `Burner.commitSharesToBurn`
+→ `Lido.collectRewardsAndProcessWithdrawals` → `Lido.mintShares` + `_distributeFee`
+→ `Lido.emitTokenRebase`. Then `submitReportExtraDataList` [`:380`](core/contracts/0.8.9/oracle/AccountingOracle.sol#L380).
+
+**Deposit buffered ether to the beacon chain.**
+Guardians sign the deposit root → `DepositSecurityModule.depositBufferedEther`
+→ `StakingRouter.deposit(moduleId, calldata)` [`:942`](core/contracts/0.8.25/sr/StakingRouter.sol#L942)
+→ `Lido.withdrawDepositableEther` [`:869`](core/contracts/0.4.24/Lido.sol#L869)
+→ module `obtainDepositData` [`:697`](core/contracts/0.4.24/nos/NodeOperatorsRegistry.sol#L697)
+→ `BeaconChainDepositor` → deposit contract.
+
+**Add a node operator and vet keys.**
+`addNodeOperator(name, rewardAddress)` [`:283`](core/contracts/0.4.24/nos/NodeOperatorsRegistry.sol#L283)
+→ `addSigningKeys(...)` [`:964`](core/contracts/0.4.24/nos/NodeOperatorsRegistry.sol#L964)
+→ `setNodeOperatorStakingLimit(id, vettedCount)` [`:384`](core/contracts/0.4.24/nos/NodeOperatorsRegistry.sol#L384).
+Only then are the keys depositable.
+
+**Trigger a validator exit.**
+`ValidatorsExitBus.submitExitRequestsHash` [`:324`](core/contracts/0.8.9/oracle/ValidatorsExitBus.sol#L324)
+→ `submitExitRequestsData` [`:346`](core/contracts/0.8.9/oracle/ValidatorsExitBus.sol#L346)
+→ `triggerExits` [`:391`](core/contracts/0.8.9/oracle/ValidatorsExitBus.sol#L391)
+→ `TriggerableWithdrawalsGateway` → EIP-7002 predeploy.
+If the operator stalls, `ValidatorExitDelayVerifier.verifyValidatorExitDelay` [`:203`](core/contracts/0.8.25/ValidatorExitDelayVerifier.sol#L203)
+→ `StakingRouter.reportValidatorExitDelay` [`:343`](core/contracts/0.8.25/sr/StakingRouter.sol#L343).
+
+**Create a stVault.**
+`VaultFactory.createVault(...)` → deploys `StakingVault` behind a `PinnedBeaconProxy` plus a `Dashboard`
+→ `VaultHub.connectVault(vault)` [`:372`](core/contracts/0.8.25/vaults/VaultHub.sol#L372)
+→ `OperatorGrid` assigns a tier.
+
+**Mint stETH against a vault.**
+`Dashboard` (`MINT_ROLE`) → `VaultHub.mintShares(vault, recipient, shares)` [`:777`](core/contracts/0.8.25/vaults/VaultHub.sol#L777)
+→ checks `isReportFresh`, `totalMintingCapacityShares` and the tier share limit
+→ `Lido.mintExternalShares` [`:927`](core/contracts/0.4.24/Lido.sol#L927)
+→ checks `_getMaxMintableExternalShares` [`:1321`](core/contracts/0.4.24/Lido.sol#L1321)
+→ `OperatorGrid.onMintedShares` [`:632`](core/contracts/0.8.25/vaults/OperatorGrid.sol#L632).
+
+**Rebalance a vault.**
+Voluntarily: `VaultHub.rebalance(vault, shares)` [`:762`](core/contracts/0.8.25/vaults/VaultHub.sol#L762).
+Once below `forcedRebalanceThresholdBP`, anyone may call
+`forceRebalance(vault)` [`:956`](core/contracts/0.8.25/vaults/VaultHub.sol#L956).
+Escalation continues through `forceValidatorExit` [`:933`](core/contracts/0.8.25/vaults/VaultHub.sol#L933),
+then `socializeBadDebt` [`:590`](core/contracts/0.8.25/vaults/VaultHub.sol#L590),
+then `internalizeBadDebt` [`:651`](core/contracts/0.8.25/vaults/VaultHub.sol#L651).
+
+**Predeposit a vault validator.**
+`PredepositGuarantee.topUpNodeOperatorBalance` [`:247`](core/contracts/0.8.25/vaults/predeposit_guarantee/PredepositGuarantee.sol#L247)
+→ `predeposit(...)` [`:397`](core/contracts/0.8.25/vaults/predeposit_guarantee/PredepositGuarantee.sol#L397) (1 ETH probe)
+→ `proveWCAndActivate(witness)` [`:463`](core/contracts/0.8.25/vaults/predeposit_guarantee/PredepositGuarantee.sol#L463)
+→ full deposit. Fraud is punished via `proveInvalidValidatorWC` [`:563`](core/contracts/0.8.25/vaults/predeposit_guarantee/PredepositGuarantee.sol#L563).
+
+**Read a user's position correctly.**
+Use `sharesOf(account)` and `getPooledEthByShares`, not `balanceOf`, if you are
+storing the value. Shares are invariant under rebase; balances are not.
+
+---
+
+*Companion document: [`LIDO-DEEP-DIVE.md`](LIDO-DEEP-DIVE.md). Related references
+in this repository: [`../aave/V3-PROTOCOL-COMPLETE-REFERENCE.md`](../aave/V3-PROTOCOL-COMPLETE-REFERENCE.md),
+[`../morpho/MORPHO-COMPLETE-REFERENCE.md`](../morpho/MORPHO-COMPLETE-REFERENCE.md),
+[`../liquity/LIQUITY-COMPLETE-REFERENCE.md`](../liquity/LIQUITY-COMPLETE-REFERENCE.md),
+[`../lifi/LIBRARIES-PERIPHERY-COMPLETE-REFERENCE.md`](../lifi/LIBRARIES-PERIPHERY-COMPLETE-REFERENCE.md).*
