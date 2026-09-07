@@ -1870,3 +1870,185 @@ Lido slashing event would not show up until the rate itself moved.
 | [`wsteth-exchange-rate-adapter/interfaces/IStEth.sol`](morpho-blue-oracles/src/wsteth-exchange-rate-adapter/interfaces/IStEth.sol) | — | just `getPooledEthByShares` |
 | [`wsteth-exchange-rate-adapter/interfaces/MinimalAggregatorV3Interface.sol`](morpho-blue-oracles/src/wsteth-exchange-rate-adapter/interfaces/MinimalAggregatorV3Interface.sol) | — | `decimals` + `latestRoundData` only |
 
+---
+
+<a id="11-bundlers"></a>
+## 11. Bundlers
+
+[`morpho-blue-bundlers/`](morpho-blue-bundlers/), 53 files — the largest of the four repos, and
+the one that exists purely because Blue's core is so small. Every convenience Aave builds into its
+`Pool` (permit variants, ETH wrapping, migration adapters) lives out here instead.
+
+### 11.1 `BaseBundler` — `delegatecall` multicall
+
+[`morpho-blue-bundlers/src/BaseBundler.sol`](morpho-blue-bundlers/src/BaseBundler.sol), 98 lines.
+Everything else inherits it.
+
+```solidity
+function multicall(bytes[] memory data) external payable {
+    require(_initiator == UNSET_INITIATOR, ErrorsLib.ALREADY_INITIATED);
+    _initiator = msg.sender;
+    _multicall(data);
+    _initiator = UNSET_INITIATOR;
+}
+```
+
+[`:51-59`](morpho-blue-bundlers/src/BaseBundler.sol#L51-L59), with `_multicall`
+`delegatecall`ing into `address(this)` for each element
+([`:65-72`](morpho-blue-bundlers/src/BaseBundler.sol#L65-L72)).
+
+**`_initiator` is the whole security model.** It does two jobs at once, as its comment at
+[`:23-24`](morpho-blue-bundlers/src/BaseBundler.sol#L23-L24) says: it records who started the
+bundle, *and* it prevents any bundler function being called outside a bundle. The `protected`
+modifier ([`:31-36`](morpho-blue-bundlers/src/BaseBundler.sol#L31-L36)) enforces both:
+
+```solidity
+require(_initiator != UNSET_INITIATOR, ErrorsLib.UNINITIATED);
+require(_isSenderAuthorized(), ErrorsLib.UNAUTHORIZED_SENDER);
+```
+
+This matters because the bundler holds token approvals from users. Without `protected`, anyone
+could call `erc20TransferFrom` directly and drain another user's approval. It is the same class of
+risk LI.FI manages with its allowlist
+([`../lifi/LIBRARIES-PERIPHERY-COMPLETE-REFERENCE.md`](../lifi/LIBRARIES-PERIPHERY-COMPLETE-REFERENCE.md)),
+solved differently: LI.FI restricts *what you may call*, Morpho restricts *when you may be called*.
+
+`_revert` ([`:76-83`](morpho-blue-bundlers/src/BaseBundler.sol#L76-L83)) bubbles the inner revert
+reason with assembly so a failed step reports its real error, not a generic one.
+
+The warning at [`:15-17`](morpho-blue-bundlers/src/BaseBundler.sol#L15-L17) is a genuine footgun:
+every external bundler function must be `payable`, and **`msg.value` is the same for every
+delegatecalled step**, so a bundler function must never treat `msg.value` as "the value for this
+step".
+
+### 11.2 `MorphoBundler` — reentering the bundle from a Blue callback
+
+[`morpho-blue-bundlers/src/MorphoBundler.sol`](morpho-blue-bundlers/src/MorphoBundler.sol), 271 lines.
+The bridge between Blue's callbacks (§6.4) and the multicall.
+
+```solidity
+function _callback(bytes calldata data) internal {
+    require(msg.sender == address(MORPHO), ErrorsLib.UNAUTHORIZED_SENDER);
+    _multicall(abi.decode(data, (bytes[])));
+}
+
+function _isSenderAuthorized() internal view virtual override returns (bool) {
+    return super._isSenderAuthorized() || msg.sender == address(MORPHO);
+}
+```
+
+[`:261-270`](morpho-blue-bundlers/src/MorphoBundler.sol#L261-L270).
+
+This is the clever part of the whole repo. The `data` you pass to `morphoSupply` is itself an
+encoded `bytes[]` of further bundler calls. Blue invokes `onMorphoSupply`, which invokes
+`_callback`, which runs a **nested multicall** — inside Blue's execution, before Blue pulls your
+tokens. The `_isSenderAuthorized` override is what lets Blue be a legitimate `msg.sender` for
+`protected` functions during that window.
+
+All five callbacks are thin wrappers over `_callback`:
+`onMorphoSupply` [`:35-38`](morpho-blue-bundlers/src/MorphoBundler.sol#L35-L38),
+`onMorphoSupplyCollateral` [`:40-43`](morpho-blue-bundlers/src/MorphoBundler.sol#L40-L43),
+`onMorphoRepay` [`:45-48`](morpho-blue-bundlers/src/MorphoBundler.sol#L45-L48),
+`onMorphoFlashLoan` [`:50-53`](morpho-blue-bundlers/src/MorphoBundler.sol#L50-L53).
+
+| Function | Line | Wraps |
+|---|---|---|
+| `morphoSetAuthorizationWithSig` | [`:62`](morpho-blue-bundlers/src/MorphoBundler.sol#L62) | §3.18 |
+| `morphoSupply` | [`:87`](morpho-blue-bundlers/src/MorphoBundler.sol#L87) | §3.9 |
+| `morphoSupplyCollateral` | [`:117`](morpho-blue-bundlers/src/MorphoBundler.sol#L117) | §3.13 |
+| `morphoBorrow` | [`:146`](morpho-blue-bundlers/src/MorphoBundler.sol#L146) | §3.11 |
+| `morphoRepay` | [`:171`](morpho-blue-bundlers/src/MorphoBundler.sol#L171) | §3.12 |
+| `morphoWithdraw` | [`:205`](morpho-blue-bundlers/src/MorphoBundler.sol#L205) | §3.10 |
+| `morphoWithdrawCollateral` | [`:224`](morpho-blue-bundlers/src/MorphoBundler.sol#L224) | §3.14 |
+| `morphoFlashLoan` | [`:236`](morpho-blue-bundlers/src/MorphoBundler.sol#L236) | §3.16 |
+| `reallocateTo` | [`:248`](morpho-blue-bundlers/src/MorphoBundler.sol#L248) | public allocator |
+
+### 11.3 The bundler mixins
+
+Each is a self-contained capability, combined by inheritance:
+
+| Mixin | Lines | Provides |
+|---|---|---|
+| [`TransferBundler`](morpho-blue-bundlers/src/TransferBundler.sol) | — | `nativeTransfer` [`:25`](morpho-blue-bundlers/src/TransferBundler.sol#L25), `erc20Transfer` [`:42`](morpho-blue-bundlers/src/TransferBundler.sol#L42), `erc20TransferFrom` [`:57`](morpho-blue-bundlers/src/TransferBundler.sol#L57) |
+| [`PermitBundler`](morpho-blue-bundlers/src/PermitBundler.sol) | — | EIP-2612 `permit` |
+| [`Permit2Bundler`](morpho-blue-bundlers/src/Permit2Bundler.sol) | — | Uniswap Permit2 signature transfers |
+| [`ERC4626Bundler`](morpho-blue-bundlers/src/ERC4626Bundler.sol) | 122 | `erc4626Mint/Deposit/Withdraw/Redeem` — how MetaMorpho is reached |
+| [`WNativeBundler`](morpho-blue-bundlers/src/WNativeBundler.sol) | — | `wrapNative` / `unwrapNative` |
+| [`StEthBundler`](morpho-blue-bundlers/src/StEthBundler.sol) | — | stETH ↔ wstETH |
+| [`UrdBundler`](morpho-blue-bundlers/src/UrdBundler.sol) | — | claims from the Universal Rewards Distributor |
+| [`ERC20WrapperBundler`](morpho-blue-bundlers/src/ERC20WrapperBundler.sol) | — | permissioned-token wrappers |
+
+`erc20TransferFrom` at
+[`TransferBundler.sol:57`](morpho-blue-bundlers/src/TransferBundler.sol#L57) pulls from
+`initiator()`, not `msg.sender` — which is exactly why `protected` must be airtight.
+
+### 11.4 The deployed bundlers
+
+Only two matter in production, and both are pure composition with no new logic:
+
+```solidity
+contract ChainAgnosticBundlerV2 is
+    TransferBundler, PermitBundler, Permit2Bundler, ERC4626Bundler,
+    WNativeBundler, UrdBundler, MorphoBundler, ERC20WrapperBundler
+```
+
+[`chain-agnostic/ChainAgnosticBundlerV2.sol:18-26`](morpho-blue-bundlers/src/chain-agnostic/ChainAgnosticBundlerV2.sol#L18-L26)
+
+```solidity
+contract EthereumBundlerV2 is
+    TransferBundler, EthereumPermitBundler, Permit2Bundler, ERC4626Bundler,
+    WNativeBundler, EthereumStEthBundler, UrdBundler, MorphoBundler, ERC20WrapperBundler
+```
+
+[`ethereum/EthereumBundlerV2.sol:21-30`](morpho-blue-bundlers/src/ethereum/EthereumBundlerV2.sol#L21-L30)
+
+The mainnet variant swaps in `EthereumPermitBundler` (which adds DAI's non-standard permit, via
+[`IDaiPermit`](morpho-blue-bundlers/src/ethereum/interfaces/IDaiPermit.sol)) and
+`EthereumStEthBundler`, and hardcodes WETH from
+[`MainnetLib`](morpho-blue-bundlers/src/ethereum/libraries/MainnetLib.sol). Both must override
+`_isSenderAuthorized` explicitly to resolve the diamond between `BaseBundler` and `MorphoBundler`
+([`EthereumBundlerV2.sol:39-41`](morpho-blue-bundlers/src/ethereum/EthereumBundlerV2.sol#L39-L41)).
+
+Testnet twins: [`GoerliBundlerV2`](morpho-blue-bundlers/src/goerli/GoerliBundlerV2.sol) and
+[`SepoliaBundlerV2`](morpho-blue-bundlers/src/sepolia/SepoliaBundlerV2.sol) with their own address
+libraries.
+
+### 11.5 Migration bundlers
+
+Six contracts that move a position from a competitor into Blue **atomically**, all inheriting
+[`MigrationBundler`](morpho-blue-bundlers/src/migration/MigrationBundler.sol):
+
+| Bundler | Migrates from |
+|---|---|
+| [`AaveV2MigrationBundlerV2`](morpho-blue-bundlers/src/migration/AaveV2MigrationBundlerV2.sol) | Aave v2 |
+| [`AaveV3MigrationBundlerV2`](morpho-blue-bundlers/src/migration/AaveV3MigrationBundlerV2.sol) | Aave v3 |
+| [`AaveV3OptimizerMigrationBundlerV2`](morpho-blue-bundlers/src/migration/AaveV3OptimizerMigrationBundlerV2.sol) | Morpho's own Aave v3 Optimizer |
+| [`CompoundV2MigrationBundlerV2`](morpho-blue-bundlers/src/migration/CompoundV2MigrationBundlerV2.sol) | Compound v2 |
+| [`CompoundV3MigrationBundlerV2`](morpho-blue-bundlers/src/migration/CompoundV3MigrationBundlerV2.sol) | Compound v3 |
+
+The recipe is always the same, and it is a good exercise to trace: flash loan the debt asset from
+Blue (free, §3.16) → repay the old protocol → withdraw the old collateral → `supplyCollateral` to
+Blue → `borrow` from Blue → repay the flash loan. One transaction, no capital.
+
+The interface files are large because they vendor competitor ABIs:
+[`IAaveV3.sol`](morpho-blue-bundlers/src/migration/interfaces/IAaveV3.sol) is 523 lines and
+[`IAaveV2.sol`](morpho-blue-bundlers/src/migration/interfaces/IAaveV2.sol) is 261, alongside
+[`ICToken`](morpho-blue-bundlers/src/migration/interfaces/ICToken.sol),
+[`ICEth`](morpho-blue-bundlers/src/migration/interfaces/ICEth.sol),
+[`IComptroller`](morpho-blue-bundlers/src/migration/interfaces/IComptroller.sol),
+[`ICompoundV3`](morpho-blue-bundlers/src/migration/interfaces/ICompoundV3.sol) and
+[`IAaveV3Optimizer`](morpho-blue-bundlers/src/migration/interfaces/IAaveV3Optimizer.sol).
+
+### 11.6 Remaining bundler files
+
+Interfaces: [`IMulticall`](morpho-blue-bundlers/src/interfaces/IMulticall.sol),
+[`IMorphoBundler`](morpho-blue-bundlers/src/interfaces/IMorphoBundler.sol),
+[`IPublicAllocator`](morpho-blue-bundlers/src/interfaces/IPublicAllocator.sol),
+[`IStEth`](morpho-blue-bundlers/src/interfaces/IStEth.sol),
+[`IWstEth`](morpho-blue-bundlers/src/interfaces/IWstEth.sol),
+[`IWNative`](morpho-blue-bundlers/src/interfaces/IWNative.sol).
+Libraries: [`ConstantsLib`](morpho-blue-bundlers/src/libraries/ConstantsLib.sol) (holds
+`UNSET_INITIATOR`), [`ErrorsLib`](morpho-blue-bundlers/src/libraries/ErrorsLib.sol).
+Twelve mocks including several `*Import.sol` files whose only job is to pull external bytecode
+into the test build.
+
