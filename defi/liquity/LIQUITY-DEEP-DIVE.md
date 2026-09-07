@@ -676,3 +676,212 @@ failure mode it wants to survive has to be handled in code written before launch
 source, where it must be enumerated in advance.**
 
 ---
+## 2. Liquity v2 (BOLD)
+
+v2 keeps the shape of v1, Troves and a Stability Pool and redemptions, and
+changes the economics underneath. Read it as a list of answers to things v1 got
+wrong in practice.
+
+### 2.1 Borrowers set their own interest rate
+
+v1 charged a one-off fee and no interest. That made LUSD cheap to mint and hold,
+which sounds good and was in fact the core problem: with no carrying cost, nobody
+ever had a reason to close a Trove, and the supply could not contract when demand
+fell. The peg leaned entirely on redemptions, which meant it leaned entirely on
+whoever happened to be the riskiest borrower.
+
+In v2 every borrower picks an annual rate, stored on the Trove
+([`v2-bold/contracts/src/TroveManager.sol:57`](v2-bold/contracts/src/TroveManager.sol#L57)),
+bounded between 0.5% and 250%
+([`Dependencies/Constants.sol:46-47`](v2-bold/contracts/src/Dependencies/Constants.sol#L46-L47)).
+
+The rate you choose is not a fee schedule, it is a **bid for redemption
+priority**. `SortedTroves` is no longer sorted by collateral ratio. It is sorted
+by interest rate, descending
+([`v2-bold/contracts/src/SortedTroves.sol:15-18`](v2-bold/contracts/src/SortedTroves.sol#L15-L18)):
+
+```
+* A sorted doubly linked list with nodes sorted in descending order.
+*
+* Nodes map to active Troves in the system - the ID property is the address of a Trove owner.
+* Nodes are ordered according to the borrower's chosen annual interest rate.
+```
+
+Redemptions now hit the **lowest-rate** Troves first. Pay more and you are
+redeemed later. That converts v1's arbitrary punishment of thin-margin borrowers
+into a market: the interest rate curve is discovered by borrowers pricing their
+own redemption risk, and the aggregate rate rises automatically when BOLD is below
+peg, because under-peg conditions mean redemption pressure and everyone bids up.
+
+The list also gets cheaper. Under v1's NICR ordering, any collateral or debt
+change moved you. Under interest-rate ordering, only an explicit rate change does,
+so ordinary borrowing and repaying never touches the list at all.
+
+### 2.2 Aggregate interest accounting
+
+Charging per-Trove interest naively would mean touching every Trove on every
+accrual. v2 instead keeps two global numbers in `ActivePool`
+([`v2-bold/contracts/src/ActivePool.sol:41`](v2-bold/contracts/src/ActivePool.sol#L41)
+and [`:47`](v2-bold/contracts/src/ActivePool.sol#L47)): `aggRecordedDebt`, the
+total debt as last recorded, and `aggWeightedDebtSum`, the sum of every Trove's
+`debt × rate`.
+
+System-wide accrued interest then costs one multiplication
+([`ActivePool.sol:104-113`](v2-bold/contracts/src/ActivePool.sol#L104-L113)):
+
+```solidity
+        return Math.ceilDiv(aggWeightedDebtSum * (block.timestamp - lastAggUpdateTime), ONE_YEAR * DECIMAL_PRECISION);
+```
+
+Interest is **simple, not compounded**, per interval, and compounds only when
+someone touches the position. Note `ceilDiv` here against floor division for
+individual Troves; the comment in the source explains why, and it is the same
+instinct as Aave's `TokenMath` rounding. The aggregate must round *up* so that
+`system debt ≥ sum(trove debt)` always holds, and the protocol can never end up
+owing more than it has recorded.
+
+Individual Troves derive their own share the same way, at
+[`v2-bold/contracts/src/TroveManager.sol:970-974`](v2-bold/contracts/src/TroveManager.sol#L970-L974):
+
+```solidity
+        trove.annualInterestRate = Troves[_troveId].annualInterestRate;
+        trove.weightedRecordedDebt = trove.recordedDebt * trove.annualInterestRate;
+        ...
+        trove.accruedInterest = _calcInterest(trove.weightedRecordedDebt, period);
+```
+
+### 2.3 Where the interest goes
+
+Minted interest is split 75/25 between Stability Pool depositors and a router for
+liquidity incentives
+([`Dependencies/Constants.sol:81`](v2-bold/contracts/src/Dependencies/Constants.sol#L81),
+applied at [`ActivePool.sol:248-264`](v2-bold/contracts/src/ActivePool.sol#L248-L264)):
+
+```solidity
+        mintedAmount = calcPendingAggInterest() + _upfrontFee;
+
+        // Mint part of the BOLD interest to the SP and part to the router for LPs.
+        if (mintedAmount > 0) {
+            uint256 spYield = SP_YIELD_SPLIT * mintedAmount / DECIMAL_PRECISION;
+            uint256 remainderToLPs = mintedAmount - spYield;
+```
+
+This is the other big economic change. A v1 Stability Pool depositor earned ETH
+from liquidations plus LQTY emissions, so their yield depended on volatility and
+on an inflating token. A v2 depositor earns **real borrower interest**, paid in
+BOLD, continuously. The protocol now has an internal revenue stream that funds
+its own backstop instead of paying for it with token emissions.
+
+### 2.4 Multi-collateral, and redemption routed by unbackedness
+
+v2 runs one branch per collateral, each with its own `TroveManager`,
+`StabilityPool` and price feed, coordinated by `CollateralRegistry`
+([`v2-bold/contracts/src/CollateralRegistry.sol`](v2-bold/contracts/src/CollateralRegistry.sol)).
+Risk parameters differ per branch: WETH gets a 110% MCR, staked-ETH collateral
+gets 120%
+([`Dependencies/Constants.sol:23-24`](v2-bold/contracts/src/Dependencies/Constants.sol#L23-L24)).
+
+A redemption is split across branches by **unbacked** BOLD, meaning debt not
+covered by that branch's own Stability Pool
+([`CollateralRegistry.sol:104-114`](v2-bold/contracts/src/CollateralRegistry.sol#L104-L114),
+allocated at [`:154`](v2-bold/contracts/src/CollateralRegistry.sol#L154)):
+
+```solidity
+                uint256 redeemAmount = _boldAmount * unbackedPortions[index] / totals.unbacked;
+```
+
+The pressure lands where the protection is thinnest, which is exactly right: a
+branch whose Stability Pool already covers its debt does not need redemptions to
+shrink it. Two fallbacks handle the corners. If no branch has unbacked debt,
+redemption is proportional to branch size
+([`:118-128`](v2-bold/contracts/src/CollateralRegistry.sol#L118-L128)). And a
+redemption larger than total unbacked debt is truncated rather than distributed
+disproportionately, with the source citing the audit finding that prompted it
+([`:130-135`](v2-bold/contracts/src/CollateralRegistry.sol#L130-L135)).
+
+### 2.5 Liquidation penalties become explicit
+
+v1 expressed liquidation loss implicitly: the Stability Pool got whatever
+collateral the Trove had, minus gas compensation, which at a 110% ICR happened to
+be roughly a 10% gain. v2 names the number
+([`Dependencies/Constants.sol:33`](v2-bold/contracts/src/Dependencies/Constants.sol#L33)
+and [`:36`](v2-bold/contracts/src/Dependencies/Constants.sol#L36)): a 5% penalty
+when the Stability Pool absorbs, 10% when the loss is redistributed, per branch.
+
+`_getCollPenaltyAndSurplus`
+([`v2-bold/contracts/src/TroveManager.sol:398-412`](v2-bold/contracts/src/TroveManager.sol#L398-L412))
+seizes only what the penalty justifies and returns the rest to the borrower:
+
+```solidity
+        uint256 maxSeizedColl = _debtToLiquidate * (DECIMAL_PRECISION + _penaltyRatio) / _price;
+        if (_collToLiquidate > maxSeizedColl) {
+            seizedColl = maxSeizedColl;
+            collSurplus = _collToLiquidate - maxSeizedColl;
+```
+
+v1's capped-offset branch was a special case reachable only in Recovery Mode. In
+v2 that behaviour is the default for every liquidation.
+
+### 2.6 Troves as NFTs, delegation, and batch managers
+
+A v1 Trove was keyed by owner address, so one address could hold exactly one
+Trove and it could not be transferred. In v2 a Trove is an ERC-721
+([`v2-bold/contracts/src/TroveNFT.sol:14`](v2-bold/contracts/src/TroveNFT.sol#L14))
+with on-chain generated metadata, so positions are transferable and composable.
+
+`AddRemoveManagers`
+([`v2-bold/contracts/src/Dependencies/AddRemoveManagers.sol`](v2-bold/contracts/src/Dependencies/AddRemoveManagers.sol))
+splits delegation in two: an add-manager may only improve your position, a
+remove-manager may withdraw, and a separate receiver address takes the proceeds
+([`:51`](v2-bold/contracts/src/Dependencies/AddRemoveManagers.sol#L51),
+[`:65`](v2-bold/contracts/src/Dependencies/AddRemoveManagers.sol#L65)). Granting
+someone the right to top you up is strictly safer than granting them the right to
+take from you, and the contract encodes that difference.
+
+**Batch managers** let a delegate set the interest rate for many Troves at once
+([`BorrowerOperations.sol:849`](v2-bold/contracts/src/BorrowerOperations.sol#L849),
+[`:967`](v2-bold/contracts/src/BorrowerOperations.sol#L967)), charging a fee
+capped at 10% annually
+([`Dependencies/Constants.sol:50`](v2-bold/contracts/src/Dependencies/Constants.sol#L50)).
+Since choosing a rate is now an active management decision, v2 provides a way to
+outsource it, and batched Troves share a list position so the whole batch moves
+as one.
+
+### 2.7 Branch shutdown and urgent redemption
+
+v1 had Recovery Mode, a global emergency state. v2 replaces it with per-branch
+shutdown: if a branch's TCR falls below its shutdown ratio, anyone can call
+`shutdown` ([`v2-bold/contracts/src/TroveManager.sol:934`](v2-bold/contracts/src/TroveManager.sol#L934)),
+which halts interest accrual on that branch
+([`ActivePool.sol:105`](v2-bold/contracts/src/ActivePool.sol#L105)) and enables
+`urgentRedemption`
+([`TroveManager.sol:874`](v2-bold/contracts/src/TroveManager.sol#L874)), which
+pays a 2% bonus
+([`Dependencies/Constants.sol:74`](v2-bold/contracts/src/Dependencies/Constants.sol#L74))
+to whoever helps wind the branch down. One collateral failing no longer freezes
+the others.
+
+### 2.8 v1 versus v2
+
+| | v1 (LUSD) | v2 (BOLD) |
+|---|---|---|
+| Interest | none, one-off fee at open | per-Trove rate chosen by the borrower, 0.5%–250% |
+| Sort order | nominal ICR | annual interest rate, descending |
+| Redemption target | lowest collateral ratio | lowest interest rate |
+| Redemption across markets | single market | split by unbacked debt per branch |
+| Collateral | ETH only | many branches, per-branch MCR/CCR/SCR |
+| Liquidation penalty | implicit; capped offset only in Recovery Mode | explicit 5% SP / 10% redistribution, always capped |
+| Emergency state | global Recovery Mode below 150% TCR | per-branch shutdown plus urgent redemption |
+| Position identity | one Trove per address | ERC-721, transferable |
+| Delegation | none | add/remove managers, receivers, batch managers |
+| SP yield | ETH from liquidations plus LQTY emissions | 75% of borrower interest, in BOLD |
+| Gas reserve | 200 LUSD | 0.0375 ETH |
+| Min debt | 1,800 LUSD net | 2,000 BOLD |
+| Governance | none | none |
+
+The through-line: v1 proved a CDP could run with no governance at all. v2 keeps
+that property and fixes the economics, turning interest into a market-discovered
+price for redemption priority rather than leaving the peg to depend on whoever
+was least careful.
+
+---
