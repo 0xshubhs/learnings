@@ -1,0 +1,113 @@
+import type { SuiClientTypes } from "@mysten/sui/client";
+import yargs from "yargs";
+import { getPackageId, getProvider } from "../../chains/sui";
+import { NETWORKS, NETWORK_OPTIONS, RPC_OPTIONS } from "../../consts";
+import { YargsAddCommandsFn } from "../Yargs";
+import { getNetwork } from "../../utils";
+
+export const addUtilsCommands: YargsAddCommandsFn = (y: typeof yargs) =>
+  y
+    .command(
+      "objects <owner>",
+      "Get owned objects by owner",
+      (yargs) =>
+        yargs
+          .positional("owner", {
+            describe: "Owner address",
+            type: "string",
+            demandOption: true,
+          })
+          .option("network", NETWORK_OPTIONS)
+          .option("rpc", RPC_OPTIONS),
+      async (argv) => {
+        const network = getNetwork(argv.network);
+        const rpc = argv.rpc ?? NETWORKS[network].Sui.rpc;
+        const owner = argv.owner;
+
+        const client = getProvider(network, rpc);
+        const objects: SuiClientTypes.ListOwnedObjectsResponse["objects"] = [];
+
+        let cursor: string | null = null;
+        let hasNextPage = true;
+        while (hasNextPage) {
+          const res: SuiClientTypes.ListOwnedObjectsResponse =
+            await client.listOwnedObjects({
+              owner,
+              cursor,
+            });
+          objects.push(...res.objects);
+          hasNextPage = res.hasNextPage;
+          cursor = res.cursor;
+        }
+
+        console.log("Network", network);
+        console.log("Owner", owner);
+        console.log("Objects", JSON.stringify(objects, null, 2));
+      }
+    )
+    .command(
+      "package-id <state-object-id>",
+      "Get package ID from State object ID",
+      (yargs) =>
+        yargs
+          .positional("state-object-id", {
+            describe: "Object ID of State object",
+            type: "string",
+            demandOption: true,
+          })
+          .option("network", NETWORK_OPTIONS)
+          .option("rpc", RPC_OPTIONS),
+      async (argv) => {
+        const network = getNetwork(argv.network);
+        const rpc = argv.rpc ?? NETWORKS[network].Sui.rpc;
+        const provider = getProvider(network, rpc);
+        console.log(await getPackageId(provider, argv["state-object-id"]));
+      }
+    )
+    // This command is useful for debugging, especially when the Sui explorer
+    // goes down :)
+    .command(
+      "tx <transaction-digest>",
+      "Get transaction details",
+      (yargs) =>
+        yargs
+          .positional("transaction-digest", {
+            describe: "Digest of transaction to fetch",
+            type: "string",
+            demandOption: true,
+          })
+          .option("network", {
+            alias: "n",
+            describe: "Network",
+            choices: ["mainnet", "testnet", "devnet"],
+            default: "devnet",
+            demandOption: false,
+          } as const)
+          .option("rpc", RPC_OPTIONS),
+      async (argv) => {
+        const network = getNetwork(argv.network);
+        const rpc = argv.rpc ?? NETWORKS[network].Sui.rpc;
+        const provider = getProvider(network, rpc);
+        const res = await provider.getTransaction({
+          digest: argv["transaction-digest"],
+          include: {
+            transaction: true,
+            effects: true,
+            events: true,
+            objectTypes: true,
+          },
+        });
+        console.log(
+          JSON.stringify(
+            res.Transaction ?? res.FailedTransaction,
+            (_key, value) =>
+              value instanceof Uint8Array
+                ? Buffer.from(value).toString("base64")
+                : typeof value === "bigint"
+                ? value.toString()
+                : value,
+            2
+          )
+        );
+      }
+    );

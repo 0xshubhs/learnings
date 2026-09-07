@@ -1,0 +1,7 @@
+[package]
+name = "wrapped_coin"
+version = "0.0.1"
+
+[dependencies]
+wormhole = { local = "../../wormhole" }
+token_bridge = { local = "../../token_bridge" }

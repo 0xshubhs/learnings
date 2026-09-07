@@ -1,0 +1,6 @@
+[package]
+name = "core_messages"
+version = "1.0.0"
+
+[dependencies]
+wormhole = { local = "../../wormhole" }
