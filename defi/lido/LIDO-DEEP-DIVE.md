@@ -367,12 +367,12 @@ Every check exists for a reason:
 
 | Check | Line | Defends against |
 |---|---|---|
-| `depositRoot` matches on-chain | [`:468`](core/contracts/0.8.9/DepositSecurityModule.sol#L468) | any new deposit landing between signing and execution, including the attacker's |
-| module `nonce` matches | [`:473`](core/contracts/0.8.9/DepositSecurityModule.sol#L473) | the key set changing after guardians vetted it |
-| quorum of signatures | [`:476`](core/contracts/0.8.9/DepositSecurityModule.sol#L476) | a single compromised guardian |
-| min deposit block distance | [`:477`](core/contracts/0.8.9/DepositSecurityModule.sol#L477) | rapid repeated deposits outrunning guardian review |
-| `blockhash(blockNumber) == blockHash` | [`:478`](core/contracts/0.8.9/DepositSecurityModule.sol#L478) | reorgs, and signatures older than 256 blocks |
-| `isDepositsPaused` | [`:479`](core/contracts/0.8.9/DepositSecurityModule.sol#L479) | the emergency stop |
+| `depositRoot` matches on-chain | [`:468`](core/contracts/0.8.9/DepositSecurityModule.sol#L470) | any new deposit landing between signing and execution, including the attacker's |
+| module `nonce` matches | [`:474`](core/contracts/0.8.9/DepositSecurityModule.sol#L474) | the key set changing after guardians vetted it |
+| quorum of signatures | [`:477`](core/contracts/0.8.9/DepositSecurityModule.sol#L477) | a single compromised guardian |
+| min deposit block distance | [`:478`](core/contracts/0.8.9/DepositSecurityModule.sol#L478) | rapid repeated deposits outrunning guardian review |
+| `blockhash(blockNumber) == blockHash` | [`:479`](core/contracts/0.8.9/DepositSecurityModule.sol#L479) | reorgs, and signatures older than 256 blocks |
+| `isDepositsPaused` | [`:480`](core/contracts/0.8.9/DepositSecurityModule.sol#L480) | the emergency stop |
 
 The deposit root check is the load-bearing one. `get_deposit_root()` is a
 Merkle root over *every* deposit ever made to the beacon deposit contract. If the
@@ -384,7 +384,7 @@ Signatures are checked in `_verifyAttestSignatures`
 ([`:490-520`](core/contracts/0.8.9/DepositSecurityModule.sol#L490-L520)) over the
 packed message `ATTEST_MESSAGE_PREFIX | blockNumber | blockHash | depositRoot |
 stakingModuleId | nonce`. Note the ascending-address sort requirement at
-[`:513`](core/contracts/0.8.9/DepositSecurityModule.sol#L513): it makes duplicate
+[`:515`](core/contracts/0.8.9/DepositSecurityModule.sol#L515): it makes duplicate
 signatures from one guardian impossible to sneak past the quorum count, in one
 comparison rather than a nested loop.
 
