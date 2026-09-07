@@ -542,7 +542,7 @@ value read from storage,
 as a `uint8` at
 [`wormhole/ethereum/contracts/bridge/BridgeState.sol:13`](wormhole/ethereum/contracts/bridge/BridgeState.sol#L13),
 and passes it on every publish — see `attestToken` at
-[`Bridge.sol:253`](wormhole/ethereum/contracts/bridge/Bridge.sol#L253). Moving
+[`Bridge.sol:254`](wormhole/ethereum/contracts/bridge/Bridge.sol#L254). Moving
 money is the "sacrifice latency over safety" case.
 
 ### 2.5 The fee model
