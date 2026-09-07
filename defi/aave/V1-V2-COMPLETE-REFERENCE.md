@@ -2998,3 +2998,263 @@ single call for front-ends. **`UiIncentiveDataProviderV2`** (287) and
   struct is part of the ABI and changing it would break deployed front-ends. The
   `V2V3` suffix means "works against both a v2 and a v3 market", which is how
   the Aave interface served both during the migration.
+
+## 2.17 `adapters/` — flash-loan-powered position management
+
+`aave/v2-protocol/contracts/adapters/` (8 files). These are not part of the
+protocol; they are `IFlashLoanReceiver` implementations that compose
+`flashLoan` with a DEX to do in one transaction what would otherwise need
+several and would break the health factor in between.
+
+Every adapter follows the same shape:
+
+```
+user ──► adapter.<entry point>(...)
+              │  (path A: no flash loan needed)
+              └─► _pullAToken ──► pool.withdraw ──► swap ──► pool.deposit/repay
+
+user ──► pool.flashLoan(adapter, ...)
+              └─► adapter.executeOperation(assets, amounts, premiums, initiator, params)
+                        │  decode params
+                        │  do the work with the borrowed funds
+                        └─► approve pool for amount + premium, return true
+```
+
+### `BaseUniswapAdapter` (`BaseUniswapAdapter.sol`, 566 lines)
+
+Shared machinery. `Ownable`, holds `UNISWAP_ROUTER`, `WETH_ADDRESS` and the
+oracle.
+
+| Function | Line | Purpose |
+|---|---:|---|
+| `getAmountsOut(amountIn, reserveIn, reserveOut)` | `:60` | Best exact-in quote, with USD values and the chosen path |
+| `getAmountsIn(amountOut, reserveIn, reserveOut)` | `:97` | Best exact-out quote |
+| `_swapExactTokensForTokens(...)` | `:132` | Executes exact-in, enforcing a max slippage against oracle prices |
+| `_swapTokensForExactTokens(...)` | `:191` | Executes exact-out |
+| `_getPrice(asset)` | `:247` | Oracle price |
+| `_getDecimals(asset)` | `:255` | |
+| `_getReserveData(asset)` | `:263` | Reserve struct from the pool |
+| `_pullAToken(reserve, aToken, user, amount, permitSignature)` | `:275` | Optionally `permit`, then `transferFrom` the user's aTokens and `pool.withdraw` |
+| `_usePermit(signature)` | `:307` | True when the signature is non-empty |
+| `_calcUsdValue(reserve, amount, decimals)` | `:319` | Oracle value in USD |
+| `_getAmountsOutData(...)` | `:341` | Compares the direct pair against the WETH-routed path and picks the better |
+| `_getAmountsInData(...)` | `:433` | Same for exact-out |
+| `_getAmountsInAndPath(...)` | `:486` | Path selection helper |
+| `_getAmountsIn(...)` | `:536` | Raw router call |
+| `rescueTokens(token)` | `:563` | `onlyOwner` sweep |
+
+- **Slippage defence.** The swap helpers compare the DEX output against the
+  Aave oracle's valuation and revert if the gap exceeds `MAX_SLIPPAGE_PERCENT`.
+  The adapters therefore inherit the oracle's trust assumptions on top of the
+  DEX's.
+- **Gotcha — `useEthPath`.** Several entry points take a `bool[] useEthPath`
+  telling the adapter to route through WETH rather than a direct pair. It is a
+  caller-supplied hint, not a computed optimum, so a bad hint costs the user
+  slippage.
+
+### `UniswapLiquiditySwapAdapter` (283 lines) — swap one collateral for another
+
+- **`swapAndDeposit(assetToSwapFromList, assetToSwapToList, amountToSwapList,
+  minAmountsToReceive, permitParams, useEthPath)` (`:130`)** is the no-flash-loan
+  path: pull aTokens, withdraw, swap, deposit the proceeds back on behalf of the
+  user. Requires the user to be over-collateralised enough to withdraw first.
+- **`executeOperation(assets, amounts, premiums, initiator, params)` (`:57`)** is
+  the flash-loan path: the borrowed asset is the *destination* collateral, which
+  is deposited for the user immediately; then the user's original collateral is
+  pulled and swapped to repay the loan plus premium. `_swapLiquidity` (`:200`)
+  does the work.
+- **`_decodeParams(bytes)` (`:257`)** unpacks the `SwapParams` struct from the
+  flash loan's `params` blob.
+- **Why the flash loan matters.** Withdrawing collateral first would drop the
+  health factor below 1 for a leveraged position. Depositing the new collateral
+  *before* removing the old one keeps the position solvent at every intermediate
+  step.
+
+### `UniswapRepayAdapter` (266 lines) — repay debt with collateral
+
+- **`swapAndRepay(collateralAsset, debtAsset, collateralAmount, debtRepayAmount,
+  debtRateMode, permitSignature, useEthPath)` (`:91`)** pulls collateral, swaps
+  to the debt asset, repays.
+- **`executeOperation` (`:51`)** flash-borrows the *debt* asset, repays the
+  user's debt with it, then pulls and swaps collateral to close the flash loan.
+  `_swapAndRepay` (`:162`) is the internal.
+- **Gotcha.** Repaying first raises the health factor, which is what makes the
+  subsequent collateral withdrawal legal. Same ordering trick as the liquidity
+  adapter, mirrored.
+
+### `FlashLiquidationAdapter` (184 lines) — liquidate with no capital
+
+- **`executeOperation` (`:64`)** → `_liquidateAndSwap` (`:102`): use the
+  flash-borrowed debt asset to call `pool.liquidationCall`, receive the
+  discounted collateral, swap enough of it back to the debt asset to repay the
+  loan plus premium, and send the remainder to the initiator as profit.
+- **`LiquidationParams`** (`:24`) carries `collateralAsset`, `borrowedAsset`,
+  `user`, `debtToCover`, `useEthPath`.
+- **Gotcha.** The liquidation bonus must exceed the flash-loan premium (0.09%)
+  plus DEX fees plus slippage, or the transaction reverts on the repayment. This
+  is the practical floor on how thin a liquidation bonus can be set.
+
+### ParaSwap variants
+
+`BaseParaSwapAdapter` (122), `BaseParaSwapSellAdapter` (109) and
+`ParaSwapLiquiditySwapAdapter` (210) mirror the Uniswap trio against ParaSwap's
+Augustus router. The structural difference is that ParaSwap swaps are executed
+from **off-chain-built calldata** passed in by the caller, so the adapter
+validates the Augustus address against `IParaSwapAugustusRegistry` and checks
+the received amount, rather than constructing the route itself.
+
+### `interfaces/IBaseUniswapAdapter.sol` (90 lines)
+
+Declares `PermitSignature` (`deadline, v, r, s, amount`), `AmountCalc`
+(`calculatedAmount, relativePrice, amountInUsd, amountOutUsd, path`) and the
+adapter surface.
+
+## 2.18 `flashloan/`, `deployments/`, `dependencies/`, `mocks/`
+
+### `flashloan/`
+
+**`interfaces/IFlashLoanReceiver.sol`** (25 lines) declares the multi-asset
+callback:
+
+```solidity
+function executeOperation(
+  address[] calldata assets,
+  uint256[] calldata amounts,
+  uint256[] calldata premiums,
+  address initiator,
+  bytes calldata params
+) external returns (bool);
+```
+
+plus `ADDRESSES_PROVIDER()` and `LENDING_POOL()`.
+
+**`base/FlashLoanReceiverBase.sol`** (22 lines) is an abstract contract storing
+those two as immutables. Note it does **not** implement `executeOperation` and
+does **not** approve the pool — both are the integrator's responsibility, and
+forgetting the approval is the most common flash-loan integration bug.
+
+- **Gotcha — `initiator` is not `msg.sender`.** `msg.sender` inside
+  `executeOperation` is the `LendingPool`; `initiator` is whoever called
+  `flashLoan`. A receiver that trusts `initiator` without also checking
+  `msg.sender == LENDING_POOL` can be called directly by anyone with forged
+  arguments.
+
+### `deployments/`
+
+`ATokensAndRatesHelper.sol` (86) batch-deploys token implementations and rate
+strategies and calls `configureReserves` during market setup.
+`StableAndVariableTokensHelper.sol` (47) deploys the two debt token
+implementations. `StringLib.sol` (8) is a `concat` helper for building token
+names like `"Aave interest bearing USDC"`. All three are deployment-time only.
+
+### `dependencies/`
+
+Nine vendored OpenZeppelin contracts (936 lines) — `ERC20`, `IERC20`,
+`IERC20Detailed`, `SafeERC20`, `SafeMath`, `Address`, `Context`, `Ownable`,
+`ReentrancyGuard` — and eight upgradeability contracts (465 lines) mirroring
+v1's set. Vendored rather than imported so the compiler version and the exact
+source are pinned.
+
+### `mocks/`
+
+`WETH9.sol` (758) is the canonical WETH source. `MockFlashLoanReceiver.sol` (84)
+is a configurable-failure receiver for testing the revert paths.
+`SefldestructTransfer.sol` (8, the typo is in the repo) force-sends ETH via
+`selfdestruct` to test that no contract depends on its own balance being
+un-donatable. `mocks/oracle/*` (6 files) provide settable price and lending-rate
+oracles. `mocks/swap/*` (4 files) mock the Uniswap router and the ParaSwap
+Augustus, registry and transfer proxy. `mocks/tokens/*` (3 files) give
+`MintableERC20`, `MintableDelegationERC20` and `WETH9Mocked`.
+`mocks/upgradeability/*` (3 files) are revision-bumped token implementations
+used to exercise `VersionedInitializable`.
+
+## 2.19 The complete `Errors.sol` table
+
+`aave/v2-protocol/contracts/protocol/libraries/helpers/Errors.sol` (119 lines).
+v2 replaced v1's long revert strings with **numeric codes as strings** — the
+revert reason is literally `"1"`, `"32"` and so on. The saving is real: each
+long string was a separate constant in bytecode.
+
+The prefix encodes the origin: `VL` validation logic, `LP` lending pool, `CT`
+common token, `RL` reserve logic, `LPC` configurator, `RC` reserve
+configuration, `SDT` stable debt token, `MATH` math libraries, `LPCM` collateral
+manager.
+
+| Code | Identifier | Meaning |
+|---:|---|---|
+| 1 | `CALLER_NOT_POOL_ADMIN` | Not the pool admin |
+| 2 | `BORROW_ALLOWANCE_NOT_ENOUGH` | Credit delegation allowance too small |
+| 12 | `VL_INVALID_AMOUNT` | Amount is zero |
+| 2 (VL) | `VL_NO_ACTIVE_RESERVE` | Reserve deactivated |
+| — | `VL_RESERVE_FROZEN` | Reserve frozen |
+| — | `VL_CURRENT_AVAILABLE_LIQUIDITY_NOT_ENOUGH` | Not enough liquidity |
+| — | `VL_NOT_ENOUGH_AVAILABLE_USER_BALANCE` | Withdrawing more than held |
+| — | `VL_TRANSFER_NOT_ALLOWED` | Would break the health factor |
+| — | `VL_BORROWING_NOT_ENABLED` | Borrowing disabled for this reserve |
+| — | `VL_INVALID_INTEREST_RATE_MODE_SELECTED` | Mode is not 1 or 2 |
+| — | `VL_COLLATERAL_BALANCE_IS_0` | No collateral at all |
+| — | `VL_HEALTH_FACTOR_LOWER_THAN_LIQUIDATION_THRESHOLD` | Already unhealthy |
+| — | `VL_COLLATERAL_CANNOT_COVER_NEW_BORROW` | Exceeds borrowing power |
+| — | `VL_STABLE_BORROWING_NOT_ENABLED` | Stable disabled for this reserve |
+| — | `VL_COLLATERAL_SAME_AS_BORROWING_CURRENCY` | The stable self-borrow guard |
+| — | `VL_AMOUNT_BIGGER_THAN_MAX_LOAN_SIZE_STABLE` | Above 25% of liquidity |
+| — | `VL_NO_DEBT_OF_SELECTED_TYPE` | No debt in the chosen mode |
+| — | `VL_NO_EXPLICIT_AMOUNT_TO_REPAY_ON_BEHALF` | `uint256.max` repay on behalf |
+| — | `VL_NO_STABLE_RATE_LOAN_IN_RESERVE` | Swapping a non-existent stable loan |
+| — | `VL_NO_VARIABLE_RATE_LOAN_IN_RESERVE` | Swapping a non-existent variable loan |
+| — | `VL_UNDERLYING_BALANCE_NOT_GREATER_THAN_0` | Enabling collateral with no balance |
+| — | `VL_DEPOSIT_ALREADY_IN_USE` | Disabling collateral that backs debt |
+| — | `VL_INTEREST_RATE_REBALANCE_CONDITIONS_NOT_MET` | Rebalance thresholds unmet |
+| — | `VL_INCONSISTENT_FLASHLOAN_PARAMS` | Array lengths differ |
+| — | `LP_NOT_ENOUGH_STABLE_BORROW_BALANCE` | |
+| — | `LP_INTEREST_RATE_REBALANCE_CONDITIONS_NOT_MET` | |
+| — | `LP_LIQUIDATION_CALL_FAILED` | The delegatecall reverted |
+| — | `LP_NOT_ENOUGH_LIQUIDITY_TO_BORROW` | |
+| — | `LP_REQUESTED_AMOUNT_TOO_SMALL` | |
+| — | `LP_INCONSISTENT_PROTOCOL_ACTUAL_BALANCE` | |
+| — | `LP_CALLER_NOT_LENDING_POOL_CONFIGURATOR` | |
+| — | `LP_INVALID_FLASH_LOAN_EXECUTOR_RETURN` | `executeOperation` returned false |
+| — | `LP_IS_PAUSED` | Global pause active |
+| — | `LP_NO_MORE_RESERVES_ALLOWED` | 128-reserve ceiling |
+| — | `LP_CALLER_MUST_BE_AN_ATOKEN` | `finalizeTransfer` caller check |
+| — | `LP_INVALID_FLASHLOAN_MODE` | |
+| — | `CT_CALLER_MUST_BE_LENDING_POOL` | `onlyLendingPool` on a token |
+| — | `CT_INVALID_MINT_AMOUNT` | Scaled amount rounded to zero |
+| — | `CT_INVALID_BURN_AMOUNT` | Scaled amount rounded to zero |
+| — | `RL_RESERVE_ALREADY_INITIALIZED` | Double listing |
+| — | `RL_LIQUIDITY_INDEX_OVERFLOW` | Index exceeded `uint128` |
+| — | `RL_VARIABLE_BORROW_INDEX_OVERFLOW` | |
+| — | `RL_LIQUIDITY_RATE_OVERFLOW` | |
+| — | `RL_VARIABLE_BORROW_RATE_OVERFLOW` | |
+| — | `RL_STABLE_BORROW_RATE_OVERFLOW` | |
+| — | `RC_INVALID_LTV` | Above 65535 |
+| — | `RC_INVALID_LIQ_THRESHOLD` | |
+| — | `RC_INVALID_LIQ_BONUS` | |
+| — | `RC_INVALID_DECIMALS` | Above 255 |
+| — | `RC_INVALID_RESERVE_FACTOR` | |
+| — | `LPC_RESERVE_LIQUIDITY_NOT_0` | Deactivating a non-empty reserve |
+| — | `LPC_INVALID_CONFIGURATION` | LTV/threshold/bonus inconsistent |
+| — | `LPC_CALLER_NOT_EMERGENCY_ADMIN` | |
+| — | `LPAPR_PROVIDER_NOT_REGISTERED` | Registry lookup miss |
+| — | `SDT_STABLE_DEBT_OVERFLOW` | Blended rate exceeded `uint128` |
+| — | `SDT_BURN_EXCEEDS_BALANCE` | |
+| — | `MATH_MULTIPLICATION_OVERFLOW` | |
+| — | `MATH_ADDITION_OVERFLOW` | |
+| — | `MATH_DIVISION_BY_ZERO` | |
+
+Plus the `CollateralManagerErrors` enum used by the liquidation return-code
+protocol: `NO_ERROR`, `NO_COLLATERAL_AVAILABLE`, `COLLATERAL_CANNOT_BE_LIQUIDATED`,
+`CURRRENCY_NOT_BORROWED` (the triple-R typo is in the source),
+`HEALTH_FACTOR_ABOVE_THRESHOLD`, `NOT_ENOUGH_LIQUIDITY`, `NO_ACTIVE_RESERVE`,
+`HEALTH_FACTOR_LOWER_THAN_LIQUIDATION_THRESHOLD`, `INVALID_EQUAL_ASSETS_TO_SWAP`,
+`FROZEN_RESERVE`.
+
+- **How to read a v2 revert in practice.** The transaction fails with reason
+  `"33"` or similar. Grep `Errors.sol` for the numeric literal to recover the
+  identifier, then grep the codebase for that identifier to find every throw
+  site. `grep -n "'33'" aave/v2-protocol/contracts/protocol/libraries/helpers/Errors.sol`
+  is the first step; the constants are declared with their codes as string
+  literals.
+- **Gotcha.** Several codes are reused across prefixes because the numbering
+  restarted per group during development. Always match on the *identifier*, not
+  the number, when reading the source.

@@ -159,7 +159,7 @@ appear in this document.)
 | `math/PercentageMath.sol` | 120 | [5.2](#52-percentagemath) |
 | `math/MathUtils.sol` | 116 | [5.3](#53-mathutils) |
 | `helpers/TokenMath.sol` | 114 | [5.4](#54-tokenmath) |
-| `helpers/Errors.sol` | 95 | [21.4](#214-complete-errors-table) |
+| `helpers/Errors.sol` | 95 | [21.6](#216-the-complete-errorssol-table) |
 | `configuration/EModeConfiguration.sol` | 53 | [4.3](#43-emodeconfiguration) |
 | `libraries/types/ConfiguratorInputTypes.sol` | 32 | [3.5](#35-configuratorinputtypes) |
 
@@ -171,20 +171,20 @@ appear in this document.)
 | `tokenization/AToken.sol` | 338 | [18.3](#183-atoken) |
 | `tokenization/base/IncentivizedERC20.sol` | 324 | [18.1](#181-incentivizederc20) |
 | `tokenization/VariableDebtToken.sol` | 196 | [18.5](#185-variabledebttoken) |
-| `tokenization/base/ScaledBalanceTokenBase.sol` | 135 | [18.2](#182-scaledbalancetokenbase) |
+| `tokenization/base/ScaledBalanceTokenBase.sol` | 135 | [18.2](#182-mintableincentivizederc20-and-scaledbalancetokenbase) |
 | `tokenization/ATokenWithDelegation.sol` | 129 | [18.6](#186-atokenwithdelegation) |
 | `tokenization/base/DebtTokenBase.sol` | 121 | [18.4](#184-debttokenbase) |
 | `tokenization/delegation/interfaces/IBaseDelegation.sol` | 111 | [18.7](#187-basedelegation) |
 | `tokenization/base/EIP712Base.sol` | 70 | [18.0](#180-eip712base) |
-| `tokenization/base/MintableIncentivizedERC20.sol` | 64 | [18.2](#182-scaledbalancetokenbase) |
+| `tokenization/base/MintableIncentivizedERC20.sol` | 64 | [18.2](#182-mintableincentivizederc20-and-scaledbalancetokenbase) |
 | `tokenization/base/DelegationMode.sol` | 9 | [18.6](#186-atokenwithdelegation) |
 
 ### `protocol/configuration/` (3 files)
 
 | File | Lines | § |
 |---|---|---|
-| `configuration/PoolAddressesProvider.sol` | 209 | [19.1](#191-pooladdressesprovider) |
-| `configuration/ACLManager.sol` | 133 | [19.2](#192-aclmanager) |
+| `configuration/PoolAddressesProvider.sol` | 209 | [19.2](#192-pooladdressesprovider) |
+| `configuration/ACLManager.sol` | 133 | [19.1](#191-aclmanager) |
 | `configuration/PoolAddressesProviderRegistry.sol` | 104 | [19.3](#193-pooladdressesproviderregistry) |
 
 ### `src/contracts/interfaces/` (22 files)
@@ -245,7 +245,7 @@ directly on `Pool`'s storage.
 1. **Balances are stored scaled.** A user's aToken balance is
    `scaledBalance × liquidityIndex`. Interest accrues by moving one global
    index, never by touching user storage. See [§5.4](#54-tokenmath) and
-   [§18.2](#182-scaledbalancetokenbase).
+   [§18.2](#182-mintableincentivizederc20-and-scaledbalancetokenbase).
 2. **Every rounding goes the protocol's way.** `TokenMath` **[3.5]** fixes each
    operation's direction: mint down, burn up, debt up. See
    [§5.4](#54-tokenmath).
@@ -830,7 +830,7 @@ index, minus the reserve factor, is the protocol's safety margin.
    ```
 
 It accrues *scaled* and stays there. No aTokens are minted until someone calls
-`Pool.mintToTreasury` ([§13.4](#134-executeminttotreasury)) — so the treasury's
+`Pool.mintToTreasury` ([§13.4](#134-executeminttotreasuryreservesdata-assets--108-133)) — so the treasury's
 claim grows with the index like any supplier's.
 
 ### 6.5 `updateInterestRatesAndVirtualBalance(...)` — `:130-175`
@@ -1146,7 +1146,7 @@ their own LTV.
 
 Returning `0` does not merely zero the borrowing power — it sets
 `hasZeroLtvCollateral` in `GenericLogic`, which activates the withdraw-first
-rule in [§7.11](#711-validatehfandltvzero).
+rule in [§7.11](#711-validatehfandltvzero--398-430).
 
 ---
 
@@ -1202,7 +1202,7 @@ For each touched reserve (`:90-148`):
 5. **If collateral** (`:105-138`):
    - `userBalanceInBaseCurrency = _getUserBalanceInBaseCurrency(...)` (`:106-111`)
    - accumulate `totalCollateralInBaseCurrency` (`:113`)
-   - `vars.ltv = ValidationLogic.getUserReserveLtv(...)` (`:115-119`) — the [§7.15](#715-getuserreserveltv) resolver
+   - `vars.ltv = ValidationLogic.getUserReserveLtv(...)` (`:115-119`) — the [§7.15](#715-getuserreserveltvreservedata-emodecategorydata-categoryid--524-549) resolver
    - **if `ltv == 0`, set `hasZeroLtvCollateral = true` and do not add to
      `avgLtv`** (`:120-124`). The asset still counts as collateral for HF, but
      contributes zero borrowing power.
@@ -1376,7 +1376,7 @@ always pays at least enough shares (comment at `:146`).
 - if the burn emptied the balance, clear the collateral bit (`:156-158`);
 - **only if the user is borrowing anything** (`:159`), run
   `validateHFAndLtvzero` (`:160-169`) — which enforces both HF ≥ 1 and the
-  ltv0-withdraw-first rule ([§7.11](#711-validatehfandltvzero)).
+  ltv0-withdraw-first rule ([§7.11](#711-validatehfandltvzero--398-430)).
 
 A user with no debt skips the oracle loop entirely — withdrawal is cheap.
 
@@ -1605,7 +1605,7 @@ collateral balance.
 
 #### Phase 2 — validate (`:213-224`)
 
-`ValidationLogic.validateLiquidationCall` — see [§7.8](#78-validateliquidationcall).
+`ValidationLogic.validateLiquidationCall` — see [§7.8](#78-validateliquidationcallborrowerconfig-collateralreserve-debtreserve-params--253-292).
 
 #### Phase 3 — pick the liquidation bonus (`:226-239`)
 

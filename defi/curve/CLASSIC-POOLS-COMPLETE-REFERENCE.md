@@ -874,3 +874,320 @@ While killed, `add_liquidity`, `exchange`, `remove_liquidity_imbalance` and
 `remove_liquidity_one_coin` all revert; only `remove_liquidity` works.
 
 ---
+
+## 4. `pool-templates/y` — the lending template
+
+`pool-templates/y/SwapTemplateY.vy`, 1040 lines, `@version ^0.2.8`.
+
+The pool holds **wrapped, interest-bearing** tokens (yearn yTokens) but wants to
+quote prices in the **underlying** asset. It therefore keeps two coin arrays and
+recomputes the conversion rate on every call.
+
+### 4.1 `_stored_rates` — the only real change
+
+`:222-226`, `@view @internal`:
+
+```python
+def _stored_rates() -> uint256[N_COINS]:
+    result: uint256[N_COINS] = PRECISION_MUL
+    for i in range(N_COINS):
+        result[i] *= yERC20(self.coins[i]).getPricePerFullShare()
+    return result
+```
+
+Where the base template has a compile-time `RATES` constant, this reads
+`getPricePerFullShare()` from each yToken at call time. Everything downstream is
+identical, which is why `_xp` (`:231-235`) and `_xp_mem` (`:240-244`) take
+`_rates` as a parameter here rather than reading a constant.
+
+`LENDING_PRECISION: constant(uint256) = 10 ** 18` is declared alongside
+`PRECISION`; both are 1e18 and the split is documentation, not arithmetic.
+
+**Trust.** The rate comes from an external contract on every quote. A yToken that
+misreports `getPricePerFullShare` mis-prices the entire pool. There is no
+sanity band, no EMA, and no staleness check.
+
+### 4.2 Extra storage
+
+`underlying_coins: public(address[N_COINS])` sits alongside `coins`. Both are set
+in `__init__`.
+
+### 4.3 `exchange_underlying`
+
+`:603-655`, `@external @nonreentrant('lock')`.
+
+```
+exchange_underlying(i, j, _dx, _min_dy) -> uint256
+```
+
+The interesting part is the wrap/unwrap sandwich (`:613-638`):
+
+```python
+rates: uint256[N_COINS] = self._stored_rates()
+precisions: uint256[N_COINS] = PRECISION_MUL
+dx: uint256 = _dx * PRECISION / (rates[i] / precisions[i])
+dy_: uint256 = self._exchange(i, j, dx, rates)
+dy: uint256 = dy_ * (rates[j] / precisions[j]) / PRECISION
+assert dy >= _min_dy, "Exchange resulted in fewer coins than expected"
+# ... transferFrom the underlying in ...
+yERC20(self.coins[i]).deposit(_dx)
+yERC20(self.coins[j]).withdraw(dy_)
+dy = ERC20(self.underlying_coins[j]).balanceOf(self)
+assert dy >= _min_dy, "Exchange resulted in fewer coins than expected"
+```
+
+Note the double check on `_min_dy`. The comment at `:637` explains the reason:
+*"y-tokens calculate imprecisely - use all available"*. Rather than trust the
+predicted `dy`, the contract deposits, swaps, withdraws, then reads its **actual**
+underlying balance and sends all of it. That works only because the pool is never
+supposed to hold a bare underlying balance between transactions.
+
+### 4.4 The other additions
+
+`get_dx`, `get_dy_underlying`, `get_dx_underlying` are view helpers that apply the
+same rate conversion around `_get_y`. `_exchange` is the shared internal that both
+`exchange` and `exchange_underlying` call, factored out because the two differ
+only in what they transfer.
+
+---
+
+## 5. `pool-templates/a` — the Aave template
+
+`pool-templates/a/SwapTemplateA.vy`, 1126 lines, `@version ^0.2.8`.
+
+Aave aTokens **rebase**: your balance grows without a transfer. That breaks the
+base template's core assumption that `self.balances[i]` tracks holdings, so this
+template abandons stored balances entirely and adds a dynamic fee.
+
+### 5.1 `_balances` — live reads instead of stored state
+
+`:273-277`, `@view @internal`:
+
+```python
+def _balances() -> uint256[N_COINS]:
+    result: uint256[N_COINS] = empty(uint256[N_COINS])
+    for i in range(N_COINS):
+        result[i] = ERC20(self.coins[i]).balanceOf(self) - self.admin_balances[i]
+    return result
+```
+
+Compare with base, where `balances` is a storage array. Here it is derived: the
+pool's true holdings minus the admin fees it owes. Interest accrued by rebasing
+therefore flows to LPs automatically, with no bookkeeping at all.
+
+Consequently `admin_balances` becomes a **storage array** in this template rather
+than the computed getter of §3.16 — the subtraction runs the other way.
+
+Because aTokens are always 1:1 with their underlying, `RATES` stays constant;
+`pool_types` calls this `arate`.
+
+### 5.2 `_dynamic_fee` — the ancestor of NG's fee
+
+`:233-241`, `@view @internal`:
+
+```python
+def _dynamic_fee(_xpi: uint256, _xpj: uint256, _fee: uint256, _feemul: uint256) -> uint256:
+    if _feemul <= FEE_DENOMINATOR:
+        return _fee
+    else:
+        xps2: uint256 = (_xpi + _xpj)
+        xps2 *= xps2  # Doing just ** 2 can overflow apparently
+        return (_feemul * _fee) / (
+            (_feemul - FEE_DENOMINATOR) * 4 * _xpi * _xpj / xps2 + \
+            FEE_DENOMINATOR)
+```
+
+Write `m = _feemul / FEE_DENOMINATOR` and let `r = 4·x_i·x_j / (x_i + x_j)²`.
+Then `r = 1` exactly when the two balances are equal, and `r → 0` as they
+diverge. The fee becomes
+
+```
+fee_dyn = fee · m / ((m − 1)·r + 1)
+```
+
+At balance (`r = 1`) that is `fee·m/m = fee`, the base rate. Fully imbalanced
+(`r → 0`) it approaches `fee·m`. So `offpeg_fee_multiplier` is a straight cap on
+how much worse the fee gets when the pool is off peg, and setting it to
+`FEE_DENOMINATOR` or below disables the mechanism (the early return at `:234-235`).
+
+The inline comment at `:238` is a genuine Vyper gotcha: `(_xpi + _xpj) ** 2`
+overflows where `xps2 *= xps2` on a pre-narrowed value does not.
+
+Public wrapper `dynamic_fee(i, j)` at `:246-256`.
+
+The dynamic fee is applied at the *midpoint* of the trade, not the endpoints —
+see `:561` and `:592`, both of which pass `(xp[i] + x) / 2, (xp[j] + y) / 2`.
+Charging on the average of pre- and post-trade balances stops a trader from
+splitting one large swap into many small ones to stay near the cheap end.
+
+### 5.3 Aave-specific plumbing
+
+- `aave_referral: uint256` (`:125`) and `set_aave_referral` — a uint16 referral
+  code (`# dev: uint16 overflow`) passed through to Aave's `deposit`/`withdraw`
+  at `:438`, `:467` and `:689`.
+- `offpeg_fee_multiplier: public(uint256)` (`:117`) with
+  `future_offpeg_fee_multiplier` (`:136`), ramped through the same 3-day
+  timelock. `commit_new_fee` gains a third parameter (`:1007`) and an extra
+  guard: `assert _new_offpeg_fee_multiplier * _new_fee <= MAX_FEE * FEE_DENOMINATOR`
+  (`:1012`, `# dev: offpeg multiplier exceeds maximum`) — the *worst-case*
+  dynamic fee, not the base fee, is what must stay under `MAX_FEE`.
+
+---
+
+## 6. `pool-templates/eth` — the native-ETH template
+
+`pool-templates/eth/SwapTemplateEth.vy`, 902 lines, `@version ^0.2.8`.
+
+### 6.1 What is missing
+
+There is no `RATES`, no `PRECISION_MUL`, no `_xp` and no `_xp_mem`. Compare the
+constants block at `:83-84` with base's `:81-83`: only `N_COINS` survives. Every
+coin in an ETH pool is 18 decimals (ETH itself, and 18-decimal LSTs), so raw
+balances *are* normalised balances. `_get_y` and `_get_D` are handed
+`self.balances` directly — see `exchange` at `:441-442`, which calls
+`self._get_y(i, j, x, old_balances)` with no conversion.
+
+That removal is the single largest structural difference in the family, and it is
+why the ETH template is shorter than base despite adding native-currency handling.
+
+### 6.2 The ETH sentinel
+
+Native ETH is represented by the address
+`0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE`, checked inline. From `exchange`
+(`:476-509`):
+
+```python
+coin: address = self.coins[i]
+if coin == 0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE:
+    assert msg.value == _dx
+else:
+    assert msg.value == 0
+    # ... safe transferFrom ...
+
+coin = self.coins[j]
+if coin == 0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE:
+    raw_call(msg.sender, b"", value=dy)
+else:
+    # ... safe transfer ...
+```
+
+Two things to note. First, the input branch asserts `msg.value == 0` for the
+ERC20 side, so ETH cannot be stranded. Second — and this is the important one —
+the output branch uses `raw_call(msg.sender, b"", value=dy)`, which **forwards all
+remaining gas**. Vyper's `send()` would forward only the 2300-gas stipend; this
+does not. The recipient gets full control mid-function.
+
+The `@nonreentrant('lock')` decorator stops that callee from re-entering
+`exchange`. It does **not** stop it from calling a `@view` function. That is §17.1.
+
+---
+
+## 7. `pool-templates/meta` — the metapool template
+
+`pool-templates/meta/SwapTemplateMeta.vy`, 1119 lines, `@version ^0.2.12`.
+
+A metapool has exactly two coins: a new asset, and the **LP token of an existing
+base pool**. `GUSD/3CRV` is a 2-coin pool where coin 1 is worth whatever one 3CRV
+is worth. That lets a new stablecoin get depth against DAI, USDC and USDT without
+fragmenting liquidity.
+
+### 7.1 Extra storage and constants
+
+| Name | Line | Purpose |
+|---|---|---|
+| `BASE_N_COINS` | 107 | Compile-time coin count of the base pool |
+| `BASE_CACHE_EXPIRES` | 129 | `10 * 60` — ten minutes |
+| `base_pool: public(address)` | 130 | |
+| `base_virtual_price: public(uint256)` | 131 | Cached rate |
+| `base_cache_updated: public(uint256)` | 132 | Cache timestamp |
+| `base_coins: public(address[BASE_N_COINS])` | 133 | Underlying coins of the base pool |
+
+`__init__` (`:183-195`) stores the base pool, seeds
+`base_virtual_price = Curve(_base_pool).get_virtual_price()`, reads each
+`base_coins[i]` from the base pool, and grants the base pool a max approval for
+each of them so `exchange_underlying` can deposit without re-approving.
+
+### 7.2 `_vp_rate` and `_vp_rate_ro`
+
+`:259-266` (mutating) and `:271-275` (`@view`):
+
+```python
+@internal
+def _vp_rate() -> uint256:
+    if block.timestamp > self.base_cache_updated + BASE_CACHE_EXPIRES:
+        vprice: uint256 = Curve(self.base_pool).get_virtual_price()
+        self.base_virtual_price = vprice
+        self.base_cache_updated = block.timestamp
+        return vprice
+    else:
+        return self.base_virtual_price
+```
+
+`RATES[1]` is not a constant here — it is the base pool's virtual price, i.e. how
+much one LP token is worth. Every math entry point sets
+`rates[MAX_COIN] = self._vp_rate()` before calling `_get_D` or `_get_y`; see
+`exchange_underlying` at `:651-652`.
+
+The ten-minute cache exists purely for gas: `get_virtual_price` on the base pool
+runs a full Newton iteration, and a metapool would otherwise pay for it on every
+single call. `_vp_rate_ro` is the read-only twin used by `@view` functions, which
+cannot write the cache.
+
+**The consequence worth understanding:** for up to ten minutes, a metapool prices
+its base LP token using a *stale* virtual price. Since virtual price moves only
+with accrued fees, that drift is tiny in normal operation. But it also means a
+metapool inherits every correctness property of the base pool's
+`get_virtual_price` — including the read-only reentrancy of §17.1 when the base
+pool holds native ETH.
+
+### 7.3 `exchange_underlying`
+
+`:640-751`, `@external @nonreentrant('lock')`.
+
+This is the function that makes metapools useful: trade GUSD directly for USDC,
+even though the pool only holds GUSD and 3CRV.
+
+Index mapping (`:655-663`): indices `0..MAX_COIN` address the metapool's own
+coins, and anything at or above `MAX_COIN` addresses a base-pool coin.
+
+```python
+base_i: int128 = i - MAX_COIN
+base_j: int128 = j - MAX_COIN
+meta_i: int128 = MAX_COIN
+meta_j: int128 = MAX_COIN
+if base_i < 0:
+    meta_i = i
+if base_j < 0:
+    meta_j = j
+```
+
+A negative `base_i` means "this index is a metapool coin", and `meta_i` stays at
+`MAX_COIN` otherwise, so the metapool-level swap always runs between valid local
+indices. Coin addresses are then resolved from either `self.coins` or
+`self.base_coins` (`:669-676`).
+
+There are three routes, depending on where the two coins live:
+
+1. **Both metapool coins** — a plain local swap.
+2. **One metapool coin, one base coin** — swap locally against the LP token, then
+   add or remove liquidity on the base pool to convert.
+3. **Both base coins** — the metapool has nothing to do; the trade is delegated
+   entirely to the base pool.
+
+`FEE_ASSET` handling at `:678-698` deserves a note: for tokens that take a
+transfer fee (USDT historically), the contract measures its own balance before
+and after the `transferFrom` and uses the delta:
+
+```python
+dx_w_fee: uint256 = _dx
+if input_coin == FEE_ASSET:
+    dx_w_fee = ERC20(FEE_ASSET).balanceOf(self)
+# ... transferFrom ...
+if input_coin == FEE_ASSET:
+    dx_w_fee = ERC20(FEE_ASSET).balanceOf(self) - dx_w_fee
+```
+
+This is the only fee-on-transfer accommodation anywhere in classic Curve, and it
+is hard-coded to one specific asset rather than applied generally.
+
+---

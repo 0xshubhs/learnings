@@ -1989,9 +1989,9 @@ not hold tokens, can still allocate.
 
 **`fund(_recipients[100], _amounts[100])` `:99`** — admin, or a fund admin while
 `fund_admins_enabled` (`:106-107`). Loops to the first `ZERO_ADDRESS`
-(`:115-116`), accumulates into `initial_locked[recipient]` with `+=` so a
+(`:113-114`), accumulates into `initial_locked[recipient]` with `+=` so a
 recipient may be funded across several calls, then moves the total from
-`unallocated_supply` into `initial_locked_supply` (`:121-122`). That subtraction
+`unallocated_supply` into `initial_locked_supply` (`:119-120`). That subtraction
 underflows and reverts if the batch over-allocates, which is the only check that
 the escrow is solvent.
 
@@ -3047,3 +3047,382 @@ Burner.set_killed(True)                    owner or emergency owner
 ```
 
 ---
+
+## 17. Events reference
+
+Every event declared in the tree, with what triggers it. An indexer following
+the DAO needs `Deposit`/`Withdraw` (locks), `VoteForGauge` (weights), `Minted`
+(emissions) and `Claimed` (fees); the rest are administrative.
+
+### `ERC20CRV.vy`
+
+| Event | Line | Fields | Emitted by |
+|---|---|---|---|
+| `Transfer` | `:16` | `_from` idx, `_to` idx, `_value` | `transfer`, `transferFrom`, `mint`, `burn` |
+| `Approval` | `:21` | `_owner` idx, `_spender` idx, `_value` | `approve` |
+| `UpdateMiningParameters` | `:26` | `time`, `rate`, `supply` | `_update_mining_parameters` — once per year |
+| `SetMinter` | `:31` | `minter` | `set_minter`, once ever |
+| `SetAdmin` | `:34` | `admin` | `set_admin` |
+
+### `VotingEscrow.vy`
+
+| Event | Line | Fields | Emitted by |
+|---|---|---|---|
+| `CommitOwnership` | `:61` | `admin` | `commit_transfer_ownership` |
+| `ApplyOwnership` | `:64` | `admin` | `apply_transfer_ownership` |
+| `Deposit` | `:67` | `provider` idx, `value`, `locktime` idx, `type`, `ts` | `_deposit_for`; `type` distinguishes DEPOSIT_FOR / CREATE_LOCK / INCREASE_AMOUNT / INCREASE_TIME |
+| `Withdraw` | `:74` | `provider` idx, `value`, `ts` | `withdraw` |
+| `Supply` | `:79` | `prevSupply`, `supply` | every deposit and withdraw |
+
+### `GaugeController.vy`
+
+| Event | Line | Fields | Emitted by |
+|---|---|---|---|
+| `CommitOwnership` | `:32` | `admin` | `commit_transfer_ownership` |
+| `ApplyOwnership` | `:35` | `admin` | `apply_transfer_ownership` |
+| `AddType` | `:38` | `name`, `type_id` | `add_type` |
+| `NewTypeWeight` | `:42` | `type_id`, `time`, `weight`, `total_weight` | `_change_type_weight` |
+| `NewGaugeWeight` | `:48` | `gauge_address`, `time`, `weight`, `total_weight` | `_change_gauge_weight` |
+| `VoteForGauge` | `:54` | `time`, `user`, `gauge_addr`, `weight` | `vote_for_gauge_weights` |
+| `NewGauge` | `:60` | `addr`, `gauge_type`, `weight` | `add_gauge` |
+
+### `Minter.vy`
+
+| Event | Line | Fields | Emitted by |
+|---|---|---|---|
+| `Minted` | `:20` | `recipient` idx, `gauge`, `minted` | `_mint_for`; `minted` is the **cumulative** total, not the delta |
+
+### `FeeDistributor.vy`
+
+| Event | Line | Fields | Emitted by |
+|---|---|---|---|
+| `CommitAdmin` | `:19` | `admin` | `commit_admin` |
+| `ApplyAdmin` | `:22` | `admin` | `apply_admin` |
+| `ToggleAllowCheckpointToken` | `:25` | `toggle_flag` | `toggle_allow_checkpoint_token` |
+| `CheckpointToken` | `:28` | `time`, `tokens` | `_checkpoint_token` |
+| `Claimed` | `:32` | `recipient` idx, `amount`, `claim_epoch`, `max_epoch` | `claim`, `claim_many` — compare the two epochs to know whether to call again |
+
+### Gauges
+
+`LiquidityGauge*` all emit `Deposit(provider idx, value)`,
+`Withdraw(provider idx, value)` and `UpdateLiquidityLimit(user, original_balance,
+original_supply, working_balance, working_supply)`. V2 and later add
+`CommitOwnership`/`ApplyOwnership`; V3+ add `Transfer`/`Approval` (they are
+ERC-20); V4+ add reward-token events.
+
+### Proxies, vesting, streamers, bridging
+
+| Contract | Events |
+|---|---|
+| `PoolProxy.vy` | `CommitAdmins` `:49`, `ApplyAdmins` `:54`, `AddBurner` `:59` |
+| `CryptoPoolProxy.vy` | `CommitAdmins` `:57`, `ApplyAdmins` `:62`, `AddBurner` `:67` |
+| `PoolProxySidechain.vy` | `AddBurner` `:45`, `CommitOwnership` `:48`, `ApplyOwnership` `:51` |
+| `GaugeProxy.vy` | `CommitAdmins` `:15`, `ApplyAdmins` `:19` |
+| `vests/VestingEscrow*.vy` | `Fund` `:12`, `Claim` `:16`, `ToggleDisable` `:20`, `CommitOwnership` `:24`, `ApplyOwnership` `:27` |
+| `vests/VestingEscrowFactory.vy` | `CommitOwnership` `:26`, `ApplyOwnership` `:29` |
+| `bridging/*.vy` | `CommitOwnership`, `ApplyOwnership`, `AssetBridged(token, amount)` |
+| `gauges/sidechain/RootGauge*.vy` | `PeriodEmission(period, emission)`, `CommitOwnership`, `ApplyOwnership` |
+
+`RewardStream.vy`, `ChildChainStreamer.vy`, `RewardClaimer.vy` and the burners
+declare **no events at all** — a real gap for anyone indexing the fee chain,
+which must be reconstructed from ERC-20 `Transfer` logs.
+
+---
+
+## 18. Revert-string decoder
+
+Curve mixes three failure styles, and knowing which is which saves debugging
+time:
+
+1. **Plain `assert x`** — no message. Reverts with empty data.
+2. **`assert x, "msg"`** — a real revert string, visible on Etherscan.
+3. **`assert x  # dev: msg`** — the message is a **comment**. Brownie's test
+   framework parses the source map and surfaces it, but on-chain the revert data
+   is empty. Do not expect to see these in a trace.
+
+| String | Where | Cause |
+|---|---|---|
+| `"Access denied"` | `PoolProxy` `:105`, `:119`, `:176`, `:189`, `:268`, `:279`, `:289`, `:301`, `:332`, `:353`, `:408`, `:421`, `:444`, `:455`, `:467`, `:479`, `:492`; `CryptoPoolProxy` similarly; `GaugeProxy` `:44`, `:58`, `:75`, `:98`, `:117`; `PoolProxySidechain` throughout | wrong admin role |
+| `"Unsafe to apply"` | `PoolProxy.vy:396` | pool asymmetry below `min_asymmetries[pool]` |
+| `"Coin not approved for bridging"` | `PoolProxySidechain.vy:459` | `bridge_minimums[coin] == 0` |
+| `"Balance below minimum bridge amount"` | `PoolProxySidechain.vy:460` | see the inverted-comparison note in §7.6 |
+| `"Cannot disable"` | `VestingEscrowSimple.vy:102`, `VestingEscrow.vy:133` | `can_disable` already renounced |
+| `"Gauge can only mint for itself"` | `RootGauge*.vy:167` | `integrate_fraction` called with any address but the gauge |
+| `"Reward token already added"` | `ChildChainStreamer.vy:50` | duplicate `add_reward` |
+| `"Reward token not added"` | `ChildChainStreamer.vy:67` | `remove_reward` on an unknown token |
+| `"Reward period still active"` | `ChildChainStreamer.vy:169`, `:191` | non-distributor tried to reset a live period, or `set_reward_duration` during one |
+| `"Invalid token or no new reward"` | `ChildChainStreamer.vy:178` | `notify_reward_amount` with an unregistered token or no surplus |
+| `"Kick not allowed"` / `"Kick not needed"` | `LiquidityGauge*` | see §4 |
+
+Common `# dev:` comment-asserts (invisible on-chain):
+
+| Comment | Where | Cause |
+|---|---|---|
+| `# dev: admin only` | everywhere | wrong caller |
+| `# dev: future admin only` | `accept_transfer_ownership` in most contracts | not the pending admin |
+| `# dev: can only initialize once` | `VestingEscrowSimple.vy:75` | `initialize` on the master copy or twice |
+| `# dev: start time too soon` | `VestingEscrowFactory.vy:71` | `_vesting_start < block.timestamp` |
+| `# dev: duration too short` | `VestingEscrowFactory.vy:72` | under one year |
+| `# dev: is killed` | every burner's `burn` | `is_killed` set |
+| `# dev: only owner` | burners `recover_balance`, streamers | wrong owner |
+| `# dev: only distributor` | `RewardStream.vy:110` | `notify_reward_amount` by a non-distributor |
+| `# dev: caller is not receiver` | `RewardStream.vy:94` | `get_reward` by a non-receiver |
+| `# dev: receiver is active` / `inactive` | `RewardStream.vy:62`, `:78` | double add / remove |
+| `# dev: should implement burn()` | `PoolProxy.vy:236`, `:258` | no burner registered for the coin |
+| `# dev: if implemented by the pool` | `PoolProxy` parameter calls | older pool lacks that entry point |
+| `# dev: transfer failed` / `# dev: approve failed` | `VestingEscrow.vy:93`, `VestingEscrowFactory.vy:75` | ERC-20 returned false |
+| `# dev: invalid response` | `RewardStream.vy:85`, `:98` | ERC-20 returned false |
+| `# dev: access denied` | `FeeDistributor.vy:398` | non-admin `commit_admin` |
+
+> **The compiler caveat.** Vyper **0.2.15, 0.2.16 and 0.3.0** emitted broken
+> `@nonreentrant` locks. In this tree, `grep '# @version'` shows the DAO core
+> (`ERC20CRV`, `VotingEscrow`, `GaugeController`, `Minter`, gauges v1–v5) on
+> 0.2.4–0.3.1, the proxies on 0.2.7–0.2.8, streamers on 0.2.12–0.2.16, and the
+> newest burners on 0.3.7. The affected versions do appear —
+> `streamers/RewardClaimer.vy` and `ChildChainStreamer.vy` are 0.2.16, and the
+> `bridging/` contracts plus the Fantom/Polygon burners are 0.3.0 — but **none
+> of those contracts uses `@nonreentrant` at all**, so the bug has no reachable
+> effect here. Verify with
+> `grep -l nonreentrant $(grep -l '@version 0.2.1[56]\|@version 0.3.0' -r . --include='*.vy')`,
+> which returns nothing.
+
+---
+
+## 19. Storage layout tables
+
+Vyper allocates storage slots sequentially in declaration order, one slot per
+variable, with no packing. `HashMap` and fixed arrays reserve their slot for the
+base and hash/offset from it. So the tables below are simply the declaration
+order.
+
+### `ERC20CRV.vy`
+
+| Slot | Name | Type |
+|---|---|---|
+| 0 | `name` | `String[64]` |
+| 1 | `symbol` | `String[32]` |
+| 2 | `decimals` | `uint256` |
+| 3 | `balanceOf` | `HashMap[address, uint256]` |
+| 4 | `allowances` | `HashMap[address, HashMap[address, uint256]]` |
+| 5 | `total_supply` | `uint256` |
+| 6 | `minter` | `address` |
+| 7 | `admin` | `address` |
+| 8 | `mining_epoch` | `int128` |
+| 9 | `start_epoch_time` | `uint256` |
+| 10 | `rate` | `uint256` |
+| 11 | `start_epoch_supply` | `uint256` |
+
+### `VotingEscrow.vy`
+
+| Slot | Name | Type |
+|---|---|---|
+| 0 | `token` | `address` |
+| 1 | `supply` | `uint256` |
+| 2 | `locked` | `HashMap[address, LockedBalance]` |
+| 3 | `epoch` | `uint256` |
+| 4 | `point_history` | `Point[100000000000000000000000000000]` |
+| 5 | `user_point_history` | `HashMap[address, Point[1000000000]]` |
+| 6 | `user_point_epoch` | `HashMap[address, uint256]` |
+| 7 | `slope_changes` | `HashMap[uint256, int128]` |
+| 8 | `controller` | `address` |
+| 9 | `transfersEnabled` | `bool` |
+| 10–12 | `name`, `symbol`, `version` | `String[*]` |
+| 13 | `decimals` | `uint256` |
+| 14 | `future_smart_wallet_checker` | `address` |
+| 15 | `smart_wallet_checker` | `address` |
+| 16 | `admin` | `address` |
+| 17 | `future_admin` | `address` |
+
+### `GaugeController.vy`
+
+| Slot | Name |
+|---|---|
+| 0–1 | `admin`, `future_admin` |
+| 2 | `token` |
+| 3 | `voting_escrow` |
+| 4 | `n_gauge_types` |
+| 5 | `n_gauges` |
+| 6 | `gauge_type_names` |
+| 7 | `gauges` |
+| 8 | `gauge_types_` |
+| 9 | `vote_user_slopes` |
+| 10 | `vote_user_power` |
+| 11 | `last_user_vote` |
+| 12 | `points_weight` |
+| 13 | `changes_weight` |
+| 14 | `time_weight` |
+| 15 | `points_sum` |
+| 16 | `changes_sum` |
+| 17 | `time_sum` |
+| 18 | `points_total` |
+| 19 | `time_total` |
+| 20 | `points_type_weight` |
+| 21 | `time_type_weight` |
+
+### `Minter.vy`
+
+| Slot | Name | Type |
+|---|---|---|
+| 0 | `token` | `address` |
+| 1 | `controller` | `address` |
+| 2 | `minted` | `HashMap[address, HashMap[address, uint256]]` |
+| 3 | `allowed_to_mint_for` | `HashMap[address, HashMap[address, bool]]` |
+
+### `FeeDistributor.vy`
+
+| Slot | Name |
+|---|---|
+| 0 | `start_time` |
+| 1 | `time_cursor` |
+| 2 | `time_cursor_of` |
+| 3 | `user_epoch_of` |
+| 4 | `last_token_time` |
+| 5 | `tokens_per_week` |
+| 6 | `voting_escrow` |
+| 7 | `token` |
+| 8 | `total_received` |
+| 9 | `token_last_balance` |
+| 10 | `ve_supply` |
+| 11–12 | `admin`, `future_admin` |
+| 13 | `can_checkpoint_token` |
+| 14 | `emergency_return` |
+| 15 | `is_killed` |
+
+### `PoolProxy.vy`
+
+| Slot | Name |
+|---|---|
+| 0–2 | `ownership_admin`, `parameter_admin`, `emergency_admin` |
+| 3–5 | `future_ownership_admin`, `future_parameter_admin`, `future_emergency_admin` |
+| 6 | `min_asymmetries` |
+| 7 | `burners` |
+| 8 | `burner_kill` |
+| 9 | `donate_approval` |
+
+`CryptoPoolProxy` is identical minus `min_asymmetries` (so `burners` is slot 6).
+
+### `VestingEscrowSimple.vy`
+
+| Slot | Name |
+|---|---|
+| 0 | `token` |
+| 1–2 | `start_time`, `end_time` |
+| 3–4 | `initial_locked`, `total_claimed` |
+| 5 | `initial_locked_supply` |
+| 6–7 | `can_disable`, `disabled_at` |
+| 8–9 | `admin`, `future_admin` |
+
+`VestingEscrow.vy` inserts `unallocated_supply` after `initial_locked_supply`
+and appends `fund_admins_enabled`, `fund_admins`.
+
+### `RewardStream.vy`
+
+| Slot | Name |
+|---|---|
+| 0–2 | `owner`, `future_owner`, `distributor` |
+| 3 | `reward_token` |
+| 4–7 | `period_finish`, `reward_rate`, `reward_duration`, `last_update_time` |
+| 8 | `reward_per_receiver_total` |
+| 9 | `receiver_count` |
+| 10 | `reward_receivers` |
+| 11 | `reward_paid` (private) |
+
+### Burners (all of them)
+
+| Slot | Name |
+|---|---|
+| 0 | `receiver` |
+| 1 | `recovery` |
+| 2 | `is_killed` |
+| 3–4 | `owner`, `emergency_owner` |
+| 5–6 | `future_owner`, `future_emergency_owner` |
+
+`WrappedBurner` and `wstETHBurner` are the exceptions: they use `immutable`
+only, so they have **no** storage slots at all.
+
+---
+
+## 20. Selector tables
+
+Computed with `cast sig`, not transcribed. Vyper generates one selector per
+declared signature; functions with default arguments generate **one selector per
+arity**, so `claim()` and `claim(address)` are distinct entry points.
+
+### `VotingEscrow.vy`
+
+| Signature | Selector |
+|---|---|
+| `create_lock(uint256,uint256)` | `0x65fc3873` |
+| `increase_amount(uint256)` | `0x4957677c` |
+| `increase_unlock_time(uint256)` | `0xeff7a612` |
+| `withdraw()` | `0x3ccfd60b` |
+| `checkpoint()` | `0xc2c4c5c1` |
+| `balanceOf(address)` | `0x70a08231` |
+| `totalSupply()` | `0x18160ddd` |
+
+### `GaugeController.vy`
+
+| Signature | Selector |
+|---|---|
+| `vote_for_gauge_weights(address,int128)` | `0xfea2b14d` |
+| `gauge_relative_weight(address,uint256)` | `0xd3078c94` |
+| `add_gauge(address,int128,uint256)` | `0x18dfe921` |
+| `checkpoint()` | `0xc2c4c5c1` |
+
+### `Minter.vy`
+
+| Signature | Selector |
+|---|---|
+| `mint(address)` | `0x6a627842` |
+| `mint_many(address[8])` | `0xa51e1904` |
+| `mint_for(address,address)` | `0x27f18ae3` |
+| `toggle_approve_mint(address)` | `0xdd289d60` |
+
+### Gauges
+
+| Signature | Selector |
+|---|---|
+| `deposit(uint256)` | `0xb6b55f25` |
+| `withdraw(uint256)` | `0x2e1a7d4d` |
+| `claimable_tokens(address)` | `0x33134583` |
+| `user_checkpoint(address)` | `0x4b820093` |
+| `kick(address)` | `0x96c55175` |
+
+### `FeeDistributor.vy` and the burner interface
+
+| Signature | Selector |
+|---|---|
+| `claim(address)` | `0x1e83409a` |
+| `burn(address)` | `0x89afcb44` |
+
+### `PoolProxy.vy`
+
+| Signature | Selector |
+|---|---|
+| `set_burner(address,address)` | `0x1198c785` |
+| `withdraw_admin_fees(address)` | `0xe4e67c0f` |
+| `burn(address)` | `0x89afcb44` |
+
+Note `burn(address)` is `0x89afcb44` on **both** `PoolProxy` and every burner —
+that is the whole point of the interface, and it is also why
+`FeeDistributor.burn` (§6.5) carries that otherwise odd name: it must present
+the same selector so a burner can forward to it as if it were another link in
+the chain.
+
+---
+
+## Appendix: reproducing the file inventory
+
+```bash
+cd curve/curve-dao-contracts/contracts
+find . -name '*.vy' | sort | while read f; do
+  printf "%5d  %-46s %s\n" "$(wc -l < "$f")" "${f#./}" "$(head -1 "$f")"
+done
+find . -name '*.vy' | wc -l          # 68
+find . -name '*.vy' -exec cat {} + | wc -l   # 19366
+```
+
+Every one of those 68 files is covered above: §1–6 the core (12 files), §7 the
+proxies (4), §8 vesting (3), §9 streamers (3), §10 sidechain gauges and
+wrappers (9), §11 burners (30), §12 bridging (3), §13 `CRVInfo` (1), §14 testing
+helpers (3).

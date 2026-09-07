@@ -3275,3 +3275,162 @@ the body to run when `revision > lastInitializedRevision`. That is what makes
 declares a higher revision, so its own initializer fires exactly once.
 
 ---
+<a name="16-events-reference"></a>
+
+## 16. Events reference
+
+Every event declared in scope, excluding mocks. Indexed parameters are marked **idx** — those
+are the ones an indexer can filter on without decoding the data blob.
+
+### 16.1 Rewards
+
+| Event | Parameters | Emitted when |
+|---|---|---|
+| `AssetConfigUpdated` | `asset` **idx**, `reward` **idx**, `oldEmission`, `newEmission`, `oldDistributionEnd`, `newDistributionEnd`, `assetIndex` | `_configureAssets`, `setDistributionEnd`, `setEmissionPerSecond` — any change to an emission curve. Declared `IRewardsDistributor.sol:20-28` |
+| `Accrued` | `asset` **idx**, `reward` **idx**, `user` **idx**, `assetIndex`, `userIndex`, `rewardsAccrued` | `_updateUserData`, every time a user's reward debt is checkpointed. `IRewardsDistributor.sol:39-46` |
+| `RewardsClaimed` | `user` **idx**, `reward` **idx**, `to` **idx**, `claimer`, `amount` | any successful claim. `IRewardsController.sol:30-36` |
+| `ClaimerSet` | `user` **idx**, `claimer` **idx** | `setClaimer` |
+| `TransferStrategyInstalled` | `reward` **idx**, `transferStrategy` **idx** | `_installTransferStrategy` |
+| `RewardOracleUpdated` | `reward` **idx**, `rewardOracle` **idx** | `_setRewardOracle` |
+| `EmissionAdminUpdated` | `reward` **idx**, `oldAdmin` **idx**, `newAdmin` **idx** | `EmissionManager.setEmissionAdmin`. `IEmissionManager.sol:21-25` |
+| `EmergencyWithdrawal` | `caller` **idx**, `token` **idx**, `to` **idx**, `amount` | `TransferStrategyBase.emergencyWithdrawal`. `ITransferStrategyBase.sol:8-13` |
+
+Three indexed address fields on `Accrued` and `RewardsClaimed` is the maximum Solidity allows,
+and it is deliberate: a UI needs to filter by user, by reward, and by destination independently.
+Reconstructing a user's full reward history means replaying `Accrued` per `(asset, reward)` pair
+and netting against `RewardsClaimed`.
+
+### 16.2 Stata-token
+
+| Event | Parameters | Emitted when |
+|---|---|---|
+| `RewardTokenRegistered` | `reward` **idx**, `startIndex` | `_registerRewardToken` — a new reward becomes trackable by the wrapper |
+| `StataTokenCreated` | `stataToken` **idx**, `underlying` **idx** | `StataTokenFactory.createStataTokens` |
+
+Plus the inherited ERC-20 `Transfer` / `Approval` and OZ `Paused` / `Unpaused`.
+
+### 16.3 Treasury (`Collector`)
+
+| Event | Parameters | Emitted when |
+|---|---|---|
+| `CreateStream` | `streamId` **idx**, `sender` **idx**, `recipient` **idx**, `deposit`, `tokenAddress`, `startTime`, `stopTime` | `createStream`. `ICollector.sol:83-91` |
+| `WithdrawFromStream` | `streamId` **idx**, `recipient` **idx**, `amount` | `withdrawFromStream` |
+| `CancelStream` | `streamId` **idx**, `sender` **idx**, `recipient` **idx**, `senderBalance`, `recipientBalance` | `cancelStream`. `ICollector.sol:109-115` |
+
+Note `tokenAddress` is **not** indexed on `CreateStream`, so "all streams of token X" requires
+decoding every log rather than a filtered query.
+
+Plus inherited `RoleGranted` / `RoleRevoked` / `RoleAdminChanged` from `AccessControlUpgradeable`.
+
+### 16.4 Deployments and proxies
+
+| Event | Parameters | Where |
+|---|---|---|
+| `Deployment` | `report` (the whole `MarketReport` struct) | emitted by deployment scripts after `deployAaveV3` |
+| `AdminChanged` | `previousAdmin`, `newAdmin` | `BaseAdminUpgradeabilityProxy` — **neither indexed** |
+| `Upgraded` | `implementation` **idx** | `BaseUpgradeabilityProxy` |
+| `OwnershipTransferred` | `previousOwner` **idx**, `newOwner` **idx** | OZ `Ownable` (`EmissionManager`, `WrappedTokenGatewayV3`, `StataTokenFactory`) |
+
+`Upgraded` is the single most important event to monitor on a live market: it is the only
+on-chain signal that a proxy's logic changed.
+
+### 16.5 Vendored dependencies
+
+`WETH9` declares `Approval`, `Transfer`, `Deposit`, `Withdrawal`; `AggregatorInterface`
+declares `AnswerUpdated` and `NewRound`. Neither is emitted by Aave code — they are here so
+integrators can decode logs from the tokens and feeds Aave reads.
+
+---
+
+<a name="17-revert-reason-table"></a>
+
+## 17. Revert reason table
+
+Complete for the files in scope, excluding mocks. This tree mixes three revert styles, and
+which one you get tells you roughly when the code was written:
+
+- **Legacy string `require`** — the rewards system and the config engine
+- **Custom errors** — the stata-token stack, the treasury, the deployment interfaces
+- **`require(cond, CustomError())`** — the 0.8.26 form, used in `TransferStrategyBase`
+
+### 17.1 String reverts
+
+| String | Thrown at | Cause |
+|---|---|---|
+| `ONLY_EMISSION_MANAGER` | `RewardsDistributor.sol:36` | a non-`EMISSION_MANAGER` called a configuration function |
+| `ONLY_EMISSION_ADMIN` | `EmissionManager.sol:26` | caller is not the registered admin for that reward |
+| `CLAIMER_UNAUTHORIZED` | `RewardsController.sol:40` | `claimRewardsOnBehalf` by an address not set via `setClaimer` |
+| `INVALID_TO_ADDRESS` | `RewardsController.sol:120` | claim destination is `address(0)` |
+| `INVALID_USER_ADDRESS` | `RewardsController.sol:132` | `onBehalfOf` is `address(0)` |
+| `TRANSFER_ERROR` | `RewardsController.sol:305` | the transfer strategy returned `false` |
+| `STRATEGY_CAN_NOT_BE_ZERO` | `RewardsController.sol:335` | configuring a reward with no transfer strategy |
+| `STRATEGY_MUST_BE_CONTRACT` | `RewardsController.sol:336` | transfer strategy address has no code |
+| `ORACLE_MUST_RETURN_PRICE` | `RewardsController.sol:351` | reward oracle's `latestAnswer()` is `<= 0` |
+| `DISTRIBUTION_DOES_NOT_EXIST` | `RewardsDistributor.sol:194` | `setEmissionPerSecond` for an unconfigured `(asset, reward)` |
+| `INDEX_OVERFLOW` | `RewardsDistributor.sol:292` | the reward index exceeded `uint104` |
+| `INVALID_INPUT` | `RewardsDistributor.sol:187` | `rewards.length != newEmissionsPerSecond.length` |
+| `REWARD_TOKEN_NOT_STAKE_CONTRACT` | `StakedTokenTransferStrategy.sol:46` | reward is not the configured stake token |
+| `ETH_TRANSFER_FAILED` | `WrappedTokenGatewayV3.sol:160` | the native transfer in `_safeTransferETH` reverted |
+| `INVALID_TOKEN` | `WalletBalanceProvider.sol:41` | balance query on a non-contract, non-ETH address |
+| `MISSING_CREATE2_FACTORY` | `Create2Utils.sol:10` | the Safe singleton factory is not deployed on this chain |
+
+Config engine, all in `src/contracts/extensions/v3-config-engine/`:
+
+| String | Thrown at | Cause |
+|---|---|---|
+| `ONLY_NONZERO_ENGINE_CONSTANTS` | `AaveV3ConfigEngine.sol:42` | a zero address in `EngineConstants` at construction |
+| `ONLY_NONZERO_TOKEN_IMPLS` | `AaveV3ConfigEngine.sol:45` | zero aToken or vToken implementation |
+| `AT_LEAST_ONE_ASSET_REQUIRED` | `AaveV3ConfigEngine.sol:59` | empty `listings` array |
+| `AT_LEAST_ONE_UPDATE_REQUIRED` | `libraries/EModeEngine.sol:21` (and siblings) | empty `updates` array |
+| `INVALID_ASSET` | `libraries/ListingEngine.sol:59` | listing an asset with address zero |
+| `PRICE_FEED_ALWAYS_REQUIRED` | `libraries/PriceFeedEngine.sol:22` | price feed omitted |
+| `FEED_SHOULD_RETURN_POSITIVE_PRICE` | `libraries/PriceFeedEngine.sol:25` | feed's `latestAnswer()` is `<= 0` |
+| `FEED_MUST_USE_8_DECIMALS` | `libraries/PriceFeedEngine.sol:29` | feed decimals are not 8 |
+| `INVALID_RESERVE_FACTOR` | `libraries/BorrowEngine.sol:41` | reserve factor out of range |
+| `INVALID_LIQ_PROTOCOL_FEE` | `libraries/CollateralEngine.sol:83` | `liqProtocolFee >= 100_00` |
+| `INVALID_LT_LB_RATIO` | `libraries/EModeEngine.sol:176` | liquidation threshold and bonus would make liquidation unprofitable or insolvent |
+| `INVALID_LABEL` | `libraries/EModeEngine.sol:34` | empty or over-long e-mode label |
+| `INVALID_UPDATE` | `libraries/EModeEngine.sol:82` | updating an e-mode category that does not exist (`liquidationThreshold == 0`) |
+| `INVALID_CONVERSION_TO_BOOL` | `EngineFlags.sol:26` | a flag that is neither 0 nor 1 |
+
+`EngineFlags.KEEP_CURRENT` is the sentinel that makes partial updates possible; passing it where
+a real value is required is what produces most of these.
+
+### 17.2 Custom errors
+
+| Error | Reverted at | Cause |
+|---|---|---|
+| `OnlyPauseGuardian(address caller)` | `StataTokenV2.sol:39` | `setPaused` by an address failing `canPause` |
+| `StaticATokenInvalidZeroShares()` | `ERC4626StataTokenUpgradeable.sol:221` | a deposit that would mint zero shares |
+| `PoolAddressMismatch(address pool)` | `ERC4626StataTokenUpgradeable.sol:64` | initialising against an aToken from a different pool |
+| `NotListedUnderlying(address underlying)` | `StataTokenFactory.sol:56` | creating a wrapper for an asset with no aToken |
+| `RewardNotInitialized(address reward)` | `ERC20AaveLMUpgradeable.sol:235` | reward index requested before registration |
+| `ZeroIncentivesControllerIsForbidden()` | `ERC20AaveLMUpgradeable.sol:43` | constructing the LM layer with a zero controller |
+| `CallerNotIncentivesController()` | `TransferStrategyBase.sol:27` | `performTransfer` called by anyone but the controller |
+| `OnlyRewardsAdmin()` | `TransferStrategyBase.sol:35` | admin-only strategy function called by another address |
+| `InvalidZeroAddress()` | `Collector.sol:203` | transfer to `address(0)` |
+| `OnlyFundsAdmin()` / `OnlyFundsAdminOrRecipient()` | `Collector.sol:61`, `:72` | missing `FUNDS_ADMIN_ROLE` (or not the stream recipient) |
+| `StreamDoesNotExist()` | `Collector.sol:81` | unknown stream id (`isEntity` false) |
+| `InvalidRecipient()` | `Collector.sol:243-244` | stream recipient is the Collector itself or the sender |
+| `InvalidZeroAmount()` | `Collector.sol:245`, `:300` | zero deposit, or zero withdrawal |
+| `InvalidStartTime()` / `InvalidStopTime()` | `Collector.sol:246-247` | start in the past, or stop not after start |
+| `DepositSmallerTimeDelta()` | `Collector.sol:253` | deposit smaller than the duration in seconds, so the per-second rate would be zero |
+| `DepositNotMultipleTimeDelta()` | `Collector.sol:256` | deposit not an exact multiple of the duration, which would leave dust |
+| `BalanceExceeded()` | `Collector.sol:304` | withdrawing more than has vested |
+| `InvalidClaimer(address)` | `ERC20AaveLMUpgradeable.sol:69` | `claimRewardsOnBehalf` on the stata-token by an unapproved caller |
+| `InsufficientBorrowAllowance(address,uint256,uint256)` | declared `interfaces/ICreditDelegationToken.sol:30`, thrown in `protocol/` | credit delegation allowance too low |
+| `NoAvailableEmodeCategory()` | declared `libraries/EModeEngine.sol:15` | all 255 e-mode slots are taken |
+| `RewardsControllerImplementationMustBeSet()` | `AaveV3SetupProcedure.sol:124` | neither controller proxy nor implementation supplied |
+| `L2MustBeEnabled()` / `L2MustBeDisabled()` | pool procedures | `DeployFlags.l2` disagrees with the batch chosen |
+| `MarketOwnerMustBeSet()` | `AaveV3SetupProcedure.sol:207` | `roles.marketOwner` is `address(0)` |
+| `PoolAdminNotFound()` | `AaveV3HelpersProcedureTwo.sol:17` | `poolAdmin` is `address(0)` |
+| `ProviderNotFound()` / `ProxyAdminNotFound()` / `InterestRateStrategyNotFound()` | deployment utilities | a lookup returned nothing |
+
+Reproduce the full list with:
+
+```bash
+find src -name '*.sol' | grep -v '^src/contracts/protocol/' | grep -v mocks \
+  | xargs grep -hn 'error [A-Z]' | sort -u
+```
+
+---
