@@ -850,3 +850,199 @@ here. The `uint64` ceiling is the `u64` compatibility bound from section 3.2. Th
 subtraction in `bridgedIn` is unchecked-by-absence — in Solidity 0.8 it reverts
 on underflow, which is the desired behaviour: it is a solvency assertion. You
 cannot release more than was ever locked.
+
+---
+
+## 4. Governance and the guardian set
+
+Wormhole governs itself with its own messages. There is no owner address, no
+timelock contract, no multisig on the destination chain. To change anything, the
+Guardians sign a VAA and anyone submits it.
+
+That is elegant and it is also the whole risk: the entity that secures the bridge
+is the entity that can rewrite the bridge.
+
+### 4.1 What makes a VAA a *governance* VAA
+
+Four extra conditions on top of normal verification, in
+[`verifyGovernanceVM:190-220`](wormhole/ethereum/contracts/Governance.sol#L190-L220):
+
+```solidity
+(bool isValid, string memory reason) = verifyVM(vm);
+if (!isValid){ return (false, reason); }
+
+// only current guardianset can sign governance packets
+if (vm.guardianSetIndex != getCurrentGuardianSetIndex()) {
+    return (false, "not signed by current guardian set");
+}
+
+if (uint16(vm.emitterChainId) != governanceChainId()) {
+    return (false, "wrong governance chain");
+}
+
+if (vm.emitterAddress != governanceContract()) {
+    return (false, "wrong governance contract");
+}
+
+if (governanceActionIsConsumed(vm.hash)){
+    return (false, "governance action already consumed");
+}
+```
+
+**The current-set requirement is stricter than normal verification.** Section 1.5
+gate 3 accepts an expired-but-not-yet-lapsed old set for ordinary messages.
+Governance does not: an old set, however recently retired, cannot sign governance
+even inside its grace window. A retired quorum can therefore never un-retire
+itself.
+
+**Emitter pinning.** Governance messages must come from a fixed
+`(governanceChainId, governanceContract)` pair, set once in
+[`Setup.setup:32-33`](wormhole/ethereum/contracts/Setup.sol#L32-L33). Historically
+this is a Solana address — Ethereum's comment at
+[`Governance.sol:202`](wormhole/ethereum/contracts/Governance.sol#L202) still says
+*"Verify the VAA is from the governance chain (Solana)"*.
+
+**Replay protection** keyed on `vm.hash` in
+`_state.consumedGovernanceActions`, declared at
+[`State.sol:38`](wormhole/ethereum/contracts/State.sol#L38). Every handler calls
+`setGovernanceActionConsumed(vm.hash)` **before** acting.
+
+### 4.2 The handlers
+
+All five follow one shape: parse, verify, check module, check chain, mark
+consumed, act.
+
+| function | action byte | effect |
+|---|---|---|
+| [`submitContractUpgrade`](wormhole/ethereum/contracts/Governance.sol#L27-L49) | 1 | replace the implementation |
+| [`submitNewGuardianSet`](wormhole/ethereum/contracts/Governance.sol#L79-L112) | 2 | rotate the guardian set |
+| [`submitSetMessageFee`](wormhole/ethereum/contracts/Governance.sol#L54-L74) | 3 | change `messageFee` |
+| [`submitTransferFees`](wormhole/ethereum/contracts/Governance.sol#L117-L141) | 4 | sweep accumulated fees |
+| [`submitRecoverChainId`](wormhole/ethereum/contracts/Governance.sol#L146-L169) | 5 | fix chain ids after a fork |
+
+The module constant scopes a VAA to the core bridge,
+[`Governance.sol:22`](wormhole/ethereum/contracts/Governance.sol#L22):
+
+```solidity
+bytes32 constant module = 0x00000000000000000000000000000000000000000000000000000000436f7265;
+```
+
+Those trailing bytes are ASCII `"Core"`. The token bridge uses `"TokenBridge"`
+in its own governance, so a core-bridge upgrade VAA cannot be replayed against
+the token bridge even though both verify against the same Guardians.
+
+The chain check varies meaningfully. Contract upgrades demand
+`upgrade.chain == chainId()` exactly
+([`:42`](wormhole/ethereum/contracts/Governance.sol#L42)) — you cannot broadcast
+one implementation address to every chain. But guardian set upgrades accept
+`chain == 0` as a wildcard
+([`:92`](wormhole/ethereum/contracts/Governance.sol#L92)):
+
+```solidity
+require((upgrade.chain == chainId() && !isFork()) || upgrade.chain == 0, "invalid Chain");
+```
+
+That is deliberate: a guardian rotation must reach *every* chain, and one VAA
+broadcast everywhere is exactly right.
+
+### 4.3 Guardian set rotation and the grace window
+
+[`submitNewGuardianSet:94-111`](wormhole/ethereum/contracts/Governance.sol#L94-L111)
+carries three guards worth naming:
+
+```solidity
+require(upgrade.newGuardianSet.keys.length > 0, "new guardian set is empty");
+require(upgrade.newGuardianSetIndex == getCurrentGuardianSetIndex() + 1, "index must increase in steps of 1");
+...
+expireGuardianSet(getCurrentGuardianSetIndex());
+storeGuardianSet(upgrade.newGuardianSet, upgrade.newGuardianSetIndex);
+updateGuardianSetIndex(upgrade.newGuardianSetIndex);
+```
+
+**Non-empty** guards against the bricking scenario section 1.5 gate 2 also
+defends. **Strictly +1** prevents skipping indices, which keeps the set history
+dense and makes "index 7 exists" equivalent to "seven rotations have happened".
+`storeGuardianSet` additionally rejects any zero key at
+[`Setters.sol:19-21`](wormhole/ethereum/contracts/Setters.sol#L19-L21), closing
+the `ecrecover`-returns-zero hole from the other side.
+
+The grace window is one line,
+[`Setters.sol:13-15`](wormhole/ethereum/contracts/Setters.sol#L13-L15):
+
+```solidity
+function expireGuardianSet(uint32 index) internal {
+    _state.guardianSets[index].expirationTime = uint32(block.timestamp) + 86400;
+}
+```
+
+**86400 seconds — 24 hours.** The old set stays valid for one day after being
+replaced.
+
+Why it must exist: VAAs are produced asynchronously and consumed whenever someone
+gets around to submitting them. At the instant of rotation there are in-flight
+VAAs already signed by the old set, sitting in relayer queues or in users'
+browsers. Without a window every one of them would become permanently
+unredeemable, and for the token bridge that means **tokens locked on the source
+chain with no way to mint on the destination**. The window lets that backlog
+drain.
+
+Why it must be bounded: a retired set is retired for a reason, often because keys
+were rotated after suspected compromise. An unbounded window would mean old keys
+never lose power. Twenty-four hours is the compromise, and note it is applied to
+the *old* set at rotation time, not set on the new one.
+
+### 4.4 Upgrades
+
+[`upgradeImplementation:174-185`](wormhole/ethereum/contracts/Governance.sol#L174-L185)
+is a standard ERC-1967 upgrade plus a forced initializer:
+
+```solidity
+_upgradeTo(newImplementation);
+
+(bool success, bytes memory reason) = newImplementation.delegatecall(abi.encodeWithSignature("initialize()"));
+require(success, string(reason));
+```
+
+The proxy is
+[`Wormhole.sol`](wormhole/ethereum/contracts/Wormhole.sol), a bare `ERC1967Proxy`
+constructed pointing at `Setup`, which does one-time wiring and then immediately
+`_upgradeTo(implementation)`
+([`Setup.sol:36`](wormhole/ethereum/contracts/Setup.sol#L36)).
+
+`initialize()` is guarded by a per-implementation flag rather than a version
+number, [`Implementation.sol:64-75`](wormhole/ethereum/contracts/Implementation.sol#L64-L75),
+recording `initializedImplementations[impl]`. That allows re-upgrading to a
+previously used implementation address without re-running its initializer.
+
+Note there is **no timelock**. A contract upgrade VAA takes effect the moment
+anyone submits it. The delay, such as it is, is entirely social: it lives in the
+Guardians' willingness to sign.
+
+### 4.5 The fork story
+
+`isFork()` at
+[`Getters.sol:37-39`](wormhole/ethereum/contracts/Getters.sol#L37-L39) is a
+single comparison:
+
+```solidity
+return evmChainId() != block.chainid;
+```
+
+The contract remembers the EIP-155 chain id it was deployed on. If the chain
+hard-forks and the copy runs under a new `block.chainid`, that comparison flips
+and the contract knows it is on the wrong side of history.
+
+The response is aggressive. `submitContractUpgrade` refuses outright
+([`:28`](wormhole/ethereum/contracts/Governance.sol#L28)), and
+`verifyBridgeVM` in the token bridge reverts on any redemption
+([`Bridge.sol:775`](wormhole/ethereum/contracts/bridge/Bridge.sol#L775)). A
+forked deployment is frozen, not merely degraded.
+
+This is a genuinely thoughtful piece of design and the reason is worth stating.
+Signatures do not know about forks. Every VAA valid on the canonical chain is
+equally valid on the fork, so without this check a fork would let every locked
+token be minted twice. `submitRecoverChainId` is the deliberate, governance-gated
+escape hatch for a legitimate fork, and its own check
+([`:161`](wormhole/ethereum/contracts/Governance.sol#L161)) pins
+`rci.evmChainId == block.chainid` so the recovery VAA is only usable on the
+intended side.
