@@ -343,14 +343,15 @@ hashing the struct directly.
 [`:75-77`](wormhole/ethereum/contracts/Messages.sol#L75-L77). Reading an unknown
 `guardianSetIndex` returns a zero-valued struct with `keys.length == 0`. The
 `WARNING` at [`:70-73`](wormhole/ethereum/contracts/Messages.sol#L70-L73) spells
-out the trap: with zero keys, `quorum(0)` returns `(0*2)/3 + 1 = 1`, and
-`verifySignatures` returns `true` for an empty array. Without this gate, a VAA
-citing a nonexistent guardian set with... actually, with one signature would
-still fail the key comparison — but a VAA with *zero* signatures would pass
-quorum-of-1? No: `0 < 1` fails quorum. The real hazard is subtler, which is why
-the comment says it protects *"the integrity of both vm and signature
-verification"* jointly. Treat it as belt-and-braces on a genuinely fragile
-interaction.
+out the trap it is guarding: *"if guardianSet key length is 0 and vm.signatures
+length is 0, this could compromise the integrity of both vm and signature
+verification"*. The concern is the interaction of two lenient primitives —
+`quorum(0)` returns `(0*2)/3 + 1 = 1`, and `verifySignatures` returns `true`
+unconditionally on an empty array — against a struct whose fields all read as
+zero. Rather than reason about whether the arithmetic happens to save them, the
+authors cut the whole class off at the root: an unknown guardian set index is
+rejected outright, before quorum or signatures are considered at all. That is
+the right instinct for a check whose failure mode is total.
 
 **Gate 3 — guardian set not expired.**
 [`:80-82`](wormhole/ethereum/contracts/Messages.sol#L80-L82):
