@@ -1064,3 +1064,170 @@ This is the same idea as Uniswap v4's `Extsload`
 an off-chain or periphery library decode it, rather than shipping dozens of getters. §5.1 covers
 the decoding side.
 
+---
+
+<a id="4-morpho-blue-libraries"></a>
+## 4. Morpho Blue libraries
+
+The six core libraries are derived in §2. This section covers what remains.
+
+### 4.1 `ConstantsLib`
+
+[`morpho-blue/src/libraries/ConstantsLib.sol`](morpho-blue/src/libraries/ConstantsLib.sol), 21 lines.
+Every magic number in the protocol, in one place:
+
+| Constant | Value | Meaning | Line |
+|---|---|---|---|
+| `MAX_FEE` | `0.25e18` | ceiling on a market's protocol fee | [`:5`](morpho-blue/src/libraries/ConstantsLib.sol#L5) |
+| `ORACLE_PRICE_SCALE` | `1e36` | fixed-point scale for `IOracle.price()` | [`:17`](morpho-blue/src/libraries/ConstantsLib.sol#L17) |
+| `LIQUIDATION_CURSOR` | `0.3e18` | steepness of the LIF curve | [`:11`](morpho-blue/src/libraries/ConstantsLib.sol#L11) |
+| `MAX_LIQUIDATION_INCENTIVE_FACTOR` | `1.15e18` | 15% cap on liquidator bonus | [`:14`](morpho-blue/src/libraries/ConstantsLib.sol#L14) |
+| `DOMAIN_TYPEHASH` | keccak of `EIP712Domain(uint256 chainId,address verifyingContract)` | EIP-712 domain | [`:8`](morpho-blue/src/libraries/ConstantsLib.sol#L8) |
+| `AUTHORIZATION_TYPEHASH` | keccak of the `Authorization` struct | EIP-712 struct | [`:20-21`](morpho-blue/src/libraries/ConstantsLib.sol#L20-L21) |
+
+Nine constants govern the entire protocol. There is no per-market risk parameter beyond LLTV and
+fee, and no governance-settable global other than the fee recipient.
+
+### 4.2 `ErrorsLib`
+
+[`morpho-blue/src/libraries/ErrorsLib.sol`](morpho-blue/src/libraries/ErrorsLib.sol), 80 lines,
+**22 string constants** rather than custom errors. Full table in §15.
+
+Blue predates widespread custom-error adoption in Morpho's own style guide, and strings cost more
+gas and more bytecode. MetaMorpho, written later, uses proper `error` declarations
+([`metamorpho/src/libraries/ErrorsLib.sol`](metamorpho/src/libraries/ErrorsLib.sol)). The
+inconsistency between the two repos is a genuine wart.
+
+### 4.3 `EventsLib`
+
+[`morpho-blue/src/libraries/EventsLib.sol`](morpho-blue/src/libraries/EventsLib.sol), 150 lines,
+**16 events**. Full table in §14. Every one is `emit EventsLib.X(...)` from `Morpho.sol`, keeping
+the main contract free of event declarations.
+
+### 4.4 `MarketParamsLib`
+
+Covered in §1.1. Twenty-one lines, one function, one assembly block.
+
+---
+
+<a id="5-morpho-blue-periphery-libraries"></a>
+## 5. Morpho Blue periphery libraries
+
+Three libraries in [`morpho-blue/src/libraries/periphery/`](morpho-blue/src/libraries/periphery/)
+that are **not used by `Morpho.sol` at all**. They exist for integrators, and they are the reason
+Blue can ship with almost no view functions.
+
+### 5.1 `MorphoStorageLib` — reconstructing every slot
+
+[`morpho-blue/src/libraries/periphery/MorphoStorageLib.sol`](morpho-blue/src/libraries/periphery/MorphoStorageLib.sol),
+110 lines, 11 pure functions.
+
+It mirrors the nine base slots (§1.5) plus per-struct offsets
+([`:26-37`](morpho-blue/src/libraries/periphery/MorphoStorageLib.sol#L26-L37)), then derives any
+slot with the standard Solidity mapping rule `keccak256(key . slot)`:
+
+```solidity
+function positionSupplySharesSlot(Id id, address user) internal pure returns (bytes32) {
+    return bytes32(
+        uint256(keccak256(abi.encode(user, keccak256(abi.encode(id, POSITION_SLOT))))) + SUPPLY_SHARES_OFFSET
+    );
+}
+```
+
+[`:49-54`](morpho-blue/src/libraries/periphery/MorphoStorageLib.sol#L49-L54). The nested
+`keccak256` is the two-level mapping `position[id][user]`; the trailing `+ OFFSET` selects the
+word within the struct.
+
+| Function | Returns slot of | Line |
+|---|---|---|
+| `ownerSlot()` | `owner` | [`:41-43`](morpho-blue/src/libraries/periphery/MorphoStorageLib.sol#L41-L43) |
+| `feeRecipientSlot()` | `feeRecipient` | [`:45-47`](morpho-blue/src/libraries/periphery/MorphoStorageLib.sol#L45-L47) |
+| `positionSupplySharesSlot(id, user)` | `position[id][user].supplyShares` | [`:49-54`](morpho-blue/src/libraries/periphery/MorphoStorageLib.sol#L49-L54) |
+| `positionBorrowSharesAndCollateralSlot(id, user)` | packed `borrowShares`+`collateral` | [`:56-61`](morpho-blue/src/libraries/periphery/MorphoStorageLib.sol#L56-L61) |
+| `marketTotalSupplyAssetsAndSharesSlot(id)` | packed supply totals | [`:63-65`](morpho-blue/src/libraries/periphery/MorphoStorageLib.sol#L63-L65) |
+| `marketTotalBorrowAssetsAndSharesSlot(id)` | packed borrow totals | [`:67-69`](morpho-blue/src/libraries/periphery/MorphoStorageLib.sol#L67-L69) |
+| `marketLastUpdateAndFeeSlot(id)` | packed `lastUpdate`+`fee` | [`:71-73`](morpho-blue/src/libraries/periphery/MorphoStorageLib.sol#L71-L73) |
+| `isIrmEnabledSlot(irm)` | `isIrmEnabled[irm]` | [`:75-77`](morpho-blue/src/libraries/periphery/MorphoStorageLib.sol#L75-L77) |
+| `isLltvEnabledSlot(lltv)` | `isLltvEnabled[lltv]` | [`:79-81`](morpho-blue/src/libraries/periphery/MorphoStorageLib.sol#L79-L81) |
+| `isAuthorizedSlot(a, b)` | `isAuthorized[a][b]` | [`:83-85`](morpho-blue/src/libraries/periphery/MorphoStorageLib.sol#L83-L85) |
+| `nonceSlot(authorizer)` | `nonce[authorizer]` | [`:87-89`](morpho-blue/src/libraries/periphery/MorphoStorageLib.sol#L87-L89) |
+| `idToMarketParamsSlot(id)` | `idToMarketParams[id]` | [`:91-93`](morpho-blue/src/libraries/periphery/MorphoStorageLib.sol#L91-L93) |
+
+**This is a hard dependency on storage layout.** Reordering a single state variable in
+`Morpho.sol` silently breaks every consumer. It is safe here only because Blue is immutable and
+will never be redeployed with a different layout — the same bargain Uniswap v4's `StateLibrary`
+makes.
+
+### 5.2 `MorphoLib` — batched single-value reads
+
+[`morpho-blue/src/libraries/periphery/MorphoLib.sol`](morpho-blue/src/libraries/periphery/MorphoLib.sol),
+63 lines, 9 getters plus a private helper.
+
+Each getter is one `extSloads` call with one slot, then a decode. The three that unpack are:
+
+```solidity
+function borrowShares(IMorpho morpho, Id id, address user) internal view returns (uint256) {
+    bytes32 slot = MorphoStorageLib.positionBorrowSharesAndCollateralSlot(id, user);
+    return uint128(uint256(morpho.extSloads(_array(slot))[0]));
+}
+
+function collateral(IMorpho morpho, Id id, address user) internal view returns (uint256) {
+    bytes32 slot = MorphoStorageLib.positionBorrowSharesAndCollateralSlot(id, user);
+    return uint256(morpho.extSloads(_array(slot))[0] >> 128);
+}
+```
+
+[`:18-26`](morpho-blue/src/libraries/periphery/MorphoLib.sol#L18-L26). `borrowShares` truncates to
+the low 128 bits, `collateral` shifts down from the high 128 — confirming the packing described in
+§1.2. The same low/high split applies to `totalSupplyAssets`/`totalSupplyShares`
+([`:28-36`](morpho-blue/src/libraries/periphery/MorphoLib.sol#L28-L36)),
+`totalBorrowAssets`/`totalBorrowShares`
+([`:38-46`](morpho-blue/src/libraries/periphery/MorphoLib.sol#L38-L46)) and
+`lastUpdate`/`fee` ([`:48-56`](morpho-blue/src/libraries/periphery/MorphoLib.sol#L48-L56)).
+
+`_array(bytes32)` at [`:58-62`](morpho-blue/src/libraries/periphery/MorphoLib.sol#L58-L62) just
+wraps a single slot into the one-element array `extSloads` expects.
+
+### 5.3 `MorphoBalancesLib` — accrual-aware views
+
+[`morpho-blue/src/libraries/periphery/MorphoBalancesLib.sol`](morpho-blue/src/libraries/periphery/MorphoBalancesLib.sol),
+118 lines, 6 functions. The most useful library for integrators, because raw storage is *stale*
+between accruals.
+
+`expectedMarketBalances` [`:33-61`](morpho-blue/src/libraries/periphery/MorphoBalancesLib.sol#L33-L61)
+replays `_accrueInterest` in memory:
+
+```solidity
+if (elapsed != 0 && market.totalBorrowAssets != 0 && marketParams.irm != address(0)) {
+    uint256 borrowRate = IIrm(marketParams.irm).borrowRateView(marketParams, market);
+    uint256 interest = market.totalBorrowAssets.wMulDown(borrowRate.wTaylorCompounded(elapsed));
+    market.totalBorrowAssets += interest.toUint128();
+    market.totalSupplyAssets += interest.toUint128();
+    ...
+}
+```
+
+Two differences from the on-chain version worth noting. It calls **`borrowRateView`**, not
+`borrowRate` — the view twin declared at
+[`IIrm.sol:17`](morpho-blue/src/interfaces/IIrm.sol#L17), which a stateful IRM must implement
+without writing. And it adds a `totalBorrowAssets != 0` short-circuit that `_accrueInterest`
+omits, since zero debt produces zero interest anyway.
+
+| Function | Returns | Line |
+|---|---|---|
+| `expectedMarketBalances` | all four totals, post-accrual | [`:33-61`](morpho-blue/src/libraries/periphery/MorphoBalancesLib.sol#L33-L61) |
+| `expectedTotalSupplyAssets` | one total | [`:64-70`](morpho-blue/src/libraries/periphery/MorphoBalancesLib.sol#L64-L70) |
+| `expectedTotalBorrowAssets` | one total | [`:73-79`](morpho-blue/src/libraries/periphery/MorphoBalancesLib.sol#L73-L79) |
+| `expectedTotalSupplyShares` | one total | [`:82-88`](morpho-blue/src/libraries/periphery/MorphoBalancesLib.sol#L82-L88) |
+| `expectedSupplyAssets(user)` | `toAssetsDown` of the user's shares | [`:92-104`](morpho-blue/src/libraries/periphery/MorphoBalancesLib.sol#L92-L104) |
+| `expectedBorrowAssets(user)` | `toAssetsUp` of the user's shares | [`:107-117`](morpho-blue/src/libraries/periphery/MorphoBalancesLib.sol#L107-L117) |
+
+The last two keep the protocol's rounding convention: a supplier's balance rounds down, a
+borrower's rounds up. The docstring at
+[`:91`](morpho-blue/src/libraries/periphery/MorphoBalancesLib.sol#L91) repeats the `feeRecipient`
+warning from §1.2.
+
+MetaMorpho depends on this library directly — `totalAssets()` sums
+`expectedSupplyAssets` across its withdraw queue
+([`metamorpho/src/MetaMorpho.sol:589-593`](metamorpho/src/MetaMorpho.sol#L589-L593)).
+
