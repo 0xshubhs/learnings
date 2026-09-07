@@ -1349,3 +1349,267 @@ On Sepolia the deposit contract differs, hence
 [`SepoliaDepositAdapter`](core/contracts/tooling/sepolia/SepoliaDepositAdapter.sol).
 
 ---
+## 12. `NodeOperatorsRegistry` and its libraries
+
+[`core/contracts/0.4.24/nos/NodeOperatorsRegistry.sol`](core/contracts/0.4.24/nos/NodeOperatorsRegistry.sol) — 1,496 lines, solc 0.4.24.
+
+The **curated** staking module: a permissioned set of professional operators. It
+implements [`IStakingModule`](core/contracts/common/interfaces/IStakingModule.sol)
+so the router can treat it interchangeably with Community Staking or Simple DVT.
+
+### 12.1 Roles
+
+Precomputed keccaks at [`:81-88`](core/contracts/0.4.24/nos/NodeOperatorsRegistry.sol#L81-L88),
+each with the preimage in the comment above it. Aragon ACL roles.
+
+| Role | Gates |
+|---|---|
+| `MANAGE_SIGNING_KEYS` | Adding and removing operator keys. |
+| `SET_NODE_OPERATOR_LIMIT_ROLE` | `setNodeOperatorStakingLimit` (vetting). |
+| `MANAGE_NODE_OPERATOR_ROLE` | Add, activate, deactivate, rename, change reward address. |
+| `STAKING_ROUTER_ROLE` | Held by the router: `obtainDepositData`, exited-count updates, `onRewardsMinted`. |
+
+### 12.2 Key lifecycle
+
+A key moves through four counters, held in `NodeOperator`
+([`:171`](core/contracts/0.4.24/nos/NodeOperatorsRegistry.sol#L171)) and
+summarised by `NodeOperatorSummary`
+([`:201`](core/contracts/0.4.24/nos/NodeOperatorsRegistry.sol#L201)):
+
+```
+ added  ──vetted──>  vetted  ──deposited──>  deposited  ──exited──>  exited
+```
+
+Only **vetted** keys may be deposited against. Vetting is a manual DAO act
+because a key is a promise about withdrawal credentials that cannot be verified
+on chain.
+
+| Function | Line | Purpose |
+|---|---|---|
+| `addNodeOperator(string,address)` | [`:283`](core/contracts/0.4.24/nos/NodeOperatorsRegistry.sol#L283) | Registers an operator, returns its id. |
+| `activateNodeOperator` / `deactivateNodeOperator` | [`:307`](core/contracts/0.4.24/nos/NodeOperatorsRegistry.sol#L307), [`:323`](core/contracts/0.4.24/nos/NodeOperatorsRegistry.sol#L323) | Toggles participation. |
+| `setNodeOperatorName` / `setNodeOperatorRewardAddress` | [`:355`](core/contracts/0.4.24/nos/NodeOperatorsRegistry.sol#L355), [`:368`](core/contracts/0.4.24/nos/NodeOperatorsRegistry.sol#L368) | Metadata. |
+| `setNodeOperatorStakingLimit(uint256,uint64)` | [`:384`](core/contracts/0.4.24/nos/NodeOperatorsRegistry.sol#L384) | Sets the vetted count. |
+| `decreaseVettedSigningKeysCount(...)` | [`:396`](core/contracts/0.4.24/nos/NodeOperatorsRegistry.sol#L396) | Unvetting, driven by the deposit security module. |
+| `addSigningKeys(...)` / `addSigningKeysOperatorBH(...)` | [`:964`](core/contracts/0.4.24/nos/NodeOperatorsRegistry.sol#L964), [`:978`](core/contracts/0.4.24/nos/NodeOperatorsRegistry.sol#L978) | DAO-added versus operator-added ("BH" is behalf). |
+| `removeSigningKey(uint256,uint256)` | [`:1010`](core/contracts/0.4.24/nos/NodeOperatorsRegistry.sol#L1010) | Removes an undeposited key. |
+| `invalidateReadyToDepositKeysRange(uint256,uint256)` | [`:651`](core/contracts/0.4.24/nos/NodeOperatorsRegistry.sol#L651) | Bulk unvet. |
+| `onWithdrawalCredentialsChanged()` | [`:640`](core/contracts/0.4.24/nos/NodeOperatorsRegistry.sol#L640) | Invalidates every undeposited key, since signatures were made against the old credentials. |
+| `obtainDepositData(...)` | [`:697`](core/contracts/0.4.24/nos/NodeOperatorsRegistry.sol#L697) | Router-only. Allocates and returns keys to deposit. |
+| `updateExitedValidatorsCount(...)` | [`:478`](core/contracts/0.4.24/nos/NodeOperatorsRegistry.sol#L478) | From the oracle's extra data. |
+| `unsafeUpdateValidatorsCount(...)` | [`:547`](core/contracts/0.4.24/nos/NodeOperatorsRegistry.sol#L547) | Governance override; the name is the warning. |
+| `updateTargetValidatorsLimits(...)` | [`:595`](core/contracts/0.4.24/nos/NodeOperatorsRegistry.sol#L595), [`:603`](core/contracts/0.4.24/nos/NodeOperatorsRegistry.sol#L603) | Soft or hard cap per operator; two overloads, the second taking a mode. |
+| `onRewardsMinted(uint256)` | [`:463`](core/contracts/0.4.24/nos/NodeOperatorsRegistry.sol#L463) | Hook after fee minting. |
+| `distributeReward()` | [`:526`](core/contracts/0.4.24/nos/NodeOperatorsRegistry.sol#L526) | Splits the module's shares among operators. |
+| `getRewardsDistribution(uint256)` | [`:903`](core/contracts/0.4.24/nos/NodeOperatorsRegistry.sol#L903) | The split, pro rata to active validators. |
+| `getNodeOperator(uint256,bool)` | [`:871`](core/contracts/0.4.24/nos/NodeOperatorsRegistry.sol#L871) | Full or summary view. |
+| `_getSigningKeysAllocationData(uint256)` | [`:774`](core/contracts/0.4.24/nos/NodeOperatorsRegistry.sol#L774) | Runs the min-first allocator over operators. |
+| `_loadAllocatedSigningKeys(...)` | [`:821`](core/contracts/0.4.24/nos/NodeOperatorsRegistry.sol#L821) | Materialises keys and signatures. |
+| `_applyNodeOperatorLimits(uint256)` | [`:737`](core/contracts/0.4.24/nos/NodeOperatorsRegistry.sol#L737) | Applies target limits to the depositable count. |
+
+**`onWithdrawalCredentialsChanged` deserves emphasis.** A deposit signature commits
+to the withdrawal credentials in force when it was made. Change them and every
+unused signature becomes worthless, so the registry throws them all away. It is a
+blunt but correct response.
+
+### 12.3 `StakeLimitUtils`
+
+[`core/contracts/0.4.24/lib/StakeLimitUtils.sol`](core/contracts/0.4.24/lib/StakeLimitUtils.sol) — 261 lines.
+
+Packs the whole rate-limit state into one slot (`Data`,
+[`:42`](core/contracts/0.4.24/lib/StakeLimitUtils.sol#L42)) and provides the
+leaky-bucket arithmetic.
+
+| Function | Line | Purpose |
+|---|---|---|
+| `getStorageStakeLimitStruct` / `setStorageStakeLimitStruct` | [`:66`](core/contracts/0.4.24/lib/StakeLimitUtils.sol#L66), [`:80`](core/contracts/0.4.24/lib/StakeLimitUtils.sol#L80) | Pack and unpack the slot. |
+| `calculateCurrentStakeLimit(Data)` | [`:99`](core/contracts/0.4.24/lib/StakeLimitUtils.sol#L99) | `min(maxLimit, prevLimit + blocksPassed · increasePerBlock)`. |
+| `isStakingPaused` / `isStakingLimitSet` | [`:116`](core/contracts/0.4.24/lib/StakeLimitUtils.sol#L116), [`:123`](core/contracts/0.4.24/lib/StakeLimitUtils.sol#L123) | Flags encoded in the same word. |
+| `setStakingLimit` / `removeStakingLimit` | [`:134`](core/contracts/0.4.24/lib/StakeLimitUtils.sol#L134), [`:176`](core/contracts/0.4.24/lib/StakeLimitUtils.sol#L176) | Configuration. |
+| `updatePrevStakeLimit` / `setStakeLimitPauseState` | [`:190`](core/contracts/0.4.24/lib/StakeLimitUtils.sol#L190), [`:209`](core/contracts/0.4.24/lib/StakeLimitUtils.sol#L209) | State transitions. |
+| `_constGasLt` / `_constGasMin` / `_constGasMax` / `_saturatingSub` | [`:224`](core/contracts/0.4.24/lib/StakeLimitUtils.sol#L224)–[`:257`](core/contracts/0.4.24/lib/StakeLimitUtils.sol#L257) | Branch-free comparisons. |
+
+Those last four are branchless on purpose: constant gas regardless of input, so
+the cost of `submit` does not leak information about the limit state and cannot
+be gamed by choosing an amount that takes a cheaper path.
+
+### 12.4 `Packed64x4` and `SigningKeys`
+
+[`Packed64x4.sol`](core/contracts/0.4.24/lib/Packed64x4.sol) — 49 lines. Four
+`uint64` counters in one word, with `get`
+([`:25`](core/contracts/0.4.24/lib/Packed64x4.sol#L25)), `set`
+([`:33`](core/contracts/0.4.24/lib/Packed64x4.sol#L33)), `add`
+([`:40`](core/contracts/0.4.24/lib/Packed64x4.sol#L40)), `sub`
+([`:46`](core/contracts/0.4.24/lib/Packed64x4.sol#L46)). This is why an operator's
+four key counters cost one `SSTORE` rather than four.
+
+[`SigningKeys.sol`](core/contracts/0.4.24/lib/SigningKeys.sol) — 179 lines. Keys
+are 48 bytes and signatures 96, neither a clean multiple of 32, so storage is
+hand-rolled: `getKeyOffset`
+([`:24`](core/contracts/0.4.24/lib/SigningKeys.sol#L24)) computes the slot,
+`saveKeysSigs` ([`:36`](core/contracts/0.4.24/lib/SigningKeys.sol#L36)),
+`removeKeysSigs` ([`:90`](core/contracts/0.4.24/lib/SigningKeys.sol#L90)),
+`loadKeysSigs` ([`:149`](core/contracts/0.4.24/lib/SigningKeys.sol#L149)) and
+`initKeysSigsBuf` ([`:176`](core/contracts/0.4.24/lib/SigningKeys.sol#L176)) do
+the packing with assembly.
+
+### 12.5 `MinFirstAllocationStrategy`
+
+[`core/contracts/common/lib/MinFirstAllocationStrategy.sol`](core/contracts/common/lib/MinFirstAllocationStrategy.sol) — 108 lines.
+
+The allocator used both across modules and across operators within a module. It
+fills the **least-full** bucket first, equalising fill factors rather than
+distributing proportionally.
+
+`allocate(uint256[] buckets, uint256[] capacities, uint256 allocationSize)`
+([`:26`](core/contracts/common/lib/MinFirstAllocationStrategy.sol#L26)) loops
+`allocateToBestCandidate` until the budget is spent or nothing more fits. The
+docstring works a full example at
+[`:14-20`](core/contracts/common/lib/MinFirstAllocationStrategy.sol#L14-L20): with
+buckets `[9998, 70, 0]`, capacities `[10000, 101, 100]` and 101 to allocate, it
+tops up index 2 by 70, then alternates between 1 and 2 to keep them level,
+ending at `[9998, 86, 85]`.
+
+The effect is that a new operator receives deposits until it catches up with the
+others, rather than receiving a proportional trickle forever. Note the method
+**mutates `buckets` in place** to avoid a second memory allocation, which the
+docstring flags at [`:21`](core/contracts/common/lib/MinFirstAllocationStrategy.sol#L21).
+
+---
+
+## 13. `StakingRouter`
+
+[`core/contracts/0.8.25/sr/StakingRouter.sol`](core/contracts/0.8.25/sr/StakingRouter.sol) — 1,191 lines, solc 0.8.25,
+with most logic in [`SRLib.sol`](core/contracts/0.8.25/sr/SRLib.sol) — 932 lines,
+types in [`SRTypes.sol`](core/contracts/0.8.25/sr/SRTypes.sol) — 281 lines,
+storage in [`SRStorage.sol`](core/contracts/0.8.25/sr/SRStorage.sol) — 79 lines,
+helpers in [`SRUtils.sol`](core/contracts/0.8.25/sr/SRUtils.sol) — 96 lines,
+events and errors in [`ISRBase.sol`](core/contracts/0.8.25/sr/ISRBase.sol) — 101 lines.
+
+The router turns "Lido has N ETH to stake" into "module M deposits it against
+these keys". Splitting the implementation into an external library is a
+deployed-bytecode-size measure; the router alone would exceed the 24 KB limit.
+
+### 13.1 Roles
+
+Nine, at [`:46-54`](core/contracts/0.8.25/sr/StakingRouter.sol#L46-L54):
+`MANAGE_WITHDRAWAL_CREDENTIALS_ROLE`, `STAKING_MODULE_MANAGE_ROLE`,
+`STAKING_MODULE_SHARE_MANAGE_ROLE`, `STAKING_MODULE_UNVETTING_ROLE`,
+`REPORT_EXITED_VALIDATORS_ROLE`, `REPORT_VALIDATOR_EXITING_STATUS_ROLE`,
+`REPORT_VALIDATOR_EXIT_TRIGGERED_ROLE`, `UNSAFE_SET_EXITED_VALIDATORS_ROLE`,
+`REPORT_REWARDS_MINTED_ROLE`. These are OpenZeppelin `AccessControl`, unlike the
+Aragon roles in `Lido` and the registry.
+
+### 13.2 Module management
+
+| Function | Line | Access |
+|---|---|---|
+| `addStakingModule(...)` | [`:180`](core/contracts/0.8.25/sr/StakingRouter.sol#L180) | `STAKING_MODULE_MANAGE_ROLE` |
+| `updateStakingModule(...)` | [`:201`](core/contracts/0.8.25/sr/StakingRouter.sol#L201) | `STAKING_MODULE_MANAGE_ROLE` |
+| `updateAllStakingModulesFees(...)` | [`:226`](core/contracts/0.8.25/sr/StakingRouter.sol#L226) | `STAKING_MODULE_MANAGE_ROLE` |
+| `updateModuleShares(uint256,uint16,uint16)` | [`:238`](core/contracts/0.8.25/sr/StakingRouter.sol#L238) | `STAKING_MODULE_SHARE_MANAGE_ROLE`. Sets the stake-share limit and the priority exit threshold. |
+| `updateTargetValidatorsLimits(...)` | [`:252`](core/contracts/0.8.25/sr/StakingRouter.sol#L252) | Per-operator caps. |
+| `setWithdrawalCredentials(bytes32)` | [`:1003`](core/contracts/0.8.25/sr/StakingRouter.sol#L1003) | `MANAGE_WITHDRAWAL_CREDENTIALS_ROLE`. Cascades `onWithdrawalCredentialsChanged` to every module. |
+| `setMaxTopUpPerBlockGwei(uint256)` | [`:1019`](core/contracts/0.8.25/sr/StakingRouter.sol#L1019) | `STAKING_MODULE_MANAGE_ROLE`. New in v3, bounds EIP-7251 top-ups. |
+
+Constants: `MAX_STAKING_MODULES_COUNT`
+([`:79`](core/contracts/0.8.25/sr/StakingRouter.sol#L79)),
+`MAX_STAKING_MODULE_NAME_LENGTH`
+([`:84`](core/contracts/0.8.25/sr/StakingRouter.sol#L84)),
+`INITIAL_DEPOSIT_SIZE` ([`:69`](core/contracts/0.8.25/sr/StakingRouter.sol#L69)),
+`TOTAL_BASIS_POINTS` ([`:74`](core/contracts/0.8.25/sr/StakingRouter.sol#L74)).
+
+### 13.3 Depositing and allocation
+
+**`deposit(uint256 _stakingModuleId, bytes calldata _depositCalldata)`** —
+[`:942`](core/contracts/0.8.25/sr/StakingRouter.sol#L942). Only the deposit
+security module. Pulls depositable ether from `Lido`, asks the module for keys,
+and submits to the beacon deposit contract.
+
+**`getDepositAllocations(uint256 _depositAmount, bool _isTopUp)`** —
+[`:929`](core/contracts/0.8.25/sr/StakingRouter.sol#L929). Runs
+`MinFirstAllocationStrategy` across modules, bounded by each module's
+`stakeShareLimit`. `_getModuleDepositAllocation`
+([`:1064`](core/contracts/0.8.25/sr/StakingRouter.sol#L1064)) is the per-module
+step and `getStakingModuleMaxDepositsCount`
+([`:649`](core/contracts/0.8.25/sr/StakingRouter.sol#L649)) the cap.
+
+**`topUp(...)`** — [`:679`](core/contracts/0.8.25/sr/StakingRouter.sol#L679), with
+`_validateTopUpInputs` at [`:761`](core/contracts/0.8.25/sr/StakingRouter.sol#L761).
+New in v3. EIP-7251 raised the maximum effective balance to 2048 ETH, so ETH can
+now be added to an existing validator instead of creating a new one. That is
+strictly cheaper: no activation queue wait. `maxTopUpPerBlockGwei` rate-limits it.
+
+`receiveDepositableEther()` at [`:665`](core/contracts/0.8.25/sr/StakingRouter.sol#L665)
+is the payable entry from `Lido`.
+
+**Deposit pacing.** `getStakingModuleMinDepositBlockDistance`
+([`:608`](core/contracts/0.8.25/sr/StakingRouter.sol#L608)) and
+`getStakingModuleLastDepositBlock`
+([`:600`](core/contracts/0.8.25/sr/StakingRouter.sol#L600)) enforce a gap between
+deposits per module. Combined with the guardian attestation in
+[§11](#11-depositsecuritymodule-and-depositing), this bounds how much can be lost
+to a front-run before guardians can react.
+
+### 13.4 Fees
+
+**`getStakingRewardsDistribution()`** —
+[`:808`](core/contracts/0.8.25/sr/StakingRouter.sol#L808). The function
+`Accounting` calls in [§6.4](#64-splitting-the-fee). Returns recipients, module
+ids, per-module fees, the aggregate, and the precision base.
+
+Supporting: `getStakingFeeAggregateDistribution`
+([`:788`](core/contracts/0.8.25/sr/StakingRouter.sol#L788)), its E4-precision
+variant ([`:910`](core/contracts/0.8.25/sr/StakingRouter.sol#L910)),
+`getTotalFeeE4Precision` ([`:899`](core/contracts/0.8.25/sr/StakingRouter.sol#L899))
+and `_computeModuleFee` ([`:885`](core/contracts/0.8.25/sr/StakingRouter.sol#L885)).
+The E4 variants exist because `Lido` at 0.4.24 expects `uint16` basis points.
+
+**`reportRewardsMinted(uint256[],uint256[])`** —
+[`:266`](core/contracts/0.8.25/sr/StakingRouter.sol#L266). Tells each module how
+many shares it received so it can run its own internal split.
+
+### 13.5 Exit and balance reporting
+
+| Function | Line | Role |
+|---|---|---|
+| `updateExitedValidatorsCountByStakingModule(...)` | [`:276`](core/contracts/0.8.25/sr/StakingRouter.sol#L276) | `REPORT_EXITED_VALIDATORS_ROLE` |
+| `reportValidatorBalancesByStakingModule(...)` | [`:285`](core/contracts/0.8.25/sr/StakingRouter.sol#L285) | v3 balance-based accounting |
+| `validateReportValidatorBalancesByStakingModule(...)` | [`:293`](core/contracts/0.8.25/sr/StakingRouter.sol#L293) | Dry run |
+| `reportStakingModuleExitedValidatorsCountByNodeOperator(...)` | [`:303`](core/contracts/0.8.25/sr/StakingRouter.sol#L303) | Extra-data path |
+| `unsafeSetExitedValidatorsCount(...)` | [`:313`](core/contracts/0.8.25/sr/StakingRouter.sol#L313) | `UNSAFE_SET_EXITED_VALIDATORS_ROLE` |
+| `onValidatorsCountsByNodeOperatorReportingFinished()` | [`:325`](core/contracts/0.8.25/sr/StakingRouter.sol#L325) | End-of-extra-data hook |
+| `decreaseStakingModuleVettedKeysCountByNodeOperator(...)` | [`:332`](core/contracts/0.8.25/sr/StakingRouter.sol#L332) | `STAKING_MODULE_UNVETTING_ROLE`, from the DSM |
+| `reportValidatorExitDelay(...)` | [`:343`](core/contracts/0.8.25/sr/StakingRouter.sol#L343) | `REPORT_VALIDATOR_EXITING_STATUS_ROLE` |
+| `onValidatorExitTriggered(...)` | [`:356`](core/contracts/0.8.25/sr/StakingRouter.sol#L356) | `REPORT_VALIDATOR_EXIT_TRIGGERED_ROLE` |
+
+### 13.6 Views
+
+`getStakingModules` [`:366`](core/contracts/0.8.25/sr/StakingRouter.sol#L366),
+`getStakingModuleIds` [`:408`](core/contracts/0.8.25/sr/StakingRouter.sol#L408),
+`getStakingModule` [`:415`](core/contracts/0.8.25/sr/StakingRouter.sol#L415),
+`getStakingModulesCount` [`:422`](core/contracts/0.8.25/sr/StakingRouter.sol#L422),
+`hasStakingModule` [`:429`](core/contracts/0.8.25/sr/StakingRouter.sol#L429),
+`getStakingModuleStatus` [`:436`](core/contracts/0.8.25/sr/StakingRouter.sol#L436),
+and the three split state getters `getStakingModuleStateConfig`
+[`:379`](core/contracts/0.8.25/sr/StakingRouter.sol#L379),
+`getStakingModuleStateDeposits`
+[`:387`](core/contracts/0.8.25/sr/StakingRouter.sol#L387) and
+`getStakingModuleStateAccounting`
+[`:396`](core/contracts/0.8.25/sr/StakingRouter.sol#L396). Digests for UIs:
+`getAllStakingModuleDigests` [`:474`](core/contracts/0.8.25/sr/StakingRouter.sol#L474),
+`getStakingModuleDigests` [`:483`](core/contracts/0.8.25/sr/StakingRouter.sol#L483).
+Balances: `getModuleValidatorsBalance`
+[`:876`](core/contracts/0.8.25/sr/StakingRouter.sol#L876) and
+`getTotalModulesValidatorsBalance`
+[`:881`](core/contracts/0.8.25/sr/StakingRouter.sol#L881).
+
+Withdrawal credentials: `getWithdrawalCredentials`
+[`:1012`](core/contracts/0.8.25/sr/StakingRouter.sol#L1012),
+`getStakingModuleWithdrawalCredentials`
+[`:639`](core/contracts/0.8.25/sr/StakingRouter.sol#L639), and
+`_getWithdrawalCredentialsWithType`
+[`:1046`](core/contracts/0.8.25/sr/StakingRouter.sol#L1046), which selects between
+0x01 and 0x02 forms.
+
+---
