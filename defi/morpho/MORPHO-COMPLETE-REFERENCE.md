@@ -1344,3 +1344,112 @@ Discussed in §2.5. A deliberately empty type used to make a mistake uncompilabl
 declaring it non-view, which is legal (a `pure` function satisfies a non-view signature) and
 confirms that stateless IRMs are supported.
 
+---
+
+<a id="7-metamorpho-roles-timelocks-queues"></a>
+## 7. MetaMorpho: roles, timelocks, queues
+
+Blue markets are isolated and permissionless, which means a supplier must pick markets and manage
+exposure. MetaMorpho is the answer: an ERC-4626 vault that spreads one asset across many Blue
+markets under a role-separated, timelocked policy.
+
+[`metamorpho/src/MetaMorpho.sol`](metamorpho/src/MetaMorpho.sol), 911 lines — **63% larger than
+Blue itself**. The curation and safety machinery costs more code than the lending primitive.
+
+```solidity
+contract MetaMorpho is ERC4626, ERC20Permit, Ownable2Step, Multicall, IMetaMorphoStaticTyping
+```
+
+[`:43`](metamorpho/src/MetaMorpho.sol#L43). All four base contracts are OpenZeppelin.
+
+### 7.1 The four roles
+
+Defined by four modifiers at
+[`:139-170`](metamorpho/src/MetaMorpho.sol#L139-L170), each strictly nested:
+
+| Role | May do | Modifier |
+|---|---|---|
+| **Owner** | everything; set curator, allocators, fee, fee recipient, skim recipient; submit timelock and guardian | `onlyOwner` (OZ) |
+| **Curator** | submit caps, submit market removals; also holds allocator powers | [`onlyCuratorRole`](metamorpho/src/MetaMorpho.sol#L139-L144) |
+| **Allocator** | set the supply queue, reorder the withdraw queue, `reallocate` | [`onlyAllocatorRole`](metamorpho/src/MetaMorpho.sol#L147-L154) |
+| **Guardian** | *revoke* pending changes only; never enact | [`onlyGuardianRole`](metamorpho/src/MetaMorpho.sol#L157-L161) |
+
+The nesting is explicit in the code: `onlyAllocatorRole` passes for allocators, the curator, *and*
+the owner ([`:149`](metamorpho/src/MetaMorpho.sol#L149)); `onlyCuratorRole` passes for curator and
+owner ([`:141`](metamorpho/src/MetaMorpho.sol#L141)).
+
+The guardian is a pure veto. It has no positive power at all — it cannot set a cap, move funds, or
+pause. That asymmetry is the design: the guardian can only ever make the vault *less* able to
+change.
+
+### 7.2 The timelock
+
+Bounded by [`ConstantsLib`](metamorpho/src/libraries/ConstantsLib.sol):
+`MIN_TIMELOCK = 1 days` ([`:13`](metamorpho/src/libraries/ConstantsLib.sol#L13)),
+`MAX_TIMELOCK = 2 weeks` ([`:10`](metamorpho/src/libraries/ConstantsLib.sol#L10)), enforced by
+`_checkTimelockBounds` ([`:720-724`](metamorpho/src/MetaMorpho.sol#L720-L724)).
+
+`PendingLib` ([`metamorpho/src/libraries/PendingLib.sol`](metamorpho/src/libraries/PendingLib.sol),
+48 lines) holds the three pending structs and two `update` overloads that stamp
+`validAt = block.timestamp + timelock`
+([`:35-47`](metamorpho/src/libraries/PendingLib.sol#L35-L47)).
+
+The `afterTimelock(validAt)` modifier
+([`:176-181`](metamorpho/src/MetaMorpho.sol#L176-L181)) gates every `accept*`:
+
+```solidity
+if (validAt == 0) revert ErrorsLib.NoPendingValue();
+if (block.timestamp < validAt) revert ErrorsLib.TimelockNotElapsed();
+```
+
+**The direction rule is the elegant part.** Changes that reduce risk take effect immediately;
+changes that increase it must wait. In `submitTimelock`
+([`:213-227`](metamorpho/src/MetaMorpho.sol#L213-L227)), a *longer* timelock applies at once
+([`:218-219`](metamorpho/src/MetaMorpho.sol#L218-L219)) while a shorter one is queued. In
+`submitCap` ([`:273-289`](metamorpho/src/MetaMorpho.sol#L273-L289)), *lowering* a cap calls
+`_setCap` directly ([`:282-283`](metamorpho/src/MetaMorpho.sol#L282-L283)) while raising it is
+queued ([`:285`](metamorpho/src/MetaMorpho.sol#L285)).
+
+`submitCap` also refuses a market whose loan token is not the vault's asset
+([`:275`](metamorpho/src/MetaMorpho.sol#L275), `InconsistentAsset`) and one that does not exist on
+Blue ([`:276`](metamorpho/src/MetaMorpho.sol#L276)).
+
+### 7.3 The two queues
+
+| Queue | Purpose | Set by | Line |
+|---|---|---|---|
+| `supplyQueue` | order markets are filled on deposit | `setSupplyQueue` | [`:100`](metamorpho/src/MetaMorpho.sol#L100) |
+| `withdrawQueue` | order markets are drained on withdrawal | `updateWithdrawQueue` | [`:103`](metamorpho/src/MetaMorpho.sol#L103) |
+
+Both capped at `MAX_QUEUE_LENGTH = 30`
+([`ConstantsLib.sol:16`](metamorpho/src/libraries/ConstantsLib.sol#L16)) to bound gas, since
+`totalAssets()` iterates the whole withdraw queue on **every** conversion.
+
+`setSupplyQueue` ([`:308-320`](metamorpho/src/MetaMorpho.sol#L308-L320)) is a full replacement and
+only checks that every entry has a non-zero cap. An allocator can therefore reorder deposit
+priority freely — a real power, since it decides which market receives new money first.
+
+`updateWithdrawQueue` ([`:323-363`](metamorpho/src/MetaMorpho.sol#L323-L363)) is a *permutation*
+API: it takes indexes into the current queue rather than ids, uses a `seen` bitmap to reject
+duplicates ([`:335`](metamorpho/src/MetaMorpho.sol#L335)), and then subjects every dropped market
+to three checks ([`:341-357`](metamorpho/src/MetaMorpho.sol#L341-L357)):
+
+```solidity
+if (config[id].cap != 0) revert ErrorsLib.InvalidMarketRemovalNonZeroCap(id);
+if (pendingCap[id].validAt != 0) revert ErrorsLib.PendingCap(id);
+
+if (MORPHO.supplyShares(id, address(this)) != 0) {
+    if (config[id].removableAt == 0) revert ErrorsLib.InvalidMarketRemovalNonZeroSupply(id);
+    if (block.timestamp < config[id].removableAt) revert ErrorsLib.InvalidMarketRemovalTimelockNotElapsed(id);
+}
+```
+
+So a market holding vault funds can be dropped from the withdraw queue only after the curator has
+called `submitMarketRemoval` and its timelock has elapsed. This closes the obvious attack: an
+allocator silently removing a market from the withdraw queue would strand depositor funds there
+permanently, since `totalAssets()` only sums the withdraw queue.
+
+`submitMarketRemoval` ([`:292-303`](metamorpho/src/MetaMorpho.sol#L292-L303)) requires the cap to
+already be zero ([`:295`](metamorpho/src/MetaMorpho.sol#L295)), forcing a two-step
+lower-cap-then-remove sequence.
+
