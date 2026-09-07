@@ -430,3 +430,161 @@ Every wei pulled from Lido must reach the deposit contract. Nothing may stick to
 the router.
 
 ---
+
+## 3. The oracle and the rebase
+
+Ethereum's execution layer cannot see the beacon chain. Validator balances live
+in a state the EVM has no access to, so the number that drives every stETH
+balance has to be *told* to the protocol. That makes the oracle the single most
+consequential trust assumption in Lido, and the machinery around it is
+correspondingly paranoid.
+
+### 3.1 Frames, quorum, and getting to one number
+
+`HashConsensus` runs the vote. Time is chopped into **frames** of
+`epochsPerFrame` epochs ([`FrameConfig`](core/contracts/0.8.9/oracle/HashConsensus.sol#L123)),
+and each frame has one **reference slot**: the last slot of the previous frame.
+Every oracle member independently reads beacon state as of that exact slot, so
+they are all describing the same instant.
+
+Members then submit a **hash** of their report, not the report itself
+([`submitReport`](core/contracts/0.8.9/oracle/HashConsensus.sol#L609)). The
+contract tallies support per distinct hash:
+
+```solidity
+if (support >= _quorum) {
+    _consensusReached(frame, report, varIndex, support);
+} else if (prevConsensusLost) {
+    _consensusNotReached(frame);
+}
+```
+
+[`HashConsensus.sol:945-949`](core/contracts/0.8.9/oracle/HashConsensus.sol#L945-L949)
+
+Two subtleties most descriptions miss. A member may **change their vote** within
+a frame: the code decrements the old variant's support first
+([`:922`](core/contracts/0.8.9/oracle/HashConsensus.sol#L922)), and if that drops
+it below quorum, consensus is actively *lost* again rather than silently
+retained. And submitting the identical hash twice reverts with
+`DuplicateReport` ([`:919`](core/contracts/0.8.9/oracle/HashConsensus.sol#L919)),
+which is what stops one member counting twice toward quorum.
+
+Only once a hash has quorum may anyone submit the matching data to
+`AccountingOracle.submitReportData`
+([`AccountingOracle.sol:360`](core/contracts/0.8.9/oracle/AccountingOracle.sol#L360)),
+which checks the data against the agreed hash. Hash first, data second: the vote
+is cheap, and no member can be front-run into revealing their numbers early.
+
+### 3.2 Where the rebase actually happens
+
+Contrary to what older write-ups say, `handleOracleReport` is **not** in
+`Lido.sol` any more. It lives in
+[`Accounting.sol:137`](core/contracts/0.8.9/Accounting.sol#L137), a v3 contract
+that orchestrates the whole report and calls back into Lido for the pieces that
+touch token state.
+
+The ordering in `_applyOracleReportContext`
+([`Accounting.sol:360-427`](core/contracts/0.8.9/Accounting.sol#L360-L427)) is
+deliberate and worth reading as a sequence:
+
+```
+1  _sanityChecks(...)                          revert the whole report if wrong
+2  burner.requestBurnShares(withdrawalQueue)   queue WQ shares for burning
+3  LIDO.processClStateUpdate(...)              write new CL balances
+4  vaultHub / internalizeExternalBadDebt       absorb stVault bad debt, if any
+5  burner.commitSharesToBurn(...)              actually burn -> share rate rises
+6  LIDO.collectRewardsAndProcessWithdrawals()  pull EL rewards, finalize WQ
+7  LIDO.mintShares(fees)  + _distributeFee()   dilute -> share rate settles
+8  _notifyRebaseObserver(...)
+9  LIDO.emitTokenRebase(...)                   announce pre/post numbers
+```
+
+Step 7 carries an explicit comment in the source:
+
+```solidity
+if (_update.sharesToMintAsFees > 0) {
+    // this is a final action that changes share rate.
+    // so all transfers after this mint will reflect the actual postShareRate
+    LIDO.mintShares(address(this), _update.sharesToMintAsFees);
+```
+
+[`Accounting.sol:403-406`](core/contracts/0.8.9/Accounting.sol#L403-L406)
+
+Fee minting is last among rate-changing operations precisely so that the
+`_distributeFee` transfers that follow move the correct amount of value. Get that
+order wrong and operators are paid at a stale rate.
+
+### 3.3 The fee formula
+
+This is the piece worth deriving, because it is the same shape you met in
+Uniswap V2's `_mintFee` and it is not obvious on first read.
+
+Lido takes a fee on rewards. It could take it in ether, but the ether is on the
+beacon chain and cannot be moved. So instead it **mints new shares** to
+operators and the treasury, diluting existing holders by exactly the value the
+fee would have been.
+
+```solidity
+uint256 totalRewards = unifiedClBalance - _update.principalClBalance + _update.elRewardsVaultTransfer;
+uint256 feeEther = (totalRewards * _totalFee) / _feePrecisionPoints;
+sharesToMintAsFees = (feeEther * _internalSharesBeforeFees) / (_update.postInternalEther - feeEther);
+```
+
+[`Accounting.sol:322-331`](core/contracts/0.8.9/Accounting.sol#L322-L331)
+
+Why that denominator? Let `S` be shares before, `E` the post-rebase ether, and
+`f` the fee in ether. We want to mint `x` new shares whose value is exactly `f`
+at the **post-mint** rate:
+
+```
+    x / (S + x)  =  f / E          (the fee's share of the pool equals its value)
+    xE = f(S + x)
+    x(E - f) = fS
+    x = fS / (E - f)
+```
+
+which is the line above verbatim. Subtracting `f` in the denominator is what makes
+the fee come out of the rewards rather than out of existing holders' principal.
+
+One more guard sits above it:
+
+```solidity
+if (unifiedClBalance > _update.principalClBalance) {
+```
+
+[`Accounting.sol:322`](core/contracts/0.8.9/Accounting.sol#L322). No fee is
+charged on a report where the consensus layer balance did not grow. Lido does not
+take a cut of a loss.
+
+### 3.4 The sanity checker
+
+`OracleReportSanityChecker` is 1,588 lines of "this number cannot possibly be
+right". Its `LimitsList` struct
+([`:58-130`](core/contracts/0.8.9/sanity_checks/OracleReportSanityChecker.sol#L58-L129))
+is the most compact description of what Lido is afraid of:
+
+| Limit | Guards against |
+|---|---|
+| `exitedEthAmountPerDayLimit` | an oracle claiming an implausible mass exit |
+| `appearedEthAmountPerDayLimit` | fabricated deposits appearing from nowhere |
+| `annualBalanceIncreaseBPLimit` | a report inflating rewards beyond physical staking yield |
+| `maxCLBalanceDecreaseBP` | a report fabricating catastrophic slashing |
+| `maxPositiveTokenRebase` | a single report spiking the share rate; smooths MEV spikes |
+| `simulatedShareRateDeviationBPLimit` | the submitted rate disagreeing with the recomputed one |
+| `requestTimestampMargin` | finalizing withdrawal requests that are too fresh |
+| `clBalanceOraclesErrorUpperBPLimit` | disagreement with an independent second-opinion oracle |
+| `maxItemsPerExtraDataTransaction` | gas-griefing via oversized extra data |
+
+The economically interesting one is `maxPositiveTokenRebase`. Without it, a single
+large MEV block would spike the rate in one report, letting anyone who deposited
+moments earlier capture a disproportionate share. Capping the positive rebase and
+smearing the excess across later reports removes that timing game. The limiter
+itself lives in
+[`PositiveTokenRebaseLimiter.sol`](core/contracts/0.8.9/lib/PositiveTokenRebaseLimiter.sol#L1).
+
+Note that these are **not** guarantees the report is honest. They are bounds on
+how much damage a dishonest quorum can do in one report. A malicious quorum
+reporting a small lie repeatedly is still a malicious quorum; section 7 returns
+to this.
+
+---
