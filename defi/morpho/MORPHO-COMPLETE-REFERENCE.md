@@ -899,3 +899,168 @@ collateral, sell it inside `onMorphoLiquidate`, and repay from the proceeds. Blu
 flash-liquidation pattern native rather than requiring a separate adapter, which is what Aave v2
 needed `FlashLiquidationAdapter` for.
 
+### 3.16 `flashLoan(address token, uint256 assets, bytes data)`
+
+[`:422-432`](morpho-blue/src/Morpho.sol#L422-L432) · returns nothing. **Eleven lines.**
+
+| | |
+|---|---|
+| **Checks** | `assets != 0` → `ZERO_ASSETS` |
+| **Writes** | none |
+| **Emits** | `FlashLoan(msg.sender, token, assets)` |
+| **Order** | transfer out → `onMorphoFlashLoan(assets, data)` → `transferFrom` back |
+
+**Zero fee.** There is no premium, no fee parameter, no fee accrual. Aave's `FlashLoanLogic` is
+253 lines with a two-part premium split between LPs and treasury; Blue's is eleven lines with
+none.
+
+**No market required.** `flashLoan` takes a bare `token`, not a `MarketParams`. It lends whatever
+balance the singleton happens to hold of that token, aggregated across every market. There is no
+per-market liquidity check because the repayment is enforced by the trailing `transferFrom`: if
+the borrower does not return the full amount, that call reverts and the whole transaction unwinds.
+
+**No accounting to corrupt.** Because Blue never reads `balanceOf(address(this))` for its
+internal state (§2.1), draining the contract mid-transaction cannot desynchronise anything.
+`totalSupplyAssets` is unchanged throughout. The one visible consequence is that a *withdrawal*
+attempted inside a flash-loan callback may fail on the token transfer even though internal
+accounting says liquidity exists — which is exactly the case MetaMorpho's `_withdrawable` guards
+against by taking `min(totalSupply − totalBorrow, loanToken.balanceOf(MORPHO))` at
+[`metamorpho/src/MetaMorpho.sol:869-871`](metamorpho/src/MetaMorpho.sol#L869-L871).
+
+**No reentrancy guard**, deliberately. Reentering `flashLoan` simply nests another
+transfer-out/transfer-back pair, each of which must independently balance.
+
+### 3.17 `setAuthorization(address authorized, bool newIsAuthorized)`
+
+[`:437-443`](morpho-blue/src/Morpho.sol#L437-L443).
+
+| | |
+|---|---|
+| **Checks** | `newIsAuthorized != isAuthorized[msg.sender][authorized]` → `ALREADY_SET` |
+| **Writes** | `isAuthorized[msg.sender][authorized]` |
+| **Emits** | `SetAuthorization(msg.sender, msg.sender, authorized, newIsAuthorized)` |
+
+An all-or-nothing delegation: an authorized address can `withdraw`, `borrow` and
+`withdrawCollateral` on your behalf, across **every market**, without limit. Contrast Aave's
+credit delegation, which is per-reserve and per-amount
+(`DebtTokenBase.approveDelegation`). Blue's is a blunt instrument, appropriate because the
+intended holder is a bundler contract used within a single transaction.
+
+### 3.18 `setAuthorizationWithSig(Authorization authorization, Signature signature)`
+
+[`:446-464`](morpho-blue/src/Morpho.sol#L446-L464) · EIP-712, callable by anyone.
+
+| | |
+|---|---|
+| **Checks** | `block.timestamp <= deadline` → `SIGNATURE_EXPIRED`; `nonce == nonce[authorizer]++` → `INVALID_NONCE`; `signatory != address(0) && authorizer == signatory` → `INVALID_SIGNATURE` |
+| **Writes** | `nonce[authorizer]++`, `isAuthorized[authorizer][authorized]` |
+| **Emits** | `IncrementNonce`, then `SetAuthorization` |
+
+The comment at [`:447`](morpho-blue/src/Morpho.sol#L447) notes the missing `ALREADY_SET` check is
+intentional: re-signing the same value still burns a nonce, which is how a signer cancels a
+signature they have leaked.
+
+`ecrecover` is used raw, with the `signatory != address(0)` check catching malformed signatures.
+There is **no EIP-2098 or malleability guard** on `s`, but replay is prevented by the nonce, so
+a flipped-`s` variant of a signature merely consumes the same nonce.
+
+Note this is *not* ERC-1271 compatible: a smart-contract wallet cannot authorize by signature, only
+by calling `setAuthorization` directly.
+
+### 3.19 `_isSenderAuthorized(address onBehalf)`
+
+[`:467-469`](morpho-blue/src/Morpho.sol#L467-L469): `msg.sender == onBehalf || isAuthorized[onBehalf][msg.sender]`.
+Called by `withdraw`, `borrow` and `withdrawCollateral` — the three functions that remove value.
+
+### 3.20 `accrueInterest` and `_accrueInterest`
+
+Public wrapper at [`:474-479`](morpho-blue/src/Morpho.sol#L474-L479) checks the market exists and
+delegates. The real work is
+[`:483-509`](morpho-blue/src/Morpho.sol#L483-L509):
+
+```solidity
+uint256 elapsed = block.timestamp - market[id].lastUpdate;
+if (elapsed == 0) return;
+
+if (marketParams.irm != address(0)) {
+    uint256 borrowRate = IIrm(marketParams.irm).borrowRate(marketParams, market[id]);
+    uint256 interest = market[id].totalBorrowAssets.wMulDown(borrowRate.wTaylorCompounded(elapsed));
+    market[id].totalBorrowAssets += interest.toUint128();
+    market[id].totalSupplyAssets += interest.toUint128();
+    ...
+}
+market[id].lastUpdate = uint128(block.timestamp);
+```
+
+| | |
+|---|---|
+| **Early exit** | `elapsed == 0`, so multiple calls in one block cost almost nothing |
+| **External call** | `IIrm.borrowRate` — **state-changing**, not a view; stateful IRMs update here |
+| **Writes** | `totalBorrowAssets`, `totalSupplyAssets`, optionally `feeShares` and `totalSupplyShares`, always `lastUpdate` |
+| **Emits** | `AccrueInterest(id, borrowRate, interest, feeShares)` — only inside the IRM branch |
+
+**One index, two totals.** There is no `liquidityIndex` and no `variableBorrowIndex`. Interest is
+added to `totalBorrowAssets` and to `totalSupplyAssets` by the *same absolute amount*, so the
+supply-share price rises mechanically as `totalSupplyAssets / totalSupplyShares`. Aave needs two
+ray indexes and a linear-vs-compound distinction; Blue needs neither, because suppliers hold
+shares of a pot that simply grew.
+
+**The fee subtlety** at [`:496-499`](morpho-blue/src/Morpho.sol#L496-L499) is worth reading twice.
+`totalSupplyAssets` has *already* been increased by the full `interest`, including the part
+destined for the fee recipient. Minting fee shares against that inflated total would under-issue
+them. So the conversion uses `totalSupplyAssets - feeAmount` as the denominator, pricing the fee
+shares as if the fee had not yet been added. MetaMorpho repeats this exact compensation at
+[`metamorpho/src/MetaMorpho.sol:905-908`](metamorpho/src/MetaMorpho.sol#L905-L908).
+
+`lastUpdate` is written **outside** the IRM branch, so a zero-IRM market still advances its clock.
+
+**Trust boundary:** `borrowRate` is an arbitrary external call made before any reentrancy-relevant
+state settles. A malicious IRM could reenter. It cannot mint value — every path it could reenter
+re-reads storage — but this is precisely why `enableIrm` is owner-gated and one-way (§3.4).
+
+### 3.21 `_isHealthy` — both overloads
+
+Three-arg version, [`:515-521`](morpho-blue/src/Morpho.sol#L515-L521): returns `true` immediately
+if `borrowShares == 0`, **so no oracle call happens for a debt-free position**. That is why
+`withdrawCollateral` costs no oracle read when you have no debt.
+
+Four-arg version, [`:527-539`](morpho-blue/src/Morpho.sol#L527-L539):
+
+```solidity
+uint256 borrowed = borrowShares.toAssetsUp(totalBorrowAssets, totalBorrowShares);
+uint256 maxBorrow = collateral.mulDivDown(collateralPrice, ORACLE_PRICE_SCALE).wMulDown(lltv);
+return maxBorrow >= borrowed;
+```
+
+Debt rounds **up**, collateral value rounds **down**, LLTV multiplication rounds **down**. Three
+roundings, all against the borrower, which the docstring at
+[`:526`](morpho-blue/src/Morpho.sol#L526) acknowledges: you may be unable to borrow the exact
+maximum, only one unit less.
+
+**There is no health factor number.** Aave computes a ratio and compares it to 1e18; Blue compares
+two absolute quantities and returns a bool. Cheaper, and it removes a whole class of
+precision-loss questions.
+
+`ORACLE_PRICE_SCALE = 1e36` ([`ConstantsLib.sol:17`](morpho-blue/src/libraries/ConstantsLib.sol#L17))
+is large enough that a price fits regardless of the decimal difference between collateral and
+loan token — the oracle is responsible for pre-scaling, which is what makes
+`MorphoChainlinkOracleV2`'s `SCALE_FACTOR` derivation (§10.1) so intricate.
+
+### 3.22 `extSloads(bytes32[] slots)`
+
+[`:544-556`](morpho-blue/src/Morpho.sol#L544-L556) · arbitrary storage reads in a loop.
+
+```solidity
+assembly ("memory-safe") {
+    mstore(add(res, mul(i, 32)), sload(slot))
+}
+```
+
+`i` is incremented at `slots[i++]` *before* the `mstore`, so `mul(i, 32)` lands one word past the
+array length prefix — correct, and the reason the loop reads slightly oddly.
+
+This is the same idea as Uniswap v4's `Extsload`
+([`../uni/V4-COMPLETE-REFERENCE.md`](../uni/V4-COMPLETE-REFERENCE.md)): expose raw storage and let
+an off-chain or periphery library decode it, rather than shipping dozens of getters. §5.1 covers
+the decoding side.
+
