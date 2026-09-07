@@ -1888,3 +1888,233 @@ rescue with EIP-7528 ETH convention;
 (216) issues consolidations from a vault.
 
 ---
+## 15. Exits, consolidation and verifiers
+
+Three Ethereum upgrades reshaped this area and v3 absorbs all of them: EIP-7002
+(execution-layer triggerable withdrawals), EIP-7251 (raised max effective
+balance, enabling consolidation and top-ups) and EIP-4788 (beacon block roots in
+the EVM, which is what makes the proofs below possible).
+
+### 15.1 `TriggerableWithdrawalsGateway`
+
+[`core/contracts/0.8.9/TriggerableWithdrawalsGateway.sol`](core/contracts/0.8.9/TriggerableWithdrawalsGateway.sol) — 309 lines.
+
+Roles at [`:82-85`](core/contracts/0.8.9/TriggerableWithdrawalsGateway.sol#L82-L85):
+`PAUSE_ROLE`, `RESUME_ROLE`, `ADD_FULL_WITHDRAWAL_REQUEST_ROLE`,
+`TW_EXIT_LIMIT_MANAGER_ROLE`.
+
+Single rate-limited chokepoint for EIP-7002 exits, so no caller can drain the
+validator set faster than governance allows. `pauseFor`
+([`:132`](core/contracts/0.8.9/TriggerableWithdrawalsGateway.sol#L132)),
+`pauseUntil` ([`:144`](core/contracts/0.8.9/TriggerableWithdrawalsGateway.sol#L144)),
+`resume` ([`:120`](core/contracts/0.8.9/TriggerableWithdrawalsGateway.sol#L120)).
+The encoding lives in
+[`TriggerableWithdrawals`](core/contracts/common/lib/TriggerableWithdrawals.sol)
+(189 lines), which also handles the EIP-7002 fee that rises with queue demand.
+
+### 15.2 `TopUpGateway`
+
+[`core/contracts/0.8.25/TopUpGateway.sol`](core/contracts/0.8.25/TopUpGateway.sol) — 443 lines.
+
+Roles at [`:59-62`](core/contracts/0.8.25/TopUpGateway.sol#L59-L62): `TOP_UP_ROLE`,
+`MANAGE_LIMITS_ROLE`, `PAUSE_ROLE`, `RESUME_ROLE`. `topUp(TopUpData)` at
+[`:160`](core/contracts/0.8.25/TopUpGateway.sol#L160) adds ETH to existing
+validators under EIP-7251, rate-limited by `maxTopUpPerBlockGwei` in
+[§13.3](#133-depositing-and-allocation).
+
+### 15.3 Consolidation
+
+Under EIP-7251 several 32 ETH validators can be merged into one large validator,
+cutting attestation overhead. Three contracts:
+
+**`ConsolidationBus`** — [`core/contracts/0.8.25/consolidation/ConsolidationBus.sol`](core/contracts/0.8.25/consolidation/ConsolidationBus.sol), 432 lines.
+Roles `MANAGE_ROLE`, `PUBLISH_ROLE`, `REMOVE_ROLE` at
+[`:166-168`](core/contracts/0.8.25/consolidation/ConsolidationBus.sol#L166-L168).
+Batches requests with `setBatchSize`
+([`:218`](core/contracts/0.8.25/consolidation/ConsolidationBus.sol#L218)),
+`setMaxGroupsInBatch`
+([`:227`](core/contracts/0.8.25/consolidation/ConsolidationBus.sol#L227)) and an
+`executionDelay` ([`:239`](core/contracts/0.8.25/consolidation/ConsolidationBus.sol#L239)).
+`removeBatches(bytes32[])` ([`:250`](core/contracts/0.8.25/consolidation/ConsolidationBus.sol#L250))
+lets governance cancel during the delay, which is the point of having one.
+
+**`ConsolidationGateway`** — [`ConsolidationGateway.sol`](core/contracts/0.8.25/consolidation/ConsolidationGateway.sol), 379 lines.
+Roles `PAUSE_ROLE`, `RESUME_ROLE`, `ADD_CONSOLIDATION_REQUEST_ROLE`,
+`EXIT_LIMIT_MANAGER_ROLE` at
+[`:97-103`](core/contracts/0.8.25/consolidation/ConsolidationGateway.sol#L97-L103).
+`addConsolidationRequests(...)` at
+[`:185`](core/contracts/0.8.25/consolidation/ConsolidationGateway.sol#L185).
+
+**`ConsolidationMigrator`** — [`ConsolidationMigrator.sol`](core/contracts/0.8.25/consolidation/ConsolidationMigrator.sol), 403 lines.
+Migrates 0x01 validators to 0x02 credentials. Roles `ALLOW_PAIR_ROLE` and
+`DISALLOW_PAIR_ROLE` at
+[`:118-119`](core/contracts/0.8.25/consolidation/ConsolidationMigrator.sol#L118-L119),
+with `allowPair` ([`:181`](core/contracts/0.8.25/consolidation/ConsolidationMigrator.sol#L181)),
+`disallowPair` ([`:200`](core/contracts/0.8.25/consolidation/ConsolidationMigrator.sol#L200)),
+`selfDisallowPair` ([`:217`](core/contracts/0.8.25/consolidation/ConsolidationMigrator.sol#L217)),
+`isPairAllowed` ([`:239`](core/contracts/0.8.25/consolidation/ConsolidationMigrator.sol#L239))
+and `getAllowedTargets` ([`:248`](core/contracts/0.8.25/consolidation/ConsolidationMigrator.sol#L248)).
+Consolidating across operators would move stake between them, so both sides must
+consent; `selfDisallowPair` lets an operator revoke unilaterally.
+
+### 15.4 `ValidatorExitDelayVerifier`
+
+[`core/contracts/0.8.25/ValidatorExitDelayVerifier.sol`](core/contracts/0.8.25/ValidatorExitDelayVerifier.sol) — 429 lines.
+
+Proves on chain that an operator ignored an exit request. `verifyValidatorExitDelay`
+([`:203`](core/contracts/0.8.25/ValidatorExitDelayVerifier.sol#L203)) and
+`verifyHistoricalValidatorExitDelay`
+([`:248`](core/contracts/0.8.25/ValidatorExitDelayVerifier.sol#L248)) compare the
+delivery timestamp from the exit bus against the validator's beacon-chain state,
+reached through `_verifyBeaconBlockRoot`
+([`:288`](core/contracts/0.8.25/ValidatorExitDelayVerifier.sol#L288), EIP-4788),
+`_verifyHistoricalBeaconBlockRoot`
+([`:304`](core/contracts/0.8.25/ValidatorExitDelayVerifier.sol#L304)),
+`_verifyValidatorExitUnset`
+([`:333`](core/contracts/0.8.25/ValidatorExitDelayVerifier.sol#L333)) and
+`_getSecondsSinceExitIsEligible`
+([`:363`](core/contracts/0.8.25/ValidatorExitDelayVerifier.sol#L363)).
+
+This turns "the operator did not exit" from a social claim into a provable fact
+that `StakingRouter.reportValidatorExitDelay` can act on.
+
+[`CLValidatorVerifier`](core/contracts/0.8.25/CLValidatorVerifier.sol) (108 lines)
+is the shared base: `_verifyValidator`
+([`:44`](core/contracts/0.8.25/CLValidatorVerifier.sol#L44)),
+`_validatorHashTreeRoot` ([`:60`](core/contracts/0.8.25/CLValidatorVerifier.sol#L60)),
+`_verifySlot` ([`:89`](core/contracts/0.8.25/CLValidatorVerifier.sol#L89)),
+`_getValidatorGI` ([`:97`](core/contracts/0.8.25/CLValidatorVerifier.sol#L97)),
+`_getParentBlockRoot` ([`:103`](core/contracts/0.8.25/CLValidatorVerifier.sol#L103)).
+
+---
+
+## 16. `common/lib` — shared libraries
+
+Twenty files under `common/`, written with wide pragmas
+(`>=0.4.24 <0.9.0`) so one copy serves all four compiler generations.
+
+| Library | Lines | Key functions |
+|---|---|---|
+| [`BLS.sol`](core/contracts/common/lib/BLS.sol) | 597 | BLS12-381 over the EIP-2537 precompiles. `hashToG2` [`:175`](core/contracts/common/lib/BLS.sol#L175), `extractFlags` [`:291`](core/contracts/common/lib/BLS.sol#L291), `validateCompressedPubkeyFlags` [`:305`](core/contracts/common/lib/BLS.sol#L305), `validateCompressedSignatureFlags` [`:328`](core/contracts/common/lib/BLS.sol#L328), `verifyDepositMessage` [`:362`](core/contracts/common/lib/BLS.sol#L362). Heavily assembly; the header calls it a stripped port for the beacon deposit spec. |
+| [`SSZ.sol`](core/contracts/common/lib/SSZ.sol) | 271 | `hashTreeRoot(BeaconBlockHeader)` [`:21`](core/contracts/common/lib/SSZ.sol#L21), `hashTreeRoot(Validator)` [`:89`](core/contracts/common/lib/SSZ.sol#L89), `verifyProof` [`:179`](core/contracts/common/lib/SSZ.sol#L179), `toLittleEndian` [`:251`](core/contracts/common/lib/SSZ.sol#L251), [`:268`](core/contracts/common/lib/SSZ.sol#L268). Note the endianness helpers: SSZ is little-endian, the EVM big-endian, and getting this wrong silently invalidates every proof. |
+| [`GIndex.sol`](core/contracts/common/lib/GIndex.sol) | 109 | Generalized-index type and arithmetic, 10 functions, with bit tricks credited to Solady's `LibBit`. |
+| [`BeaconTypes.sol`](core/contracts/common/lib/BeaconTypes.sol) | 24 | Struct definitions only. |
+| [`MinFirstAllocationStrategy.sol`](core/contracts/common/lib/MinFirstAllocationStrategy.sol) | 108 | See [§12.5](#125-minfirstallocationstrategy). |
+| [`Math256.sol`](core/contracts/common/lib/Math256.sol) | 44 | `max`, `min`, `ceilDiv` and signed variants. `ceilDiv` is what makes `getPooledEthBySharesRoundUp` work. |
+| [`MemUtils.sol`](core/contracts/common/lib/MemUtils.sol) | 66 | Unsafe allocation and copying. `unsafeAllocateBytes` skips zeroing, which is safe only because callers overwrite fully. |
+| [`RateLimit.sol`](core/contracts/common/lib/RateLimit.sol) | 124 | Generic regenerating limiter, 7 functions; the same leaky bucket as staking limits, generalised. |
+| [`TriggerableWithdrawals.sol`](core/contracts/common/lib/TriggerableWithdrawals.sol) | 189 | EIP-7002 encoding and fee handling. |
+| [`WithdrawalCredentials.sol`](core/contracts/common/lib/WithdrawalCredentials.sol) | 50 | 0x01 and 0x02 helpers, 8 functions. |
+| [`SignatureUtils.sol`](core/contracts/common/lib/SignatureUtils.sol) | 65 | ECDSA plus ERC-1271 fallback, so contract wallets can sign permits. |
+| [`ECDSA.sol`](core/contracts/common/lib/ECDSA.sol) | 59 | Vendored recovery with malleability rejection. |
+| [`Bytes32String.sol`](core/contracts/common/lib/Bytes32String.sol) | 38 | bytes32 to string and back. |
+| [`UnstructuredStorage.sol`](core/contracts/common/lib/UnstructuredStorage.sol) | 39 | Slot accessors. |
+| [`PausableUntil.sol`](core/contracts/common/utils/PausableUntil.sol) | 102 | Pause with expiry. |
+
+The `common/interfaces/` directory holds 19 interface files, all inventoried in
+[§0](#0-file-inventory). The important ones are
+[`ILidoLocator`](core/contracts/common/interfaces/ILidoLocator.sol),
+[`IStakingModule`](core/contracts/common/interfaces/IStakingModule.sol) (216
+lines, the contract every staking module must satisfy),
+[`IStakingModuleV2`](core/contracts/common/interfaces/IStakingModuleV2.sol) (the
+v3 top-up extension), [`IBurner`](core/contracts/common/interfaces/IBurner.sol),
+[`ReportValues`](core/contracts/common/interfaces/ReportValues.sol) (the oracle
+payload struct),
+[`ValidatorWitness`](core/contracts/common/interfaces/ValidatorWitness.sol) and
+[`TopUpWitness`](core/contracts/common/interfaces/TopUpWitness.sol).
+
+---
+
+## 17. Proxies, access control, pausing, versioning
+
+**Proxies.** [`OssifiableProxy`](core/contracts/0.8.9/proxy/OssifiableProxy.sol)
+(94 lines) extends ERC-1967 with the ability to **ossify**: burn the admin so the
+implementation can never change again. Most v3 components sit behind it.
+[`WithdrawalsManagerProxy`](core/contracts/0.8.9/proxy/WithdrawalsManagerProxy.sol)
+(517 lines) is the historical stub deployed before withdrawals existed.
+[`PinnedBeaconProxy`](core/contracts/0.8.25/vaults/PinnedBeaconProxy.sol) (43
+lines) is the vault variant, letting an individual vault pin its implementation
+([§14.2](#142-stakingvault)).
+[`DummyEmptyContract`](core/contracts/0.8.9/utils/DummyEmptyContract.sol) is the
+placeholder implementation used when deploying a proxy before its logic exists.
+
+**Access control.** Three systems coexist, and knowing which applies where saves
+confusion:
+
+| System | Where | Check |
+|---|---|---|
+| Aragon ACL | `Lido`, `NodeOperatorsRegistry` (0.4.24) | `_auth(ROLE)`, external ACL contract |
+| Vendored OZ `AccessControl` | 0.8.9 contracts | [`utils/access/AccessControl.sol`](core/contracts/0.8.9/utils/access/AccessControl.sol) (233 lines), with [`AccessControlEnumerable`](core/contracts/0.8.9/utils/access/AccessControlEnumerable.sol) (77) |
+| OZ 5.2 upgradeable | 0.8.25 vaults | [`openzeppelin/5.2/upgradeable/access/`](core/contracts/openzeppelin/5.2/upgradeable/access/AccessControlUpgradeable.sol) |
+
+Plus [`Confirmations`](core/contracts/0.8.25/utils/Confirmations.sol) (230 lines),
+which requires several parties to independently approve a call within an expiry
+window, wrapped by
+[`AccessControlConfirmable`](core/contracts/0.8.25/utils/AccessControlConfirmable.sol)
+(25) and [`Confirmable2Addresses`](core/contracts/0.8.25/utils/Confirmable2Addresses.sol) (28).
+
+**Pausing.** Also three: [`0.4.24/utils/Pausable.sol`](core/contracts/0.4.24/utils/Pausable.sol)
+(43 lines, a plain flag), [`0.8.9/utils/PausableUntil.sol`](core/contracts/0.8.9/utils/PausableUntil.sol)
+(103) and [`common/utils/PausableUntil.sol`](core/contracts/common/utils/PausableUntil.sol)
+(102), with [`PausableUntilWithRoles`](core/contracts/0.8.25/utils/PausableUntilWithRoles.sol)
+(56) adding role gating. Expiring pauses are deliberate: a pause that lapses
+cannot become a permanent accidental freeze.
+
+**Versioning.** [`0.8.9/utils/Versioned.sol`](core/contracts/0.8.9/utils/Versioned.sol)
+(61 lines) and its 0.4.24 port [`0.4.24/utils/Versioned.sol`](core/contracts/0.4.24/utils/Versioned.sol)
+(47) hold a version counter so each `finalizeUpgrade_vN` runs exactly once.
+[`UnstructuredStorageExt`](core/contracts/0.4.24/utils/UnstructuredStorageExt.sol)
+(63) adds signed-integer accessors;
+[`UnstructuredRefStorage`](core/contracts/0.8.9/lib/UnstructuredRefStorage.sol)
+(18) handles mappings and arrays.
+
+---
+
+## 18. Upgrade machinery, tooling, vendored OpenZeppelin
+
+**Upgrade.** The v2 to v3 migration is scripted on chain rather than performed by
+hand. [`UpgradeTemplate`](core/contracts/upgrade/UpgradeTemplate.sol) (860 lines)
+executes it in one transaction;
+[`UpgradeVoteScript`](core/contracts/upgrade/UpgradeVoteScript.sol) (908) builds
+the Aragon vote calldata; [`UpgradeConfig`](core/contracts/upgrade/UpgradeConfig.sol)
+(471) holds addresses and parameters;
+[`UpgradeTypes`](core/contracts/upgrade/UpgradeTypes.sol) (506) the structs;
+[`UpgradeTemporaryAdmin`](core/contracts/upgrade/UpgradeTemporaryAdmin.sol) (131)
+holds admin rights for the duration and relinquishes them at the end.
+Helpers: [`CallScriptBuilder`](core/contracts/upgrade/utils/CallScriptBuilder.sol)
+(40) and [`OmnibusBase`](core/contracts/upgrade/utils/OmnibusBase.sol) (132).
+
+Interfaces under `upgrade/interfaces/` include
+[`IDualGovernance`](core/contracts/upgrade/interfaces/IDualGovernance.sol),
+[`ITimelock`](core/contracts/upgrade/interfaces/ITimelock.sol),
+[`IVoting`](core/contracts/upgrade/interfaces/IVoting.sol),
+[`IForwarder`](core/contracts/upgrade/interfaces/IForwarder.sol),
+[`IUpgradeConfig`](core/contracts/upgrade/interfaces/IUpgradeConfig.sol),
+[`IUpgradeTemplate`](core/contracts/upgrade/interfaces/IUpgradeTemplate.sol), and
+two frozen historical copies of the sanity checker interface,
+[`IOracleReportSanityChecker_preV3`](core/contracts/upgrade/interfaces/IOracleReportSanityChecker_preV3.sol)
+and
+[`_preV4`](core/contracts/upgrade/interfaces/IOracleReportSanityChecker_preV4.sol),
+kept so the template can read the old contract before replacing it. Four mocks
+under `upgrade/mocks/` support testing.
+
+**Deployment template.** [`LidoTemplate`](core/contracts/0.4.24/template/LidoTemplate.sol)
+(744 lines) is the original one-shot DAO deployer: Aragon APM, ENS registration
+via [`IETHRegistrarController`](core/contracts/0.4.24/template/IETHRegistrarController.sol)
+and [`IInterfaceResolver`](core/contracts/0.4.24/template/IInterfaceResolver.sol),
+with [`Imports.sol`](core/contracts/0.4.24/template/Imports.sol) forcing Aragon
+artifacts into the build. It includes an escape hatch to reclaim the ENS domain
+if APM deployment fails.
+
+**Tooling.** [`AlertingHarness`](core/contracts/tooling/AlertingHarness.sol) (316
+lines) for monitoring; [`SepoliaDepositAdapter`](core/contracts/tooling/sepolia/SepoliaDepositAdapter.sol)
+(109) because Sepolia's deposit contract differs from mainnet's.
+
+**Vendored OpenZeppelin 5.2 upgradeable**, seven files under
+`openzeppelin/5.2/upgradeable/`: `AccessControlUpgradeable` (233),
+`AccessControlEnumerableUpgradeable` (105), `OwnableUpgradeable` (120),
+`Ownable2StepUpgradeable` (87), `Initializable` (228), `ContextUpgradeable` (34),
+`ERC165Upgradeable` (33). Vendored rather than imported so the exact bytecode is
+pinned in this repository.
+
+---
