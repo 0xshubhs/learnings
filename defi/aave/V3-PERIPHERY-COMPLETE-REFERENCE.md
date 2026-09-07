@@ -6,7 +6,7 @@ sibling document [`V3-PROTOCOL-COMPLETE-REFERENCE.md`](V3-PROTOCOL-COMPLETE-REFE
 For the conceptual walkthrough (why lending works this way, index math derivations,
 worked liquidation examples) read [`AAVE-DEEP-DIVE.md`](AAVE-DEEP-DIVE.md) first.
 
-That is **159 files / 13,438 lines**: the rewards system, the interest rate strategy, the
+That is **154 files / 13,438 lines**: the rewards system, the interest rate strategy, the
 oracle, the ERC-4626 aToken wrapper, the governance config engine, every data provider,
 the treasury, the token instances, the proxy machinery, the flash-loan base contracts, the
 vendored dependencies, the mocks, and the whole deployment pipeline.
@@ -41,7 +41,7 @@ I label it inline, e.g. **[3.7]** or **[removed in 3.7]**.
 
 ## Table of contents
 
-- [0. File inventory — all 159 files](#0-file-inventory)
+- [0. File inventory — all 154 files](#0-file-inventory)
 - [1. Rewards: `RewardsDistributor`, `RewardsController`, `EmissionManager`, transfer strategies](#1-rewards)
   - [1.1 The accounting model, and a proof of pro-rata correctness](#11-the-accounting-model)
   - [1.2 `RewardsDataTypes` — every struct, every field](#12-rewardsdatatypes)
@@ -73,7 +73,7 @@ I label it inline, e.g. **[3.7]** or **[removed in 3.7]**.
 
 <a name="0-file-inventory"></a>
 
-## 0. File inventory — all 159 files
+## 0. File inventory — all 154 files
 
 Nothing in scope is omitted. Files marked **†** get a full function-by-function treatment
 below; the rest get a description sized to what they actually do.
@@ -3432,5 +3432,324 @@ Reproduce the full list with:
 find src -name '*.sol' | grep -v '^src/contracts/protocol/' | grep -v mocks \
   | xargs grep -hn 'error [A-Z]' | sort -u
 ```
+
+---
+<a name="18-use-case-index"></a>
+
+## 18. Use-case index
+
+"I want to do X" → the exact entry point and the full internal call chain. Everything in
+`protocol/` is cited but not expanded; follow it in
+[`V3-PROTOCOL-COMPLETE-REFERENCE.md`](V3-PROTOCOL-COMPLETE-REFERENCE.md).
+
+### 18.1 Claim my accrued rewards
+
+```
+user → RewardsController.claimAllRewardsToSelf(assets)            RewardsController.sol:172
+  └─ _claimAllRewards(assets, msg.sender, msg.sender, msg.sender)          :262
+       ├─ _getUserAssetBalances(assets, user)                              :190
+       │    └─ for each asset: IScaledBalanceToken.getScaledUserBalanceAndSupply()
+       ├─ _updateDataMultiple(user, userAssetBalances)         RewardsDistributor.sol:391
+       │    └─ per (asset, reward): _updateRewardData → _updateUserData
+       │         └─ emit Accrued(asset, reward, user, assetIndex, userIndex, accrued)
+       ├─ per reward: read + zero rewardsData.usersData[user].accrued
+       └─ _transferRewards(to, reward, amount)                  RewardsController.sol:300
+            ├─ _transferStrategy[reward].performTransfer(to, reward, amount)   [delegate-free call]
+            ├─ require(success, 'TRANSFER_ERROR')                              :305
+            └─ emit RewardsClaimed(user, reward, to, claimer, amount)
+```
+
+Use `claimAllRewards(assets, to)` to send elsewhere, `claimAllRewardsOnBehalf(assets, user, to)`
+if you were registered via `setClaimer` (otherwise `'CLAIMER_UNAUTHORIZED'`), or the
+non-`All` variants to cap the amount per reward.
+
+**The list of `assets` is yours to supply** and the controller does not validate it. Omit an
+aToken and you silently forfeit its rewards for that call. Get the full list from
+`AaveProtocolDataProvider.getAllATokens()` (§6.1) or `getRewardsByAsset`.
+
+### 18.2 Set up a new reward emission
+
+```
+emission admin → EmissionManager.configureAssets(config[])       EmissionManager.sol:39
+  ├─ per entry: require(msg.sender == _emissionAdmins[reward], 'ONLY_EMISSION_ADMIN')
+  └─ IRewardsController(_rewardsController).configureAssets(config)   RewardsController.sol:76
+       ├─ per entry: _installTransferStrategy(reward, strategy)              :331
+       │    ├─ require non-zero + is-contract           :335-336
+       │    └─ emit TransferStrategyInstalled
+       ├─ per entry: _setRewardOracle(reward, oracle)                        :350
+       │    ├─ require(oracle.latestAnswer() > 0, 'ORACLE_MUST_RETURN_PRICE'):351
+       │    └─ emit RewardOracleUpdated
+       └─ _configureAssets(rewardsInput)                RewardsDistributor.sol:222
+            ├─ per entry: set decimals, _updateRewardData, push to _rewardsList
+            └─ emit AssetConfigUpdated(...)
+```
+
+Prerequisites, in order: DAO grants you the reward via `EmissionManager.setEmissionAdmin`
+(`:89`, owner-only); you deploy and fund a transfer strategy (`PullRewardsTransferStrategy`
+needs the vault to approve it); the reward has a Chainlink-shaped oracle returning a positive
+price. Then adjust live with `setEmissionPerSecond` (`:73`) and `setDistributionEnd` (`:64`).
+
+### 18.3 Wrap aUSDC into a non-rebasing ERC-4626 vault
+
+```
+anyone (once) → StataTokenFactory.createStataTokens([USDC])   StataTokenFactory.sol:50
+  ├─ POOL.getReserveAToken(USDC)  → revert NotListedUnderlying if zero   :55-56
+  ├─ TRANSPARENT_PROXY_FACTORY.createDeterministic(STATA_TOKEN_IMPL, ...) :58
+  │    └─ StataTokenV2.initialize(aToken, name, symbol)                   :43
+  │         ├─ __ERC20_init / __ERC20Permit_init / __Pausable_init
+  │         ├─ __ERC20AaveLM_init(aToken)      → ERC20AaveLMUpgradeable:48
+  │         └─ __ERC4626StataToken_init(aToken)→ ERC4626StataTokenUpgradeable:54
+  │              └─ revert PoolAddressMismatch if aToken's pool ≠ POOL   :64
+  └─ emit StataTokenCreated(stataToken, underlying)
+
+then, per user:
+  USDC.approve(stataToken); stataToken.deposit(assets, receiver)   [standard ERC-4626]
+    └─ _deposit → POOL.supply(USDC, ...) → mints aUSDC to the vault → mints shares
+  or, if you already hold aUSDC:
+  aUSDC.approve(stataToken); stataToken.depositATokens(assets, receiver)  :77
+  or, in one transaction with a signature:
+  stataToken.depositWithPermit(assets, receiver, deadline, sig, depositToAave)  :91
+```
+
+Redeem with `redeem` (returns underlying) or `redeemATokens` (returns aTokens, `:125`). The
+share price is `totalAssets()` (`:155`) over supply, and `totalAssets` tracks the aToken
+balance, which grows with `getReserveNormalizedIncome`. A deposit that would mint zero shares
+reverts `StaticATokenInvalidZeroShares()` (`:221`).
+
+`latestAnswer()` (`:206`) makes the wrapper readable as a price feed — that is how a stata-token
+becomes collateral in another protocol.
+
+### 18.4 Render a market page in a front-end
+
+```
+UiPoolDataProviderV3.getReservesData(provider)         UiPoolDataProviderV3.sol
+  → (AggregatedReserveData[], BaseCurrencyInfo)
+UiPoolDataProviderV3.getUserReservesData(provider, user)
+  → (UserReserveData[], uint8 userEmodeCategoryId)
+UiIncentiveDataProviderV3.getReservesIncentivesData(provider)
+UiIncentiveDataProviderV3.getUserReservesIncentivesData(provider, user)
+WalletBalanceProvider.getUserWalletBalances(provider, user)
+```
+
+Five calls, batched through `UiPoolDataProviderV3`'s multicall-friendly views, are enough for a
+complete market page. Each returns a large struct precisely so the UI makes one RPC round-trip
+per concern rather than one per reserve.
+
+For a backend or a contract, prefer `AaveProtocolDataProvider` (§6.1): the same data in smaller,
+individually addressable getters. Remember the compatibility stubs — `getDebtCeiling`,
+`getSiloedBorrowing`, `getIsVirtualAccActive`, `getUnbackedMintCap` return constants **[3.7]**.
+
+### 18.5 Supply native ETH
+
+```
+user → WrappedTokenGatewayV3.depositETH{value: x}(unused, onBehalfOf, referral)  :45
+  ├─ WETH.deposit{value: msg.value}()
+  └─ POOL.supply(WETH, msg.value, onBehalfOf, referralCode)
+```
+
+Withdrawing is the inverse and needs an **aWETH approval to the gateway** first, because the
+gateway pulls the aTokens and burns them on your behalf:
+
+```
+user → aWETH.approve(gateway, amount)
+user → WrappedTokenGatewayV3.withdrawETH(unused, amount, to)      :55
+  ├─ aWETH.transferFrom(msg.sender, address(this), amountToWithdraw)
+  ├─ POOL.withdraw(WETH, amountToWithdraw, address(this))
+  ├─ WETH.withdraw(amountToWithdraw)
+  └─ _safeTransferETH(to, amount)  → require(success,'ETH_TRANSFER_FAILED')  :160
+```
+
+`withdrawETHWithPermit` (`:124`) folds the approval into a signature. `borrowETH` (`:103`)
+requires a prior `approveDelegation` on the WETH variable debt token — the gateway borrows in
+your name, so the credit delegation must exist first.
+
+### 18.6 Encode an L2 call
+
+```
+offchain → L2Encoder.encodeSupplyParams(asset, amount, referralCode)   L2Encoder.sol:35
+             → bytes32
+onchain  → L2Pool.supply(bytes32)
+             └─ CalldataLogic.decodeSupplyParams(reservesList, args)
+```
+
+The encoder reads `POOL.getReserveData(asset).id` to replace the 20-byte address with a
+2-byte reserve id, then packs `uint128` amount and `uint16` referral into one word. Every
+encoder has a matching decoder in `CalldataLogic`. `encodeSupplyWithPermitParams` (`:67`),
+`encodeRepayWithPermitParams` (`:192`) and `encodeLiquidationCall` (`:270`) return multiple
+`bytes32` because the signature or the second asset will not fit in one.
+
+The encoder is a **view helper, not a requirement** — an off-chain client can pack the words
+itself and skip the RPC call entirely. It exists so integrators do not have to reimplement the
+bit layout.
+
+### 18.7 Deploy a whole market
+
+```
+1. forge script → AaveV3LibrariesBatch1, then Batch2      (CREATE2, deterministic)
+2. FfiUtils writes library addresses into foundry.toml → forge build relinks
+3. forge script → AaveV3BatchOrchestration.deployAaveV3(deployer, roles, config, flags, {})
+4. MetadataReporter.writeJsonReportMarket(report)          → JSON artifact
+```
+
+Full step-by-step in §13.3. The market has no reserves at the end; listing is §18.8.
+
+### 18.8 List an asset through governance
+
+```
+DAO proposal → executes a payload contract (extends AaveV3Payload)
+  AaveV3Payload.execute()                          AaveV3Payload.sol
+    ├─ newListings()          / newListingsCustom()   ← you override these
+    ├─ CONFIG_ENGINE.listAssets(getPoolContext(), listings)   AaveV3ConfigEngine.sol:58
+    │    ├─ require(listings.length != 0, 'AT_LEAST_ONE_ASSET_REQUIRED')   :59
+    │    └─ ListingEngine.executeAssetListing(...)
+    │         ├─ require(asset != address(0), 'INVALID_ASSET')  ListingEngine.sol:59
+    │         ├─ PriceFeedEngine  → 8-decimal, positive-price checks
+    │         ├─ POOL_CONFIGURATOR.initReserves(...)  → deploys aToken + vToken proxies
+    │         ├─ CapsEngine / BorrowEngine / CollateralEngine / RateEngine
+    │         └─ AaveOracle.setAssetSources([asset],[feed])
+    └─ eModeCategoryCreations() / assetsEModeUpdates() as needed
+```
+
+The payload is a template method: you override only the hooks you need and the base `execute()`
+calls each engine in a fixed, dependency-correct order. **[3.7]** the engines are now internal
+libraries called directly, not `delegatecall`ed, so a payload no longer needs their addresses.
+
+### 18.9 Price an asset
+
+```
+anyone → AaveOracle.getAssetPrice(asset)             AaveOracle.sol:101
+  ├─ source = assetsSources[asset]
+  ├─ if asset == BASE_CURRENCY          → return BASE_CURRENCY_UNIT
+  ├─ if source != 0 and price > 0       → return uint256(price)
+  └─ else                               → _fallbackOracle.getAssetPrice(asset)
+```
+
+All prices are in `BASE_CURRENCY_UNIT` (1e8 for USD markets). A source returning zero or
+negative silently falls through to the fallback, and if the fallback is unset you get `0` —
+**not a revert**. Anything consuming this must treat zero as "no price" itself.
+
+### 18.10 Liquidate using the data provider
+
+```
+liquidator → LiquidationDataProvider.getUserPositionFullInfo(user)
+           → LiquidationDataProvider.getLiquidationInfo(user, collateralAsset, debtAsset)
+               → maxDebtToLiquidate, collateralToLiquidate, ...
+           → Pool.liquidationCall(collateral, debt, user, debtToCover, receiveAToken)
+```
+
+**[3.7]** the provider's rounding was realigned with `LiquidationLogic` — `percentMulFloor`,
+`percentDivFloor`, `percentMulCeil` in matching positions, and `mulDivCeil` for
+`debtBalanceInBaseCurrency`. Before 3.7 a liquidator sizing a transaction from the provider
+could be off by a wei and revert on the dust check. Use the 3.7 provider against a 3.7 pool.
+
+### 18.11 Emergency: pause a stata-token
+
+```
+pause guardian → StataTokenV2.setPaused(true)     StataTokenV2.sol:56
+  └─ canPause(_msgSender())                                    :80
+       └─ ACLManager.isEmergencyAdmin(actor) (via the pool's addresses provider)
+  revert OnlyPauseGuardian(caller) if not                      :39
+```
+
+Pausing blocks transfers and deposits on the wrapper only. It does not touch the underlying
+aToken or the pool.
+
+---
+
+<a name="19-what-changed-per-release"></a>
+
+## 19. What changed per release (3.1 → 3.7), periphery only
+
+Sourced from `docs/3.1/` … `docs/3.7/` and `CHANGELOG.md`. Core-protocol changes are listed
+only where they force a periphery change. As established in the version note at the top, the
+code in this tree is **3.7**, ahead of the `3.6.0` in `package.json`.
+
+### 3.1
+
+- **Virtual accounting** introduced, so every data provider gained
+  `getVirtualUnderlyingBalance` and `getIsVirtualAccActive`.
+- **Stateful interest rate strategy**: `DefaultReserveInterestRateStrategyV2` replaces the
+  per-reserve strategy contract. One strategy holds `_interestRateData` per reserve, set via
+  `setInterestRateParams`. This is the change that made the rate strategy a periphery singleton.
+- Liquidations grace sentinel, LTV0-on-freeze, and new library-address getters on
+  `Pool` / `PoolConfigurator`.
+
+### 3.2
+
+- **Stable debt deprecated.** `StableDebtToken` disappears from deployment; data providers stop
+  reporting stable rates as live values.
+- **Liquid eModes**: per-asset `borrowable` / `collateral` bitmaps replace the old
+  all-or-nothing category, and the **eMode oracle is removed**. `UiPoolDataProviderV3` gains
+  eMode category data.
+
+### 3.3
+
+- **Bad debt management**: deficit accounting arrives, so `AaveProtocolDataProvider` gains
+  `getReserveDeficit` (`:285`).
+- **Liquidation logic changes**: the 100%-close-factor rule below a health-factor threshold, and
+  `MIN_LEFTOVER_BASE` dust handling. `LiquidationDataProvider` exists to let liquidators
+  compute these off-chain.
+- Bitmap access optimisation and additional getters.
+
+### 3.4
+
+- **GHO alignment**, **Multicall** on the pool, and a **position manager** concept.
+- **Immutability sweep**, which is the periphery-visible half: `AToken` and `VariableDebtToken`
+  take `rewardsController` and `treasury` in the *constructor* instead of `initialize`, exposing
+  `REWARDS_CONTROLLER` and `TREASURY`; `setIncentivesController` is **removed**;
+  `AaveProtocolDataProvider` gains an immutable `POOL`; `ReserveLogic` reads the strategy from
+  an immutable.
+- `getIsVirtualAccActive` deprecated, always returns true.
+- "Unbacked" removed, so `getUnbackedMintCap` becomes a stub.
+- A `dustBin` contract is introduced to separate listing dust from treasury income.
+
+### 3.5
+
+- **Rounding improvements** and **internal scaled accounting** — `TokenMath` centralises the
+  rounding direction of every token operation. Periphery impact is indirect but real: any
+  integrator reimplementing balance math must copy the new directions.
+- Improved flag logic, improved allowance handling.
+
+### 3.6
+
+- **eMode improvements**: `EModeCategory` gains `ltvzeroBitmap`; `UiPoolDataProviderV3.getEModes`
+  returns it.
+- **Automatic collateral behaviour**, **renounce allowance**, **OpenZeppelin alignment**.
+- eMode category **label soft-deprecated**.
+- `EModeLogic` deleted, folded into `SupplyLogic`.
+
+### 3.7 (this tree, unreleased)
+
+Periphery-facing changes, from `docs/3.7/Aave-v3.7-changelog.md`:
+
+- **Config engine libraries are now internal**, called directly instead of via `delegatecall`.
+  The `EngineLibraries` struct and the per-engine address getters are gone from
+  `IAaveV3ConfigEngine`, and `AaveV3HelpersProcedureOne` no longer deploys the seven
+  sub-libraries.
+- **Isolation mode and siloed borrowing removed entirely.** `borrowableInIsolation`,
+  `withSiloedBorrowing` and `debtCeiling` are gone from `Listing`, `BorrowUpdate` and
+  `CollateralUpdate`. `IsolationModeLogic` is deleted.
+- **Isolated eMode added**: an `isolated` field on `EModeCategoryCreation` and
+  `EModeCategoryUpdate`. **This changes both e-mode selectors** (§14.11).
+- **`AaveProtocolDataProvider`**: `getDebtCeiling` → `0`, `getSiloedBorrowing` → `false`,
+  `getDebtCeilingDecimals` → `2`, all hardcoded for backward compatibility.
+- **`UiPoolDataProviderV3`**: `isSiloedBorrowing` and `debtCeiling` hardcoded; `isolated` added
+  to eMode data.
+- **`UiIncentiveDataProviderV3`**: a real bug fix — vToken incentive user data was reading
+  `aTokenIncentiveController` instead of `vTokenIncentiveController`. Anything that consumed
+  per-user vToken incentives before 3.7 was reading the wrong controller.
+- **`LiquidationDataProvider`**: rounding aligned with `LiquidationLogic` (§18.10); sentinel
+  logic removed from `_canLiquidateThisHealthFactor`.
+- **Price oracle sentinel deleted**: `PriceOracleSentinel`, `SequencerOracle`,
+  `IPriceOracleSentinel`, `ISequencerOracle` all gone. `AaveV3MiscProcedure` no longer deploys
+  it, and `MarketReport` / `MarketConfig` lose their sentinel fields.
+- **Deployments**: `AaveV3LibrariesBatch1` deploys `BorrowLogic` instead of `ConfiguratorLogic`;
+  `FfiUtils._getBorrowLibraryAddress` parses `BorrowLogic`; `MetadataReporter` drops the
+  `priceOracleSentinel` and `configuratorLogic` fields.
+- `PoolInstance.POOL_REVISION` 10 → 11; `PoolConfiguratorInstance.CONFIGURATOR_REVISION` 7 → 8.
+
+**If you integrate against this tree**, the three changes most likely to break you are the two
+e-mode selectors, the removal of every isolation-mode getter, and the `UiIncentiveDataProviderV3`
+controller fix — the last one changes returned values without changing any signature.
 
 ---

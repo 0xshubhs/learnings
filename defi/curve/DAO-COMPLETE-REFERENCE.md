@@ -24,7 +24,7 @@ relative to `curve/curve-dao-contracts/`.
 | [7](#7-the-proxy-admin-layer) | **Proxies** ×4 | `PoolProxy`, `CryptoPoolProxy`, `PoolProxySidechain`, `GaugeProxy` | 0.2.7–0.2.8 | 1,534 |
 | [8](#8-vesting) | **Vesting** ×3 | `contracts/vests/*.vy` | 0.2.4 | 623 |
 | [9](#9-streamers) | **Streamers** ×3 | `contracts/streamers/*.vy` | 0.2.12–0.2.16 | 482 |
-| [10](#10-sidechain-root-gauges--wrappers) | **Sidechain gauges & wrappers** ×9 | `gauges/sidechain/`, `gauges/wrappers/` | 0.2.8–0.2.16 | 2,062 |
+| [10](#10-sidechain-root-gauges-and-wrappers) | **Sidechain gauges & wrappers** ×9 | `gauges/sidechain/`, `gauges/wrappers/` | 0.2.8–0.2.16 | 2,062 |
 | [11](#11-the-burner-family) | **Burners** ×30 | `contracts/burners/**` | 0.2.7–0.3.7 | 6,441 |
 | [12](#12-bridging) | **Bridging** ×3 | `contracts/bridging/*.vy` | 0.3.0 | 236 |
 | [13](#13-crvinfovy) | **CRVInfo** | `contracts/CRVInfo.vy` | 0.3.7 | 100 |
@@ -2064,9 +2064,9 @@ the whole backlog.
 | `remove_receiver(_receiver)` | `:71` | owner (`:77`) | settles, decrements the count, **pays out** the balance (`:83-85`), zeroes `reward_paid` |
 | `get_reward()` | `:90` | any active receiver (`:94`) | settles, transfers `total − reward_paid[msg.sender]` |
 | `notify_reward_amount(_amount)` | `:103` | distributor (`:110`) | see below |
-| `set_reward_duration(_duration)` | `:127` | owner; only when `block.timestamp > period_finish` (`:134`) |
-| `set_reward_distributor(_distributor)` | `:137` | owner (`:144`) |
-| `commit_transfer_ownership(_owner)` / `accept_transfer_ownership()` | `:147` / `:158` | owner / future owner (`:163`) — correct two-step |
+| `set_reward_duration(_duration)` | `:126` | owner (`:132`); only when `block.timestamp > period_finish` (`:133`) |
+| `set_reward_distributor(_distributor)` | `:138` | owner (`:143`) |
+| `commit_transfer_ownership(_owner)` / `accept_transfer_ownership()` | `:148` / `:159` | owner (`:153`) / future owner (`:164`) — correct two-step |
 
 **`notify_reward_amount`** is the Synthetix rate-reset formula:
 
@@ -2152,12 +2152,12 @@ if actual_balance > expected_balance:
 This is the design that makes bridging work. A bridge deposits tokens with a
 plain `transfer` — it cannot call `transferFrom` or any custom function. So the
 streamer detects the surplus itself, and **anyone may start the new period once
-the old one has finished** (`:167-168`). Only shortening an *active* period is
+the old one has finished** (`:166-167`). Only shortening an *active* period is
 restricted to the distributor (`:169`). `assert is_updated` (`:178`) rejects a
 call naming a token that is not registered or has nothing new.
 
 Note the loop calls `_update_reward` for **every** token before checking the
-named one (`:161-165`), so a single `notify_reward_amount` flushes all pending
+named one (`:156-157`), so a single `notify_reward_amount` flushes all pending
 streams. Also note `:169` reads `self.reward_data[_token].distributor` (the
 argument) while the surrounding block otherwise uses `token` (the loop
 variable); they are equal on the only branch that reaches it, so the behaviour
@@ -2738,7 +2738,7 @@ def circulating_supply() -> uint256:        # :60
 | `circulating_supply() -> uint256` | `:60` | view |
 | `set_admin(_new_admin)` | `:70` | admin (`:76`); the docstring at `:73` calls it "lazy admin transfer" — deliberately one-step |
 | `_add_contract(_contract)` `@internal` | `:81` | `assert _contract not in self.contracts` |
-| `_get_crv_balances_of_cached_contracts()` `@internal @view` | `:88` | |
+| `_get_crv_balances_of_cached_contracts()` `@internal @view` | `:89` | |
 
 > **`add_contract` has no effect on the result.** `__init__` sets
 > `num_contracts = 18` (`:44`) but never writes to `self.contracts`, so indices

@@ -3180,67 +3180,95 @@ common token, `RL` reserve logic, `LPC` configurator, `RC` reserve
 configuration, `SDT` stable debt token, `MATH` math libraries, `LPCM` collateral
 manager.
 
-| Code | Identifier | Meaning |
-|---:|---|---|
-| 1 | `CALLER_NOT_POOL_ADMIN` | Not the pool admin |
-| 2 | `BORROW_ALLOWANCE_NOT_ENOUGH` | Credit delegation allowance too small |
-| 12 | `VL_INVALID_AMOUNT` | Amount is zero |
-| 2 (VL) | `VL_NO_ACTIVE_RESERVE` | Reserve deactivated |
-| — | `VL_RESERVE_FROZEN` | Reserve frozen |
-| — | `VL_CURRENT_AVAILABLE_LIQUIDITY_NOT_ENOUGH` | Not enough liquidity |
-| — | `VL_NOT_ENOUGH_AVAILABLE_USER_BALANCE` | Withdrawing more than held |
-| — | `VL_TRANSFER_NOT_ALLOWED` | Would break the health factor |
-| — | `VL_BORROWING_NOT_ENABLED` | Borrowing disabled for this reserve |
-| — | `VL_INVALID_INTEREST_RATE_MODE_SELECTED` | Mode is not 1 or 2 |
-| — | `VL_COLLATERAL_BALANCE_IS_0` | No collateral at all |
-| — | `VL_HEALTH_FACTOR_LOWER_THAN_LIQUIDATION_THRESHOLD` | Already unhealthy |
-| — | `VL_COLLATERAL_CANNOT_COVER_NEW_BORROW` | Exceeds borrowing power |
-| — | `VL_STABLE_BORROWING_NOT_ENABLED` | Stable disabled for this reserve |
-| — | `VL_COLLATERAL_SAME_AS_BORROWING_CURRENCY` | The stable self-borrow guard |
-| — | `VL_AMOUNT_BIGGER_THAN_MAX_LOAN_SIZE_STABLE` | Above 25% of liquidity |
-| — | `VL_NO_DEBT_OF_SELECTED_TYPE` | No debt in the chosen mode |
-| — | `VL_NO_EXPLICIT_AMOUNT_TO_REPAY_ON_BEHALF` | `uint256.max` repay on behalf |
-| — | `VL_NO_STABLE_RATE_LOAN_IN_RESERVE` | Swapping a non-existent stable loan |
-| — | `VL_NO_VARIABLE_RATE_LOAN_IN_RESERVE` | Swapping a non-existent variable loan |
-| — | `VL_UNDERLYING_BALANCE_NOT_GREATER_THAN_0` | Enabling collateral with no balance |
-| — | `VL_DEPOSIT_ALREADY_IN_USE` | Disabling collateral that backs debt |
-| — | `VL_INTEREST_RATE_REBALANCE_CONDITIONS_NOT_MET` | Rebalance thresholds unmet |
-| — | `VL_INCONSISTENT_FLASHLOAN_PARAMS` | Array lengths differ |
-| — | `LP_NOT_ENOUGH_STABLE_BORROW_BALANCE` | |
-| — | `LP_INTEREST_RATE_REBALANCE_CONDITIONS_NOT_MET` | |
-| — | `LP_LIQUIDATION_CALL_FAILED` | The delegatecall reverted |
-| — | `LP_NOT_ENOUGH_LIQUIDITY_TO_BORROW` | |
-| — | `LP_REQUESTED_AMOUNT_TOO_SMALL` | |
-| — | `LP_INCONSISTENT_PROTOCOL_ACTUAL_BALANCE` | |
-| — | `LP_CALLER_NOT_LENDING_POOL_CONFIGURATOR` | |
-| — | `LP_INVALID_FLASH_LOAN_EXECUTOR_RETURN` | `executeOperation` returned false |
-| — | `LP_IS_PAUSED` | Global pause active |
-| — | `LP_NO_MORE_RESERVES_ALLOWED` | 128-reserve ceiling |
-| — | `LP_CALLER_MUST_BE_AN_ATOKEN` | `finalizeTransfer` caller check |
-| — | `LP_INVALID_FLASHLOAN_MODE` | |
-| — | `CT_CALLER_MUST_BE_LENDING_POOL` | `onlyLendingPool` on a token |
-| — | `CT_INVALID_MINT_AMOUNT` | Scaled amount rounded to zero |
-| — | `CT_INVALID_BURN_AMOUNT` | Scaled amount rounded to zero |
-| — | `RL_RESERVE_ALREADY_INITIALIZED` | Double listing |
-| — | `RL_LIQUIDITY_INDEX_OVERFLOW` | Index exceeded `uint128` |
-| — | `RL_VARIABLE_BORROW_INDEX_OVERFLOW` | |
-| — | `RL_LIQUIDITY_RATE_OVERFLOW` | |
-| — | `RL_VARIABLE_BORROW_RATE_OVERFLOW` | |
-| — | `RL_STABLE_BORROW_RATE_OVERFLOW` | |
-| — | `RC_INVALID_LTV` | Above 65535 |
-| — | `RC_INVALID_LIQ_THRESHOLD` | |
-| — | `RC_INVALID_LIQ_BONUS` | |
-| — | `RC_INVALID_DECIMALS` | Above 255 |
-| — | `RC_INVALID_RESERVE_FACTOR` | |
-| — | `LPC_RESERVE_LIQUIDITY_NOT_0` | Deactivating a non-empty reserve |
-| — | `LPC_INVALID_CONFIGURATION` | LTV/threshold/bonus inconsistent |
-| — | `LPC_CALLER_NOT_EMERGENCY_ADMIN` | |
-| — | `LPAPR_PROVIDER_NOT_REGISTERED` | Registry lookup miss |
-| — | `SDT_STABLE_DEBT_OVERFLOW` | Blended rate exceeded `uint128` |
-| — | `SDT_BURN_EXCEEDS_BALANCE` | |
-| — | `MATH_MULTIPLICATION_OVERFLOW` | |
-| — | `MATH_ADDITION_OVERFLOW` | |
-| — | `MATH_DIVISION_BY_ZERO` | |
+| Code | Identifier | Line | Meaning |
+|---:|---|---:|---|
+| 1 | `VL_INVALID_AMOUNT` | `:28` | Amount must be greater than 0 |
+| 2 | `VL_NO_ACTIVE_RESERVE` | `:29` | Reserve deactivated |
+| 3 | `VL_RESERVE_FROZEN` | `:30` | Reserve frozen |
+| 4 | `VL_CURRENT_AVAILABLE_LIQUIDITY_NOT_ENOUGH` | `:31` | Not enough liquidity |
+| 5 | `VL_NOT_ENOUGH_AVAILABLE_USER_BALANCE` | `:32` | Withdrawing more than held |
+| 6 | `VL_TRANSFER_NOT_ALLOWED` | `:33` | Would break the health factor |
+| 7 | `VL_BORROWING_NOT_ENABLED` | `:34` | Borrowing disabled for this reserve |
+| 8 | `VL_INVALID_INTEREST_RATE_MODE_SELECTED` | `:35` | Mode is not 1 or 2 |
+| 9 | `VL_COLLATERAL_BALANCE_IS_0` | `:36` | No collateral at all |
+| 10 | `VL_HEALTH_FACTOR_LOWER_THAN_LIQUIDATION_THRESHOLD` | `:37` | Already unhealthy |
+| 11 | `VL_COLLATERAL_CANNOT_COVER_NEW_BORROW` | `:38` | Exceeds borrowing power |
+| 12 | `VL_STABLE_BORROWING_NOT_ENABLED` | `:39` | Stable disabled for this reserve |
+| 13 | `VL_COLLATERAL_SAME_AS_BORROWING_CURRENCY` | `:40` | The stable self-borrow guard |
+| 14 | `VL_AMOUNT_BIGGER_THAN_MAX_LOAN_SIZE_STABLE` | `:41` | Above 25% of liquidity |
+| 15 | `VL_NO_DEBT_OF_SELECTED_TYPE` | `:42` | No debt in the chosen mode |
+| 16 | `VL_NO_EXPLICIT_AMOUNT_TO_REPAY_ON_BEHALF` | `:43` | `uint256.max` repay on behalf |
+| 17 | `VL_NO_STABLE_RATE_LOAN_IN_RESERVE` | `:44` | Swapping a non-existent stable loan |
+| 18 | `VL_NO_VARIABLE_RATE_LOAN_IN_RESERVE` | `:45` | Swapping a non-existent variable loan |
+| 19 | `VL_UNDERLYING_BALANCE_NOT_GREATER_THAN_0` | `:46` | Enabling collateral with no balance |
+| 20 | `VL_DEPOSIT_ALREADY_IN_USE` | `:47` | Disabling collateral that backs debt |
+| 21 | `LP_NOT_ENOUGH_STABLE_BORROW_BALANCE` | `:48` | No stable loan for this reserve |
+| 22 | `LP_INTEREST_RATE_REBALANCE_CONDITIONS_NOT_MET` | `:49` | Rebalance thresholds unmet |
+| 23 | `LP_LIQUIDATION_CALL_FAILED` | `:50` | The delegatecall reverted |
+| 24 | `LP_NOT_ENOUGH_LIQUIDITY_TO_BORROW` | `:51` | |
+| 25 | `LP_REQUESTED_AMOUNT_TOO_SMALL` | `:52` | Flash loan amount too small |
+| 26 | `LP_INCONSISTENT_PROTOCOL_ACTUAL_BALANCE` | `:53` | |
+| 27 | `LP_CALLER_NOT_LENDING_POOL_CONFIGURATOR` | `:54` | |
+| 28 | `LP_INCONSISTENT_FLASHLOAN_PARAMS` | `:55` | |
+| 29 | `CT_CALLER_MUST_BE_LENDING_POOL` | `:56` | `onlyLendingPool` on a token |
+| 30 | `CT_CANNOT_GIVE_ALLOWANCE_TO_HIMSELF` | `:57` | |
+| 31 | `CT_TRANSFER_AMOUNT_NOT_GT_0` | `:58` | |
+| 32 | `RL_RESERVE_ALREADY_INITIALIZED` | `:59` | Double listing |
+| 33 | `CALLER_NOT_POOL_ADMIN` | `:24` | Not the pool admin |
+| 34 | `LPC_RESERVE_LIQUIDITY_NOT_0` | `:60` | Deactivating a non-empty reserve |
+| 35 | `LPC_INVALID_ATOKEN_POOL_ADDRESS` | `:61` | Token wired to the wrong pool |
+| 36 | `LPC_INVALID_STABLE_DEBT_TOKEN_POOL_ADDRESS` | `:62` | |
+| 37 | `LPC_INVALID_VARIABLE_DEBT_TOKEN_POOL_ADDRESS` | `:63` | |
+| 38 | `LPC_INVALID_STABLE_DEBT_TOKEN_UNDERLYING_ADDRESS` | `:64` | |
+| 39 | `LPC_INVALID_VARIABLE_DEBT_TOKEN_UNDERLYING_ADDRESS` | `:65` | |
+| 40 | `LPC_INVALID_ADDRESSES_PROVIDER_ID` | `:66` | |
+| 41 | `LPAPR_PROVIDER_NOT_REGISTERED` | `:69` | Registry lookup miss |
+| 42 | `LPCM_HEALTH_FACTOR_NOT_BELOW_THRESHOLD` | `:70` | Target is healthy |
+| 43 | `LPCM_COLLATERAL_CANNOT_BE_LIQUIDATED` | `:71` | Not collateral, or threshold 0 |
+| 44 | `LPCM_SPECIFIED_CURRENCY_NOT_BORROWED_BY_USER` | `:72` | |
+| 45 | `LPCM_NOT_ENOUGH_LIQUIDITY_TO_LIQUIDATE` | `:73` | |
+| 46 | `LPCM_NO_ERRORS` | `:74` | Success sentinel |
+| 47 | `LP_INVALID_FLASHLOAN_MODE` | `:75` | |
+| 48 | `MATH_MULTIPLICATION_OVERFLOW` | `:76` | |
+| 49 | `MATH_ADDITION_OVERFLOW` | `:77` | |
+| 50 | `MATH_DIVISION_BY_ZERO` | `:78` | |
+| 51 | `RL_LIQUIDITY_INDEX_OVERFLOW` | `:79` | Index exceeded `uint128` |
+| 52 | `RL_VARIABLE_BORROW_INDEX_OVERFLOW` | `:80` | |
+| 53 | `RL_LIQUIDITY_RATE_OVERFLOW` | `:81` | |
+| 54 | `RL_VARIABLE_BORROW_RATE_OVERFLOW` | `:82` | |
+| 55 | `RL_STABLE_BORROW_RATE_OVERFLOW` | `:83` | |
+| 56 | `CT_INVALID_MINT_AMOUNT` | `:84` | Scaled amount rounded to zero |
+| 57 | `LP_FAILED_REPAY_WITH_COLLATERAL` | `:85` | |
+| 58 | `CT_INVALID_BURN_AMOUNT` | `:86` | Scaled amount rounded to zero |
+| 59 | `BORROW_ALLOWANCE_NOT_ENOUGH` | `:25` | Credit delegation allowance too small |
+| 60 | `LP_FAILED_COLLATERAL_SWAP` | `:87` | |
+| 61 | `LP_INVALID_EQUAL_ASSETS_TO_SWAP` | `:88` | |
+| 62 | `LP_REENTRANCY_NOT_ALLOWED` | `:89` | |
+| 63 | `LP_CALLER_MUST_BE_AN_ATOKEN` | `:90` | `finalizeTransfer` caller check |
+| 64 | `LP_IS_PAUSED` | `:91` | Global pause active |
+| 65 | `LP_NO_MORE_RESERVES_ALLOWED` | `:92` | 128-reserve ceiling |
+| 66 | `LP_INVALID_FLASH_LOAN_EXECUTOR_RETURN` | `:93` | `executeOperation` returned false |
+| 67 | `RC_INVALID_LTV` | `:94` | Above 65535 |
+| 68 | `RC_INVALID_LIQ_THRESHOLD` | `:95` | |
+| 69 | `RC_INVALID_LIQ_BONUS` | `:96` | |
+| 70 | `RC_INVALID_DECIMALS` | `:97` | Above 255 |
+| 71 | `RC_INVALID_RESERVE_FACTOR` | `:98` | |
+| 72 | `LPAPR_INVALID_ADDRESSES_PROVIDER_ID` | `:99` | |
+| 73 | `VL_INCONSISTENT_FLASHLOAN_PARAMS` | `:100` | Array lengths differ |
+| 74 | `LP_INCONSISTENT_PARAMS_LENGTH` | `:101` | |
+| 75 | `LPC_INVALID_CONFIGURATION` | `:67` | LTV/threshold/bonus inconsistent |
+| 76 | `LPC_CALLER_NOT_EMERGENCY_ADMIN` | `:68` | |
+| 77 | `UL_INVALID_INDEX` | `:102` | User configuration index out of range |
+| 78 | `LP_NOT_CONTRACT` | `:103` | |
+| 79 | `SDT_STABLE_DEBT_OVERFLOW` | `:104` | Blended rate exceeded `uint128` |
+| 80 | `SDT_BURN_EXCEEDS_BALANCE` | `:105` | |
+
+All 80 codes are declared as `string public constant` in
+`aave/v2-protocol/contracts/protocol/libraries/helpers/Errors.sol:24-105`. Note
+that the numbering is **not** in declaration order: `CALLER_NOT_POOL_ADMIN` is
+code 33 but declared first, and `LPC_INVALID_CONFIGURATION` (75) and
+`LPC_CALLER_NOT_EMERGENCY_ADMIN` (76) sit between codes 40 and 41 in the file.
+Codes were assigned as they were added, then grouped by prefix for readability.
 
 Plus the `CollateralManagerErrors` enum used by the liquidation return-code
 protocol: `NO_ERROR`, `NO_COLLATERAL_AVAILABLE`, `COLLATERAL_CANNOT_BE_LIQUIDATED`,
@@ -3258,3 +3286,212 @@ protocol: `NO_ERROR`, `NO_COLLATERAL_AVAILABLE`, `COLLATERAL_CANNOT_BE_LIQUIDATE
 - **Gotcha.** Several codes are reused across prefixes because the numbering
   restarted per group during development. Always match on the *identifier*, not
   the number, when reading the source.
+
+## 2.20 v2 events reference
+
+Declared in `aave/v2-protocol/contracts/interfaces/ILendingPool.sol`, emitted by
+`LendingPool` (and, for `LiquidationCall`, by the collateral manager executing in
+the pool's context).
+
+| Event | Declared | Emitted when |
+|---|---|---|
+| `Deposit(reserve, user, onBehalfOf, amount, referral)` | `:17` | `deposit` succeeds. `reserve`, `user`, `onBehalfOf` are indexed |
+| `Withdraw(reserve, user, to, amount)` | `:32` | `withdraw` succeeds; all three addresses indexed |
+| `Borrow(reserve, user, onBehalfOf, amount, borrowRateMode, borrowRate, referral)` | `:45` | Any borrow, including the flash-loan mode 1/2 path |
+| `Repay(reserve, user, repayer, amount)` | `:62` | `repay` succeeds |
+| `Swap(reserve, user, rateMode)` | `:75` | `swapBorrowRateMode` |
+| `ReserveUsedAsCollateralEnabled(reserve, user)` | `:82` | First deposit, aToken receipt, or explicit enable |
+| `ReserveUsedAsCollateralDisabled(reserve, user)` | `:89` | Full withdrawal, full seizure, or explicit disable |
+| `RebalanceStableBorrowRate(reserve, user)` | `:96` | Permissionless rebalance |
+| `FlashLoan(target, initiator, asset, amount, premium, referralCode)` | `:107` | Once per asset in the loop |
+| `Paused()` / `Unpaused()` | `:119` / `:124` | `setPause` |
+| `LiquidationCall(collateralAsset, debtAsset, user, debtToCover, liquidatedCollateralAmount, liquidator, receiveAToken)` | `:139` | Liquidation. Declared here but fired via the delegatecall |
+| `ReserveDataUpdated(asset, liquidityRate, stableBorrowRate, variableBorrowRate, liquidityIndex, variableBorrowIndex)` | `:161` | Every `updateInterestRates`. Declared in **both** `ILendingPool` and `ReserveLogic` — the comment at `:150-153` explains the duplication is for ABI completeness |
+
+Configurator events, from `interfaces/ILendingPoolConfigurator.sol`:
+`ReserveInitialized` (`:52`), `BorrowingEnabledOnReserve` (`:65`),
+`BorrowingDisabledOnReserve` (`:71`), `CollateralConfigurationChanged` (`:80`),
+`StableRateEnabledOnReserve` (`:91`), `StableRateDisabledOnReserve` (`:97`),
+`ReserveActivated` (`:103`), `ReserveDeactivated` (`:109`), `ReserveFrozen`
+(`:115`), `ReserveUnfrozen` (`:121`), `ReserveFactorChanged` (`:128`),
+`ReserveDecimalsChanged` (`:135`), `ReserveInterestRateStrategyChanged` (`:142`),
+`ATokenUpgraded` (`:150`), `StableDebtTokenUpgraded` (`:162`),
+`VariableDebtTokenUpgraded` (`:174`).
+
+Token events: `AToken` adds `BalanceTransfer(from, to, value, index)` and
+`Mint`/`Burn`; `StableDebtToken` adds an eight-field `Mint` and a six-field
+`Burn`; `DebtTokenBase` adds `BorrowAllowanceDelegated(fromUser, toUser, asset,
+amount)`.
+
+- **Indexer note versus v1.** Every v2 event indexes its addresses and drops the
+  explicit `timestamp` field, so a log filter by user works directly and the
+  block timestamp is taken from the block. Both were pain points in v1
+  ([1.13](#113-v1-events-reference)).
+
+## 2.21 v2 storage layouts
+
+### `LendingPool` (proxied)
+
+| Slot | Source | Type | Name |
+|---:|---|---|---|
+| 0 | `VersionedInitializable` | `uint256` | `lastInitializedRevision` |
+| 1 | `LendingPoolStorage:16` | `ILendingPoolAddressesProvider` | `_addressesProvider` |
+| 2 | `LendingPoolStorage:18` | mapping | `_reserves` |
+| 3 | `LendingPoolStorage:19` | mapping | `_usersConfig` |
+| 4 | `LendingPoolStorage:22` | mapping | `_reservesList` |
+| 5 | `LendingPoolStorage:24` | `uint256` | `_reservesCount` |
+| 6 | `LendingPoolStorage:26` | `bool` | `_paused` |
+| 7 | `LendingPoolStorage:28` | `uint256` | `_maxStableRateBorrowSizePercent` |
+| 8 | `LendingPoolStorage:30` | `uint256` | `_flashLoanPremiumTotal` |
+| 9 | `LendingPoolStorage:32` | `uint256` | `_maxNumberOfReserves` |
+
+`LendingPoolCollateralManager` inherits `VersionedInitializable` and
+`LendingPoolStorage` in the same order, so its layout is identical — the
+precondition for the `delegatecall`.
+
+Each `DataTypes.ReserveData` value occupies 8 slots (see
+[2.2](#22-datatypes-and-lendingpoolstorage)), against roughly 20 in v1.
+
+### `AToken`
+
+Slots 0–2 from `VersionedInitializable` and `IncentivizedERC20` (`_balances`,
+`_allowances`, `_totalSupply`), then `_name`, `_symbol`, `_decimals`,
+`_incentivesController`, followed by the aToken's own `_treasury`,
+`_underlyingAsset`, `_pool` and the EIP-2612 `_nonces`.
+
+- **Difference from v1.** v2 aTokens **are** proxied and versioned, so an aToken
+  can be upgraded in place. v1's could not ([1.14](#114-v1-storage-layouts)).
+
+### `StableDebtToken`
+
+After the shared `IncentivizedERC20` and `DebtTokenBase` slots:
+`_avgStableRate`, `mapping(address => uint40) _timestamps`,
+`mapping(address => uint256) _usersStableRate`, `_totalSupplyTimestamp`, plus
+`_pool`, `_underlyingAsset`, `_incentivesController`.
+
+`VariableDebtToken` adds only `_pool`, `_underlyingAsset` and
+`_incentivesController` — the scaled balance lives in the inherited
+`_balances`.
+
+## 2.22 v2 ABI / selector tables
+
+Selectors computed with `cast sig`.
+
+### `LendingPool`
+
+| Signature | Selector | Access |
+|---|---|---|
+| `deposit(address,uint256,address,uint16)` | `0xe8eda9df` | anyone, `whenNotPaused` |
+| `withdraw(address,uint256,address)` | `0x69328dec` | anyone |
+| `borrow(address,uint256,uint256,uint16,address)` | `0xa415bcad` | anyone (delegation for `onBehalfOf`) |
+| `repay(address,uint256,uint256,address)` | `0x573ade81` | anyone |
+| `swapBorrowRateMode(address,uint256)` | `0x94ba89a2` | borrower |
+| `rebalanceStableBorrowRate(address,address)` | `0xcd112382` | anyone |
+| `setUserUseReserveAsCollateral(address,bool)` | `0x5a3b74b9` | depositor |
+| `liquidationCall(address,address,address,uint256,bool)` | `0x00a718a9` | anyone |
+| `flashLoan(address,address[],uint256[],uint256[],address,bytes,uint16)` | `0xab9c4b5d` | anyone |
+| `getUserAccountData(address)` | `0xbf92857c` | view |
+| `finalizeTransfer(address,address,address,uint256,uint256,uint256)` | `0xd5ed3933` | the aToken only |
+
+Plus `initReserve`, `setReserveInterestRateStrategyAddress`, `setConfiguration`
+and `setPause`, all `onlyLendingPoolConfigurator`, and the view surface listed
+in [2.10](#210-lendingpool).
+
+### Tokens
+
+| Signature | Selector | Contract |
+|---|---|---|
+| `scaledBalanceOf(address)` | `0x1da24f3e` | `AToken`, `VariableDebtToken` |
+| `mintToTreasury(uint256,uint256)` | `0x7df5bd3b` | `AToken`, `onlyLendingPool` |
+| `approveDelegation(address,uint256)` | `0xc04a8a10` | both debt tokens |
+
+`AToken` also exposes `mint`, `burn`, `transferOnLiquidation`,
+`transferUnderlyingTo`, `handleRepayment` (all `onlyLendingPool`),
+`getScaledUserBalanceAndSupply`, `scaledTotalSupply`, `permit`,
+`UNDERLYING_ASSET_ADDRESS`, `RESERVE_TREASURY_ADDRESS`, `POOL`, and the full
+ERC20 surface. Both debt tokens revert on every ERC20 transfer entry point.
+
+## 2.23 v2 use cases
+
+| Goal | Call | Internal chain |
+|---|---|---|
+| Supply an ERC20 | `LendingPool.deposit(asset, amt, self, 0)` | `validateDeposit` → `updateState` → `updateInterestRates` → `transferFrom(user, aToken)` → `AToken.mint` |
+| Supply for someone else | same with `onBehalfOf = other` | aTokens mint to `other`; collateral bit set on *their* config |
+| Supply ETH | `WETHGateway.depositETH{value}(pool, self, 0)` | wrap → approve → `pool.deposit` |
+| Withdraw | `withdraw(asset, amt, to)` | `validateWithdraw` (health factor) → `updateState` → `AToken.burn` → `safeTransfer(to)` |
+| Withdraw everything | `withdraw(asset, type(uint256).max, to)` | resolves to the full aToken balance |
+| Borrow variable | `borrow(asset, amt, 2, 0, self)` | `_executeBorrow` → `validateBorrow` → `VariableDebtToken.mint` → `transferUnderlyingTo` |
+| Borrow stable | `borrow(asset, amt, 1, 0, self)` | as above via `StableDebtToken.mint`, rate blended |
+| Borrow against someone's credit | delegator calls `approveDelegation(you, amt)` on the debt token, then you call `borrow(..., onBehalfOf = delegator)` | `_decreaseBorrowAllowance` inside the debt token's `mint` |
+| Borrow ETH | `approveDelegation(gateway, amt)` on the WETH debt token, then `WETHGateway.borrowETH(...)` | gateway borrows and unwraps |
+| Repay | `repay(asset, amt, 2, self)` | `validateRepay` → burn debt → `transferFrom(user, aToken)` → `handleRepayment` |
+| Repay everything | `repay(asset, type(uint256).max, mode, self)` | clamps to the debt in that mode |
+| Repay for someone else | `repay(asset, explicitAmt, mode, other)` | `uint256.max` is rejected here |
+| Switch rate mode | `swapBorrowRateMode(asset, currentMode)` | burn all of one, mint the same into the other |
+| Rebalance someone's stable rate | `rebalanceStableBorrowRate(asset, user)` | requires U ≥ 95% **and** supply rate ≤ 40% of max variable |
+| Toggle collateral | `setUserUseReserveAsCollateral(asset, bool)` | `balanceDecreaseAllowed` gate when disabling |
+| Liquidate, take underlying | `liquidationCall(coll, debt, user, amt, false)` | delegatecall → close factor 50% → `AToken.burn` |
+| Liquidate, take aTokens | `liquidationCall(coll, debt, user, amt, true)` | → `transferOnLiquidation`; works even at 100% utilization |
+| Liquidate with no capital | `pool.flashLoan(FlashLiquidationAdapter, ...)` | flash → `liquidationCall` → swap collateral → repay |
+| Flash loan, repay | `flashLoan(receiver, assets, amounts, [0,…], self, params, 0)` | `transferUnderlyingTo` → `executeOperation` → `cumulateToLiquidityIndex(premium)` → pull back |
+| Flash loan, keep as debt | same with `modes = [1 or 2]` | `_executeBorrow(releaseUnderlying: false)` |
+| Swap collateral A → B | `pool.flashLoan(UniswapLiquiditySwapAdapter, ...)` | deposit B first, then pull and swap A |
+| Repay debt with collateral | `pool.flashLoan(UniswapRepayAdapter, ...)` | repay first, then pull and swap collateral |
+| Read a user's position | `AaveProtocolDataProvider.getUserReserveData(asset, user)` | |
+| Read the whole market | `UiPoolDataProviderV2.getReservesData(provider)` | |
+| List a reserve | `LendingPoolConfigurator.batchInitReserve([...])` | 3 proxies deployed, then `pool.initReserve` |
+| Freeze a reserve | `freezeReserve(asset)` | deposits and new borrows blocked; repay/withdraw/liquidate still work |
+| Delist a reserve | `deactivateReserve(asset)` | requires zero liquidity **and** zero liquidity rate |
+| Emergency stop | `setPoolPause(true)` | `onlyEmergencyAdmin` |
+| Upgrade an aToken | `updateAToken(input)` | `upgradeToAndCall` on the token proxy |
+
+---
+
+# Part 3 — v1 → v2 migration table
+
+For each v1 external function, what became of it.
+
+| v1 function | v1 location | v2 equivalent | Notes |
+|---|---|---|---|
+| `deposit(reserve, amount, referralCode)` | `LendingPool.sol:299` | `deposit(asset, amount, onBehalfOf, referralCode)` | Gained `onBehalfOf`. ETH is no longer a pseudo-asset; use `WETHGateway` |
+| `redeemUnderlying(reserve, user, amount, aTokenBalanceAfterRedeem)` | `LendingPool.sol:355` | `withdraw(asset, amount, to)` | **Inverted.** In v1 the *aToken* called the pool; in v2 the *pool* calls the aToken. `AToken.redeem` is gone |
+| `borrow(reserve, amount, interestRateMode, referralCode)` | `LendingPool.sol:409` | `borrow(asset, amount, interestRateMode, referralCode, onBehalfOf)` | Gained credit delegation. The origination fee is gone |
+| `repay(reserve, amount, onBehalfOf)` | `LendingPool.sol:521` | `repay(asset, amount, rateMode, onBehalfOf)` | Gained an explicit `rateMode`, because debt is now two separate tokens |
+| `swapBorrowRateMode(reserve)` | `LendingPool.sol:604` | `swapBorrowRateMode(asset, rateMode)` | Gained the target mode as an argument |
+| `rebalanceStableBorrowRate(reserve, user)` | `LendingPool.sol:667` | `rebalanceStableBorrowRate(asset, user)` | Same semantics, thresholds moved into `ValidationLogic` |
+| `setUserUseReserveAsCollateral(reserve, useAsCollateral)` | `LendingPool.sol:723` | `setUserUseReserveAsCollateral(asset, useAsCollateral)` | Unchanged |
+| `liquidationCall(collateral, reserve, user, purchaseAmount, receiveAToken)` | `LendingPool.sol:764` | `liquidationCall(collateralAsset, debtAsset, user, debtToCover, receiveAToken)` | Still a `delegatecall`, now to `LendingPoolCollateralManager`. Origination-fee seizure removed |
+| `flashLoan(receiver, reserve, amount, params)` | `LendingPool.sol:806` | `flashLoan(receiver, assets[], amounts[], modes[], onBehalfOf, params, referralCode)` | Multi-asset, and can end as debt instead of repayment |
+| `getReserveConfigurationData(reserve)` | `LendingPool.sol:874` | `AaveProtocolDataProvider.getReserveConfigurationData(asset)` | Moved out of the pool |
+| `getReserveData(reserve)` | `LendingPool.sol:906` | `LendingPool.getReserveData(asset)` + the data provider | Pool now returns the raw struct |
+| `getUserAccountData(user)` | `LendingPool.sol:947` | `getUserAccountData(user)` | Same six fields, no origination-fee field |
+| `getUserReserveData(reserve, user)` | `LendingPool.sol:987` | `AaveProtocolDataProvider.getUserReserveData(asset, user)` | Moved |
+| `getReserves()` | `LendingPool.sol:1000` | `getReservesList()` | Renamed |
+| `AToken.redeem(amount)` | `AToken.sol:222` | **Removed** | Replaced by `LendingPool.withdraw` |
+| `AToken.redirectInterestStream(to)` | `AToken.sol:167` | **Removed** | Interest redirection did not survive. Its use cases moved to holding aTokens directly |
+| `AToken.redirectInterestStreamOf(from, to)` | `AToken.sol:190` | **Removed** | |
+| `AToken.allowInterestRedirectionTo(to)` | `AToken.sol:205` | **Removed** | |
+| `AToken.mintOnDeposit(account, amount)` | `AToken.sol:262` | `AToken.mint(user, amount, index)` | Now takes the index and returns `isFirstDeposit` |
+| `AToken.burnOnLiquidation(account, value)` | `AToken.sol:279` | `AToken.burn(user, receiver, amount, index)` | Unified with withdrawal |
+| `AToken.transferOnLiquidation(from, to, value)` | `AToken.sol:296` | `AToken.transferOnLiquidation(from, to, value)` | Kept |
+| `AToken.principalBalanceOf(user)` | `AToken.sol:436` | `AToken.scaledBalanceOf(user)` | Renamed and re-based on the scaled model |
+| `AToken.getUserIndex(user)` | `AToken.sol:497` | **Removed** | There is no per-user index in v2; one global index suffices |
+| `LendingPoolCore.*` (all ~60) | `LendingPoolCore.sol` | Split | State → `LendingPoolStorage._reserves` and the debt tokens. Funds → the aTokens. Mutators → `ReserveLogic`. Getters → `AaveProtocolDataProvider` |
+| `LendingPoolDataProvider.calculateUserGlobalData` | `LendingPoolDataProvider.sol:87` | `GenericLogic.calculateUserAccountData` | Same job, now a linked library |
+| `LendingPoolDataProvider.balanceDecreaseAllowed` | `LendingPoolDataProvider.sol:174` | `GenericLogic.balanceDecreaseAllowed` | Moved |
+| `FeeProvider.calculateLoanOriginationFee` | `FeeProvider.sol` | **Removed** | v2 charges no origination fee; revenue comes from the reserve factor instead |
+| `TokenDistributor` | `fees/TokenDistributor.sol` | **Removed** | Replaced by the treasury address on each aToken |
+| `LendingPoolParametersProvider` | `configuration/` | **Removed** | Its constants became `LendingPool` state (`_maxStableRateBorrowSizePercent`, `_maxNumberOfReserves`) |
+| `ChainlinkProxyPriceProvider` | `misc/` | `AaveOracle` | Renamed, same `latestAnswer` + fallback design |
+| — | — | `StableDebtToken` / `VariableDebtToken` | **New.** Debt became transferable-in-principle ERC20s (transfers disabled) |
+| — | — | `approveDelegation` | **New.** Credit delegation has no v1 equivalent |
+| — | — | Reserve factor + `mintToTreasury` | **New.** Protocol revenue mechanism replacing the origination fee |
+| — | — | `setPause` / emergency admin | **New.** v1 had per-reserve freeze only |
+| — | — | The `adapters/` suite | **New.** Flash-loan-composed collateral swaps and repayments |
+
+**The one-line summary.** v1 asked "where is the money and who owes what?" and
+answered with a single 1,775-line contract. v2 asked the same question and
+answered with tokens: an aToken per reserve holding the funds, two debt tokens
+per reserve holding the liabilities, and a pool contract that owns nothing and
+only sequences the four steps. Every other difference in this Part follows from
+that one decision.

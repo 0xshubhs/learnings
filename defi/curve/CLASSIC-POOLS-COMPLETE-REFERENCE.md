@@ -1041,7 +1041,7 @@ splitting one large swap into many small ones to stay near the cheap end.
 ### 6.1 What is missing
 
 There is no `RATES`, no `PRECISION_MUL`, no `_xp` and no `_xp_mem`. Compare the
-constants block at `:83-84` with base's `:81-83`: only `N_COINS` survives. Every
+constants block at `:84` with base's `:81-83`: only `N_COINS` survives. Every
 coin in an ETH pool is 18 decimals (ETH itself, and 18-decimal LSTs), so raw
 balances *are* normalised balances. `_get_y` and `_get_D` are handed
 `self.balances` directly — see `exchange` at `:441-442`, which calls
@@ -1054,7 +1054,7 @@ why the ETH template is shorter than base despite adding native-currency handlin
 
 Native ETH is represented by the address
 `0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE`, checked inline. From `exchange`
-(`:476-509`):
+(`:458-489`):
 
 ```python
 coin: address = self.coins[i]
@@ -1189,5 +1189,320 @@ if input_coin == FEE_ASSET:
 
 This is the only fee-on-transfer accommodation anywhere in classic Curve, and it
 is hard-coded to one specific asset rather than applied generally.
+
+---
+
+## 8. Pool families, as diffs from their template
+
+The 33 pools fall into six groups. Within a group the contracts are close to
+identical; the differences that matter are listed per group. Constructor
+parameters (`_A`, `_fee`, `_admin_fee`) come from each `pooldata.json` and are
+tabulated in §1.2.
+
+### 8.1 First generation (Vyper 0.1.0b16 / 0.1.0b17)
+
+**Pools:** `busd`, `compound`, `usdt`, `y` (0.1.0b16); `pax`, `ren`, `sbtc`,
+`susd` (0.1.0b17).
+
+These predate the templates and differ from base in ways no later pool repeats:
+
+- **`get_D` and `get_y` are `@external`**, not `_`-prefixed internals. Anyone can
+  call them with arbitrary arrays. They are pure, so this leaks nothing, but it
+  does mean these pools expose a larger ABI than modern ones.
+- **`get_dy_underlying` exists on all eight.** Later plain pools dropped it.
+- **No `A_PRECISION`.** `A` is stored unscaled and cannot be ramped with
+  sub-integer resolution.
+- **`commit_new_parameters` / `apply_new_parameters`** replace the base
+  template's `commit_new_fee` / `apply_new_fee`, and they bundle `A` changes in
+  with the fee change rather than exposing `ramp_A` / `stop_ramp_A`. `susd` has
+  no `ramp_A` at all.
+- **`remove_liquidity_one_coin` is absent from `susd`**, so single-sided exit
+  requires the zap.
+- **`admin_balances` and `donate_admin_fees` are absent** from `susd`, `ren` and
+  `sbtc`.
+
+Rate handling splits the group in two:
+
+| Sub-group | Pools | Rate source |
+|---|---|---|
+| yToken lending | `busd`, `y` | `_stored_rates()` from `getPricePerFullShare` |
+| Compound lending | `compound`, `usdt`, `susd` | `_stored_rates()` + `_current_rates()` from `exchangeRateStored`/`Current` |
+| Mixed lending | `pax` | `_rates()` with a `USE_LENDING` flag array |
+| BTC, partial lending | `ren`, `sbtc` | `_rates()` with `USE_LENDING`, `exchangeRateCurrent` |
+
+The `USE_LENDING` pattern in `pools/ren/StableSwapRen.vy:166-172` is the
+interesting one, because it lets a single pool mix wrapped and unwrapped coins:
+
+```python
+def _rates() -> uint256[N_COINS]:
+    result: uint256[N_COINS] = PRECISION_MUL
+    use_lending: bool[N_COINS] = USE_LENDING
+    for i in range(N_COINS):
+        rate: uint256 = LENDING_PRECISION  # Used with no lending
+        if use_lending[i]:
+            rate = cERC20(self.coins[i]).exchangeRateCurrent()
+```
+
+Coins flagged `False` get the identity rate; flagged coins query their cToken.
+In `ren` and `sbtc` every flag is in fact `False` — the mechanism is vestigial,
+inherited from the Compound pools and left in place.
+
+`ren` and `sbtc` share a source file almost exactly (both 743 lines, both
+0.1.0b17); `sbtc` is `ren` plus a third coin.
+
+### 8.2 Second generation plain pools (0.2.4 / 0.2.8)
+
+**Pools:** `3pool`, `hbtc` (0.2.4); `eurs`, `link` (0.2.8).
+
+Closest to `SwapTemplateBase`, with three notable deltas:
+
+- **`3pool` and `hbtc` still name the solvers `get_D` / `get_y`** (public), and
+  still carry `get_dy_underlying` (`pools/3pool/StableSwap3Pool.vy:416-425`).
+  For a plain pool with no wrapped coins, `get_dy_underlying` differs from
+  `get_dy` only in that it scales by `PRECISION_MUL` rather than `RATES` — the
+  same number by a different route. It is a leftover from the lending pools.
+- **`eurs` is the precision outlier.** EURS has **2 decimals**, so
+  `PRECISION_MUL[0] = 10**16`, the largest scaling factor anywhere in the tree.
+  Every EURS balance is multiplied by 1e16 before entering the invariant. The
+  practical effect is that one raw EURS unit is worth 1e16 normalised units, so
+  rounding losses of "one wei" in normalised space are invisible at the token
+  level — the opposite of the usual worry.
+- **`link` adds a flash-loan tripwire.** It carries two extra storage slots
+  (`pools/link/StableSwapLINK.vy:99-100`):
+
+  ```python
+  previous_balances: public(uint256[N_COINS])
+  block_timestamp_last: public(uint256)
+  ```
+
+  and an `_update()` internal (`:187-194`) called at the start of state-changing
+  functions:
+
+  ```python
+  if block.timestamp > self.block_timestamp_last:
+      self.previous_balances = self.balances
+      self.block_timestamp_last = block.timestamp
+  ```
+
+  The docstring says it plainly (`:189-190`): *"Commits pre-change balances for
+  the previous block. Can be used to compare against current values for flash
+  loan checks."* An integrator can read `previous_balances` and `balances` and
+  refuse to act if they diverge within a block. `link` is the only classic pool
+  with this; it is the ancestor of NG's price oracle.
+
+### 8.3 BTC metapools over `sbtc` (0.2.7 / 0.2.8)
+
+**Pools:** `bbtc`, `obtc`, `pbtc`, `tbtc`. All meta, base pool `sbtc`, all with
+a zap.
+
+Standard `SwapTemplateMeta` instances. The distinguishing feature is decimal
+handling: `bBTC` has **8 decimals** while the other three assets are 18, and the
+base LP token `sbtcCRV` is always 18. So `bbtc` runs `PRECISION_MUL = [10**10, 1]`
+while `obtc`, `pbtc` and `tbtc` run `[1, 1]`.
+
+`tbtc` is the odd one at 1078 lines against 1076 for the other three, and is
+compiled with 0.2.7 rather than 0.2.8.
+
+### 8.4 USD metapools over `3pool` (0.2.5 / 0.2.7 / 0.2.8)
+
+**Pools:** `dusd`, `gusd`, `husd`, `linkusd`, `musd`, `rsv`, `usdk`, `usdn`,
+`usdp`, `ust`. All meta, base pool `3pool`, all with a zap.
+
+The largest family, and the most uniform: seven of the ten are 1082-1083 lines
+compiled with 0.2.5. Differences are entirely in constructor constants and
+decimals:
+
+| Pool | New-coin decimals | `PRECISION_MUL[0]` | `A` | fee (bps) | admin fee |
+|---|---|---|---|---|---|
+| `gusd` | 2 | `10**16` | 200 | 4 | 0 |
+| `husd` | 8 | `10**10` | 200 | 4 | 0 |
+| `dusd`, `musd`, `rsv`, `usdk` | 18 | `1` | 200 | 4 | 0 |
+| `usdn`, `usdp`, `ust` | 18 | `1` | 100 | 4 | 50% (`usdp`, `ust`) |
+| `linkusd` | 18 | `1` | **5** | **15** | 0 |
+
+`linkusd` is worth singling out: `A = 5` and a 15 bps fee, against the family's
+usual `A = 200` and 4 bps. That is a deliberate statement that LINKUSD was *not*
+expected to hold its peg tightly, so the pool behaves much more like a constant
+product and charges nearly four times as much per trade.
+
+`usdp` is the largest at 1113 lines and uses `CurveTokenV3`; `usdn` and `usdk`
+use `CurveTokenV2`.
+
+### 8.5 Lending pools (0.2.8)
+
+**Pools:** `aave`, `saave` (`arate`, from `SwapTemplateA`); `ib` (`crate`);
+`compound`, `usdt`, `busd`, `y`, `pax` (first generation, covered in §8.1).
+
+`aave` (1053 lines) and `saave` (997 lines) are `SwapTemplateA` instances:
+rebasing aToken balances read live, `offpeg_fee_multiplier`, `aave_referral`.
+`aave` is 3-coin (aDAI/aUSDC/aUSDT), `saave` is 2-coin (aDAI/aSUSD).
+
+`ib` (1006 lines) is the most interesting rate implementation in the repository.
+Its coins are Iron Bank cyTokens, and rather than reading a stored exchange rate
+it **extrapolates the rate forward** to the current block
+(`pools/ib/StableSwapIB.vy:226-234`):
+
+```python
+def _stored_rates() -> uint256[N_COINS]:
+    # exchangeRateStored * (1 + supplyRatePerBlock * (getBlockNumber - accrualBlockNumber) / 1e18)
+    result: uint256[N_COINS] = PRECISION_MUL
+    for i in range(N_COINS):
+        coin: address = self.coins[i]
+        rate: uint256 = cyToken(coin).exchangeRateStored()
+        rate += rate * cyToken(coin).supplyRatePerBlock() * (block.number - cyToken(coin).accrualBlockNumber()) / PRECISION
+        result[i] *= rate
+    return result
+```
+
+`exchangeRateStored` is only accurate as of the cyToken's last accrual, so `ib`
+adds the interest that has accrued since, using the cyToken's own advertised
+supply rate. This avoids the gas of calling `exchangeRateCurrent` (which writes
+state) on every quote, at the cost of trusting `supplyRatePerBlock`. `ib` also
+carries the `link`-style `_update()` flash-loan tripwire (`:238`).
+
+### 8.6 ETH pools (0.2.8 / 0.2.12)
+
+**Pools:** `seth` (`eth`), `steth` (`eth,arate`), `aeth` and `reth`
+(`eth,crate`).
+
+All four are `SwapTemplateEth` instances holding native ETH as coin 0.
+
+- **`seth`** (883 lines) is the plain case: ETH + sETH, both 18 decimals, no rate.
+- **`steth`** (839 lines) adds `arate` handling because stETH **rebases**. Like
+  the Aave template it derives balances live rather than storing them
+  (`pools/steth/StableSwapSTETH.vy:190-194`):
+
+  ```python
+  def _balances(_value: uint256 = 0) -> uint256[N_COINS]:
+      return [
+          self.balance - self.admin_balances[0] - _value,
+          ERC20(self.coins[1]).balanceOf(self) - self.admin_balances[1]
+      ]
+  ```
+
+  The `_value` parameter exists so a `@payable` function can subtract the ETH it
+  was just sent, since `self.balance` already includes `msg.value` by the time the
+  body runs.
+
+- **`aeth`** and **`reth`** (843 lines each) pair ETH with a non-rebasing LST
+  (ankrETH, rETH) whose value grows against ETH, so they need a rate. Both ship a
+  `RateCalculator` contract: `pools/aeth/RateCalculatorAETH.vy` (22 lines) reads
+  the ratio from the LST, while the template stubs
+  (`pool-templates/eth/RateCalculatorTemplateETH.vy`, 15 lines) return a constant.
+  `reth` is the only 0.2.12 pool in the tree.
+
+The ETH pools are where §17.1 applies. `steth` is the canonical example.
+
+---
+
+## 9. The zaps
+
+A **zap** is an unprivileged helper contract that wraps a pool so users can
+deposit and withdraw in a more convenient denomination. Zaps hold no funds
+between transactions, have no admin, and can be replaced freely — they are
+convenience, not protocol.
+
+Two shapes exist.
+
+### 9.1 Lending zaps (`DepositTemplateY` shape)
+
+`pool-templates/y/DepositTemplateY.vy`, 280 lines, `@version ^0.2.0`.
+Instances: `pools/y/DepositY.vy`, `pools/busd/DepositBUSD.vy`,
+`pools/compound/DepositCompound.vy`, `pools/usdt/DepositUSDT.vy`,
+`pools/pax/DepositPax.vy`, `pools/susd/DepositSUSD.vy`.
+
+The pool holds yTokens or cTokens; the user holds DAI and USDC. The zap wraps on
+the way in and unwraps on the way out.
+
+| Function | Line | Purpose |
+|---|---|---|
+| `__init__` | 48 | Stores pool, coins, underlying coins, LP token; grants approvals |
+| `add_liquidity(_underlying_amounts, _min_mint_amount)` | 99 | Pull underlying, `deposit()` into each wrapper, call pool `add_liquidity`, forward LP tokens |
+| `_unwrap_and_transfer(_addr, _min_amounts)` | 145 | Internal: `withdraw()` from each wrapper and send the underlying on |
+| `remove_liquidity(...)` | 181 | Pull LP, pool `remove_liquidity`, then `_unwrap_and_transfer` |
+| `remove_liquidity_imbalance(...)` | 200 | Same, imbalanced; returns unused LP tokens |
+| `remove_liquidity_one_coin(...)` | 242 | Single-coin exit, unwrapped |
+
+The recurring assert messages here are `"Not enough coins withdrawn"`,
+`"Could not mint coin"` and `"Could not redeem coin"` — all specific to the
+wrap/unwrap legs and found only in this zap family.
+
+### 9.2 Metapool zaps (`DepositTemplateMeta` shape)
+
+`pool-templates/meta/DepositTemplateMeta.vy`, 378 lines, `@version 0.2.12`.
+Instances: the sixteen `Deposit*.vy` files listed in §1.3 belonging to metapools.
+
+The metapool holds `[NEW_COIN, 3CRV]`; the user wants to think in
+`[NEW_COIN, DAI, USDC, USDT]`. `N_ALL_COINS = N_COINS + BASE_N_COINS - 1`.
+
+| Function | Line | Purpose |
+|---|---|---|
+| `__init__(_pool, _token)` | 56 | Stores pool and token, grants max approvals to pool and base pool |
+| `add_liquidity(_amounts[N_ALL_COINS], _min_mint_amount)` | 101 | Splits input into the meta coin and the base coins, `add_liquidity` on the base pool first, then on the metapool |
+| `remove_liquidity(_amount, _min_amounts[N_ALL_COINS])` | 165 | Metapool withdrawal, then base-pool withdrawal, then forward all |
+| `remove_liquidity_one_coin(_token_amount, i, _min_amount)` | 217 | Routes to the metapool or through the base pool depending on `i` |
+| `remove_liquidity_imbalance(_amounts[N_ALL_COINS], _max_burn_amount)` | 260 | The hardest one: works out how much base LP is needed, burns the minimum, refunds the remainder |
+| `calc_withdraw_one_coin(_token_amount, i)` | 341 | View helper composing both pools' estimates |
+| `calc_token_amount(_amounts[N_ALL_COINS], _is_deposit)` | 357 | View helper; inherits `calc_token_amount`'s fee-blindness (§3.6) |
+
+A zap always costs more gas than going direct, and it always makes **two**
+imbalance-fee payments where a direct route makes one. Use `exchange_underlying`
+on the metapool for swaps; use the zap only for liquidity operations.
+
+---
+
+## 10. The LP tokens
+
+Three versions, all in `tokens/`. The pool is the token's `minter`; nothing else
+may mint or burn.
+
+| | V1 (`CurveTokenV1.vy`, 171 lines, 0.1.0b16) | V2 (`CurveTokenV2.vy`, 175 lines, `^0.2.0`) | V3 (`CurveTokenV3.vy`, 192 lines, `^0.2.0`) |
+|---|---|---|---|
+| `set_minter` | yes | yes | yes |
+| `set_name` | **no** | yes | yes |
+| `totalSupply` / `allowance` as functions | yes | yes | **no** (public vars) |
+| `burn` (self) | yes | **no** | **no** |
+| `_burn` internal | yes | no | no |
+| `increaseAllowance` / `decreaseAllowance` | no | no | **yes** |
+| `decimals` as a function | no | no | yes |
+
+The progression is a tightening one. V1 lets a holder `burn` their own tokens
+outside the pool's accounting, which desynchronises `totalSupply` from the pool's
+view of it and permanently strands the underlying — V2 removed it. V2 added
+`set_name` so the DAO could rename a token after launch. V3 replaced the
+`approve`-race-prone interface with OpenZeppelin's increase/decrease pattern and
+exposed `totalSupply` and `allowance` as public variables rather than functions,
+which is cheaper.
+
+Which pool uses which is listed in §1.2. Broadly: first-generation pools use V1,
+the 0.2.4-0.2.7 era uses V2, and 0.2.8 onward uses V3.
+
+---
+
+## 11. Rate calculators and `testing/`
+
+**Rate calculators.** Small contracts that answer "how much is one unit of this
+LST worth in ETH?". `pool-templates/eth/RateCalculatorTemplateETH.vy` and
+`pool-templates/meta/RateCalculatorTemplateMeta.vy` are 15-line stubs returning a
+constant. `pools/aeth/RateCalculatorAETH.vy` (22 lines) is the only real
+implementation, reading the ratio from ankrETH.
+
+**`testing/`.** Mocks used by the brownie test-suite, not deployed:
+
+| File | Purpose |
+|---|---|
+| `ERC20Mock.vy` | Plain ERC20 with mintable supply |
+| `ERC20MockNoReturn.vy` | Returns nothing from `transfer`/`approve` — the USDT shape; this is what the `raw_call` + conditional-decode pattern exists for |
+| `cERC20.vy` | Compound cToken mock (`exchangeRateStored`, `supplyRatePerBlock`) |
+| `yERC20.vy` | yearn yToken mock (`getPricePerFullShare`) |
+| `aERC20.sol` / `AaveLendingPoolMock.sol` | Aave aToken and pool mocks (Solidity) |
+| `aETH.vy` | ankrETH mock |
+| `rETH.vy` | Rocket Pool rETH mock |
+| `renERC20.vy` | renBTC mock |
+| `SwapMock.vy` | Minimal pool used to test zaps in isolation |
+| `LiquidityGaugeV2Mock.vy` | Gauge stand-in |
+
+`ERC20MockNoReturn.vy` is the most instructive file here: every hand-rolled
+`raw_call` safe-transfer in this codebase exists because of tokens shaped like it.
 
 ---
