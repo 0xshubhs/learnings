@@ -2052,3 +2052,127 @@ Libraries: [`ConstantsLib`](morpho-blue-bundlers/src/libraries/ConstantsLib.sol)
 Twelve mocks including several `*Import.sol` files whose only job is to pull external bytecode
 into the test build.
 
+---
+
+<a id="12-storage-layouts"></a>
+## 12. Storage layouts
+
+### 12.1 `Morpho`
+
+Nine slots. Full table in §1.5. `DOMAIN_SEPARATOR` is `immutable`
+([`Morpho.sol:33`](morpho-blue-blue/src/Morpho.sol#L33)) so it lives in bytecode, not storage.
+
+Packing within the mapped structs:
+
+| Struct | Word | Bits 0–127 | Bits 128–255 |
+|---|---|---|---|
+| `Position` | 0 | `supplyShares` (full `uint256`) | — |
+| `Position` | 1 | `borrowShares` | `collateral` |
+| `Market` | 0 | `totalSupplyAssets` | `totalSupplyShares` |
+| `Market` | 1 | `totalBorrowAssets` | `totalBorrowShares` |
+| `Market` | 2 | `lastUpdate` | `fee` |
+
+Verified against the shifts in `MorphoLib` (§5.2): low half by truncation, high half by `>> 128`.
+
+**Two words per user per market, three per market.** That is the entire footprint of a lending
+market.
+
+### 12.2 `MetaMorpho`
+
+Inherits OZ `ERC20`, `ERC20Permit`, `ERC4626` and `Ownable2Step`, so vault-specific storage begins
+after those. Own declarations at
+[`:59-106`](metamorpho/src/MetaMorpho.sol#L59-L106):
+
+| Variable | Type | Notes |
+|---|---|---|
+| `MORPHO` | `IMorpho` immutable | bytecode |
+| `DECIMALS_OFFSET` | `uint8` immutable | bytecode |
+| `curator` | `address` | |
+| `isAllocator` | `mapping(address => bool)` | |
+| `guardian` | `address` | |
+| `config` | `mapping(Id => MarketConfig)` | one packed slot per market |
+| `timelock` | `uint256` | |
+| `pendingGuardian` | `PendingAddress` | `address` + `uint64` in one slot |
+| `pendingCap` | `mapping(Id => PendingUint192)` | `uint192` + `uint64` in one slot |
+| `pendingTimelock` | `PendingUint192` | one slot |
+| `fee` | `uint96` | |
+| `feeRecipient` | `address` | packs with `fee` |
+| `skimRecipient` | `address` | |
+| `supplyQueue` | `Id[]` | ≤ 30 |
+| `withdrawQueue` | `Id[]` | ≤ 30 |
+| `lastTotalAssets` | `uint256` | fee high-water mark |
+
+`fee` is `uint96` specifically so it shares a slot with `feeRecipient`
+([`:91-94`](metamorpho/src/MetaMorpho.sol#L91-L94)), and every pending struct is sized to fit one
+word with its `uint64 validAt`.
+
+---
+
+<a id="13-selector--abi-tables"></a>
+## 13. Selector / ABI tables
+
+Every selector below was computed with `cast sig` against the fully-expanded tuple signature, not
+transcribed. `MarketParams` expands to `(address,address,address,address,uint256)`.
+
+### 13.1 `Morpho`
+
+| Selector | Signature |
+|---|---|
+| `0xa99aad89` | `supply((address,address,address,address,uint256),uint256,uint256,address,bytes)` |
+| `0x5c2bea49` | `withdraw((address,address,address,address,uint256),uint256,uint256,address,address)` |
+| `0x50d8cd4b` | `borrow((address,address,address,address,uint256),uint256,uint256,address,address)` |
+| `0x20b76e81` | `repay((address,address,address,address,uint256),uint256,uint256,address,bytes)` |
+| `0x238d6579` | `supplyCollateral((address,address,address,address,uint256),uint256,address,bytes)` |
+| `0x8720316d` | `withdrawCollateral((address,address,address,address,uint256),uint256,address,address)` |
+| `0xd8eabcb8` | `liquidate((address,address,address,address,uint256),address,uint256,uint256,bytes)` |
+| `0xe0232b42` | `flashLoan(address,uint256,bytes)` |
+| `0x8c1358a2` | `createMarket((address,address,address,address,uint256))` |
+| `0x151c1ade` | `accrueInterest((address,address,address,address,uint256))` |
+| `0xeecea000` | `setAuthorization(address,bool)` |
+| `0x8069218f` | `setAuthorizationWithSig((address,address,bool,uint256,uint256),(uint8,bytes32,bytes32))` |
+| `0x2b4f013c` | `setFee((address,address,address,address,uint256),uint256)` |
+| `0x5a64f51e` | `enableIrm(address)` |
+| `0x4d98a93b` | `enableLltv(uint256)` |
+| `0x13af4035` | `setOwner(address)` |
+| `0xe74b981b` | `setFeeRecipient(address)` |
+| `0x7784c685` | `extSloads(bytes32[])` |
+| `0x8da5cb5b` | `owner()` |
+| `0x46904840` | `feeRecipient()` |
+| `0x3644e515` | `DOMAIN_SEPARATOR()` |
+| `0x93c52062` | `position(bytes32,address)` |
+| `0x5c60e39a` | `market(bytes32)` |
+| `0x2c3c9157` | `idToMarketParams(bytes32)` |
+| `0xf2b863ce` | `isIrmEnabled(address)` |
+| `0xb485f3b8` | `isLltvEnabled(uint256)` |
+| `0x65e4ad9e` | `isAuthorized(address,address)` |
+| `0x70ae92d2` | `nonce(address)` |
+
+Twenty-eight entries, and that is the complete external surface of the protocol.
+
+### 13.2 `MetaMorpho`
+
+| Selector | Signature |
+|---|---|
+| `0x6e553f65` | `deposit(uint256,address)` |
+| `0x94bf804d` | `mint(uint256,address)` |
+| `0xb460af94` | `withdraw(uint256,address,address)` |
+| `0xba087652` | `redeem(uint256,address,address)` |
+| `0x01e1d114` | `totalAssets()` |
+| `0x7299aa31` | `reallocate(((address,address,address,address,uint256),uint256)[])` |
+| `0x3b24c2bf` | `submitCap((address,address,address,address,uint256),uint256)` |
+| `0x6fda3868` | `acceptCap((address,address,address,address,uint256))` |
+| `0x84755b5f` | `submitMarketRemoval((address,address,address,address,uint256))` |
+| `0x2acc56f9` | `setSupplyQueue(bytes32[])` |
+| `0x41b67833` | `updateWithdrawQueue(uint256[])` |
+| `0x7224a512` | `submitTimelock(uint256)` |
+| `0x8a2c7b39` | `acceptTimelock()` |
+| `0x69fe0e2d` | `setFee(uint256)` |
+| `0xe90956cf` | `setCurator(address)` |
+| `0xb192a84a` | `setIsAllocator(address,bool)` |
+| `0x9d6b4a45` | `submitGuardian(address)` |
+| `0xa5f31d61` | `acceptGuardian()` |
+| `0xbc25cf77` | `skim(address)` |
+
+Note `deposit`, `mint`, `withdraw` and `redeem` carry the standard ERC-4626 selectors, so any
+4626-aware integration works against a MetaMorpho vault unmodified.
+
