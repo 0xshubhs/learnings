@@ -1082,7 +1082,8 @@ Emits `RateDataUpdate(reserve, optimalUsageRatio, baseVariableBorrowRate, slope1
 | `getMaxVariableBorrowRate(address)` | 112-121 | ray, `base + slope1 + slope2` |
 
 `RateEngine` calls `getInterestRateDataBps` when merging `KEEP_CURRENT` values
-(`extensions/v3-config-engine/libraries/RateEngine.sol:135-136`).
+(`extensions/v3-config-engine/libraries/RateEngine.sol:46-48`, guarded by the
+`atLeastOneKeepCurrent` test at `:40-43`).
 
 #### `_rayifyRateData` / `_bpsToRay`
 `internal pure` — `:218-228`, `:231-233`.
@@ -2698,7 +2699,7 @@ manager.revokeRole(manager.DEFAULT_ADMIN_ROLE(), address(this));
 
 `ACLManager`'s constructor reads `provider.getACLAdmin()` and grants that address
 `DEFAULT_ADMIN_ROLE`, which is why the deployer must hold the role across the `new`. The final
-`revokeRole` at `:176` is the line that makes the deployment non-custodial — **if it were
+`revokeRole` at `:175` is the line that makes the deployment non-custodial — **if it were
 omitted the deploying script would keep permanent root access to the market.**
 
 `_configureFlashloanParams` (`:180-191`) grants the deployer `RISK_ADMIN`, sets the flash-loan

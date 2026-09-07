@@ -1898,8 +1898,9 @@ circuit at `:93-96`.
   ```
   i.e. `index *= (1 + amount/totalLiquidity)`.
 - **State writes.** `reserve.liquidityIndex`.
-- **Called by.** `LendingPool.flashLoan` (`:512`) to spread the flash-loan
-  premium, and nothing else.
+- **Called by.** `LendingPool.flashLoan`
+  (`aave/v2-protocol/contracts/protocol/lendingpool/LendingPool.sol:523`) to
+  spread the flash-loan premium, and nothing else.
 - **Gotcha.** Every existing holder is diluted *upward* proportionally. Someone
   who deposits one block later gets none of it. This is also the only place in
   v2 where the liquidity index moves for a reason other than elapsed time.

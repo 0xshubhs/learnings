@@ -1243,12 +1243,24 @@ def _rates() -> uint256[N_COINS]:
             rate = cERC20(self.coins[i]).exchangeRateCurrent()
 ```
 
-Coins flagged `False` get the identity rate; flagged coins query their cToken.
-In `ren` and `sbtc` every flag is in fact `False` — the mechanism is vestigial,
-inherited from the Compound pools and left in place.
+Coins flagged `False` get the identity rate; flagged coins are asked for
+`exchangeRateCurrent()`. The actual flags are:
+
+```
+pax/StableSwapPax.vy:54    USE_LENDING = [True, True, True, False]   # ycDAI, ycUSDC, ycUSDT, PAX
+sbtc/StableSwapSBTC.vy:55  USE_LENDING = [True, False, False]        # renBTC, wBTC, sBTC
+ren/StableSwapRen.vy:55    USE_LENDING = [True, False]               # renBTC, wBTC
+```
+
+renBTC being flagged `True` is not an oversight. The file header explains it
+(`pools/ren/StableSwapRen.vy:3`): *"Pools for renBTC/wBTC. Ren can potentially
+change amount of underlying bitcoins."* renBTC was designed to be able to
+re-denominate, so the pool queries it for a rate exactly as it would a cToken.
+The test mock `testing/renERC20.vy` carries an `exchangeRateStored` field
+(`:32`) and a `set_exchange_rate` setter (`:87-88`) for precisely this.
 
 `ren` and `sbtc` share a source file almost exactly (both 743 lines, both
-0.1.0b17); `sbtc` is `ren` plus a third coin.
+0.1.0b17); `sbtc` is `ren` plus sBTC as a third, non-lending coin.
 
 ### 8.2 Second generation plain pools (0.2.4 / 0.2.8)
 
@@ -1317,7 +1329,8 @@ decimals:
 | `gusd` | 2 | `10**16` | 200 | 4 | 0 |
 | `husd` | 8 | `10**10` | 200 | 4 | 0 |
 | `dusd`, `musd`, `rsv`, `usdk` | 18 | `1` | 200 | 4 | 0 |
-| `usdn`, `usdp`, `ust` | 18 | `1` | 100 | 4 | 50% (`usdp`, `ust`) |
+| `usdn`, `ust` | 18 | `1` | 100 | 4 | 0 / 50% (`ust`) |
+| `usdp` | 18 | see note | 100 | 4 | 50% |
 | `linkusd` | 18 | `1` | **5** | **15** | 0 |
 
 `linkusd` is worth singling out: `A = 5` and a 15 bps fee, against the family's
@@ -1326,7 +1339,10 @@ expected to hold its peg tightly, so the pool behaves much more like a constant
 product and charges nearly four times as much per trade.
 
 `usdp` is the largest at 1113 lines and uses `CurveTokenV3`; `usdn` and `usdk`
-use `CurveTokenV2`.
+use `CurveTokenV2`. `usdp` is also the one pool in this family that declares no
+`PRECISION_MUL` at all — both its coins are 18 decimals, so it hard-codes
+`RATES: constant(uint256[N_COINS]) = [10**18, 10**18]`
+(`pools/usdp/StableSwapUSDP.vy:103`) and skips the multiplier array entirely.
 
 ### 8.5 Lending pools (0.2.8)
 
