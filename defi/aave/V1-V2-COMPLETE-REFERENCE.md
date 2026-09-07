@@ -2792,3 +2792,209 @@ rounding caveats below.
 `getSupplyData` is the four-tuple `_mintToTreasury` needs; `getTotalSupplyAndAvgRate`
 is the two-tuple `updateInterestRates` needs. Two accessors instead of one
 because each caller pays only for what it reads.
+
+## 2.14 `LendingPoolConfigurator` (v2)
+
+`aave/v2-protocol/contracts/protocol/lendingpool/LendingPoolConfigurator.sol`
+(487 lines). The admin surface. Proxied, `VersionedInitializable`.
+
+### Access
+
+| Modifier | Line | Requirement |
+|---|---:|---|
+| `onlyPoolAdmin` | `:36` | `addressesProvider.getPoolAdmin() == msg.sender`, else `Errors.CALLER_NOT_POOL_ADMIN` |
+| `onlyEmergencyAdmin` | `:41` | `addressesProvider.getEmergencyAdmin() == msg.sender`, else `Errors.LPC_CALLER_NOT_EMERGENCY_ADMIN` |
+
+Two roles, not one: the emergency admin can *only* pause, so the pause key can
+be held by a faster-moving multisig than the parameter key.
+
+### Listing
+
+**`batchInitReserve(InitReserveInput[] calldata input) external onlyPoolAdmin` (`:63-68`)**
+loops over `_initReserve`.
+
+**`_initReserve(pool, input) internal` (`:70-145`)** does, per reserve:
+
+1. `_initTokenWithProxy(input.aTokenImpl, encoded initialize params)` — deploys
+   an `InitializableImmutableAdminUpgradeabilityProxy` and calls `initialize`.
+2. The same for the stable and variable debt tokens.
+3. `pool.initReserve(asset, aTokenProxy, stableDebtProxy, variableDebtProxy,
+   input.interestRateStrategyAddress)`.
+4. Reads the reserve configuration into memory, calls `setDecimals`,
+   `setActive(true)`, `setFrozen(false)`, then `pool.setConfiguration(asset,
+   currentConfig.data)`.
+5. Emits `ReserveInitialized(asset, aToken, stableDebtToken, variableDebtToken,
+   interestRateStrategyAddress)`.
+
+- **Gotcha — three proxies per reserve.** Listing an asset deploys three
+  contracts. That is why `batchInitReserve` exists at all: one transaction per
+  asset would be prohibitively expensive for a market launch.
+- **Gotcha — step 4 is the memory/storage dance** described in
+  [2.4](#24-reserveconfiguration--the-bitmap). The setters take `memory`, so the
+  whole word is read, mutated locally, and written back through
+  `pool.setConfiguration`.
+
+### Upgrades
+
+`updateAToken(UpdateATokenInput)` (`:147`), `updateStableDebtToken(UpdateDebtTokenInput)`
+(`:178`) and `updateVariableDebtToken(UpdateDebtTokenInput)` (`:212`) each call
+`_upgradeTokenImplementation` (`:466`), which invokes `upgradeToAndCall` on the
+proxy. Events: `ATokenUpgraded`, `StableDebtTokenUpgraded`,
+`VariableDebtTokenUpgraded`.
+
+### Risk parameters
+
+| Function | Line | Effect | Event |
+|---|---:|---|---|
+| `enableBorrowingOnReserve(asset, stableBorrowRateEnabled)` | `:251` | Sets borrowing enabled and optionally stable | `BorrowingEnabledOnReserve` |
+| `disableBorrowingOnReserve(asset)` | `:269` | | `BorrowingDisabledOnReserve` |
+| `configureReserveAsCollateral(asset, ltv, liquidationThreshold, liquidationBonus)` | `:287` | Sets all three at once | `CollateralConfigurationChanged` |
+| `enableReserveStableRate(asset)` | `:335` | | `StableRateEnabledOnReserve` |
+| `disableReserveStableRate(asset)` | `:349` | | `StableRateDisabledOnReserve` |
+| `activateReserve(asset)` | `:363` | | `ReserveActivated` |
+| `deactivateReserve(asset)` | `:377` | Requires `_checkNoLiquidity` | `ReserveDeactivated` |
+| `freezeReserve(asset)` | `:394` | | `ReserveFrozen` |
+| `unfreezeReserve(asset)` | `:408` | | `ReserveUnfrozen` |
+| `setReserveFactor(asset, reserveFactor)` | `:423` | | `ReserveFactorChanged` |
+| `setReserveInterestRateStrategyAddress(asset, strategy)` | `:438` | | `ReserveInterestRateStrategyChanged` |
+| `setPoolPause(bool)` | `:450` | `onlyEmergencyAdmin` | via `LendingPool` |
+
+**`configureReserveAsCollateral`** enforces three invariants beyond the bitmap
+bounds: `ltv <= liquidationThreshold` (`LPC_INVALID_CONFIGURATION`), a non-zero
+threshold requires `liquidationBonus > PERCENTAGE_FACTOR`, and
+`threshold.percentMul(bonus) <= PERCENTAGE_FACTOR` — that last one guarantees a
+liquidation can never seize more value than the position holds. Setting the
+threshold to zero requires the liquidation bonus to be zero as well.
+
+**`_checkNoLiquidity(asset)` (`:477-486`)** requires the aToken's underlying
+balance to be zero *and* the reserve's liquidity rate to be zero, else
+`LPC_RESERVE_LIQUIDITY_NOT_0`. Only `deactivateReserve` uses it.
+
+- **Gotcha — freeze versus deactivate.** Freezing blocks deposits and new
+  borrows while allowing repay, withdraw and liquidate. Deactivating blocks
+  everything and is only possible on an empty reserve. Freeze is the tool for a
+  live incident; deactivate is for delisting.
+- **Gotcha.** There is no `dropReserve` in v2, so a deactivated reserve keeps its
+  `id` and its two bits in every user's configuration word forever.
+
+## 2.15 Configuration and upgradeability
+
+### `LendingPoolAddressesProvider` (`protocol/configuration/LendingPoolAddressesProvider.sol`, 215 lines)
+
+`Ownable`. A `mapping(bytes32 => address) _addresses` plus a market id string.
+Owner in production is the Aave governance timelock.
+
+| Function | Line | Notes |
+|---|---:|---|
+| `getMarketId()` / `setMarketId(string)` | `:39` / `:47` | Human-readable market label |
+| `setAddress(bytes32 id, address)` | `:75` | **Hard replacement**, no proxy |
+| `setAddressAsProxy(bytes32 id, address impl)` | `:60` | Deploys or upgrades a proxy for that id |
+| `getAddress(bytes32 id)` | `:84` | Raw lookup |
+| `getLendingPool()` / `setLendingPoolImpl(address)` | `:92` / `:101` | Proxied |
+| `getLendingPoolConfigurator()` / `setLendingPoolConfiguratorImpl(address)` | `:110` / `:119` | Proxied |
+| `getLendingPoolCollateralManager()` / `setLendingPoolCollateralManager(address)` | `:131` / `:139` | **Not** proxied — it is a delegatecall target |
+| `getPoolAdmin()` / `setPoolAdmin(address)` | `:149` / `:153` | Plain address |
+| `getEmergencyAdmin()` / `setEmergencyAdmin(address)` | `:158` / `:162` | Plain address |
+| `getPriceOracle()` / `setPriceOracle(address)` | `:167` / `:171` | Plain address |
+| `getLendingRateOracle()` / `setLendingRateOracle(address)` | `:176` / `:180` | Plain address |
+
+**`_updateImpl(bytes32 id, address newAddress) internal` (`:194-209`)** is the
+core: if no proxy exists for `id`, deploy an
+`InitializableImmutableAdminUpgradeabilityProxy` with the provider as admin and
+call `initialize(address(this))` through `initialize(logic, data)`; otherwise
+call `upgradeToAndCall`. Either way the new implementation's `initialize` runs
+with the provider as argument.
+
+- **Gotcha — the two setter families.** `setAddress` replaces an address
+  outright; `setAddressAsProxy` upgrades behind a proxy. Using the wrong one for
+  the pool would strand every user position, which is why `getLendingPool` has a
+  dedicated typed setter rather than relying on the generic path.
+- **Gotcha.** The collateral manager is deliberately *not* proxied: it is only
+  ever reached by `delegatecall`, so a proxy would add a hop and, worse, a
+  second storage layout to keep aligned.
+
+### `LendingPoolAddressesProviderRegistry` (`:89 lines`)
+
+A registry of markets. `registerAddressesProvider(provider, id)`,
+`unregisterAddressesProvider(provider)`, `getAddressesProvidersList()`,
+`getAddressesProviderIdByAddress(provider)`. Purely informational — nothing in
+the protocol reads it at runtime.
+
+### `VersionedInitializable` (`protocol/libraries/aave-upgradeability/VersionedInitializable.sol`, 77 lines)
+
+`lastInitializedRevision` plus the `initializer` modifier, which requires
+`isConstructor() || revision > lastInitializedRevision`. Each implementation
+overrides `getRevision()`. Upgrading to a *lower or equal* revision silently
+skips re-initialization rather than reverting, which is what allows
+`initialize` to be safely present on every version.
+
+### The proxy set
+
+`BaseImmutableAdminUpgradeabilityProxy` (80 lines) stores the admin as an
+`immutable` in bytecode instead of a storage slot, saving an SLOAD on every
+delegatecall. `InitializableImmutableAdminUpgradeabilityProxy` (23 lines) adds
+`initialize(logic, data)`. Both refuse calls from the admin address to anything
+but the admin functions — the standard transparent-proxy selector-clash defence.
+
+## 2.16 `misc/` — oracle, gateway, data providers
+
+### `AaveOracle` (`misc/AaveOracle.sol`, 127 lines)
+
+`Ownable`. `mapping(address => IChainlinkAggregator) private assetsSources`, a
+`_fallbackOracle`, and an immutable `BASE_CURRENCY` / `BASE_CURRENCY_UNIT`.
+
+| Function | Behaviour |
+|---|---|
+| `setAssetSources(assets, sources)` | Owner only; emits `AssetSourceUpdated` per asset |
+| `setFallbackOracle(fallbackOracle)` | Owner only; emits `FallbackOracleUpdated` |
+| `getAssetPrice(asset)` | Returns `BASE_CURRENCY_UNIT` if `asset == BASE_CURRENCY`; else `source.latestAnswer()`; if the source is unset **or the answer is `<= 0`**, falls back to `_fallbackOracle.getAssetPrice(asset)` |
+| `getAssetsPrices(assets)` | Batch |
+| `getSourceOfAsset(asset)` / `getFallbackOracle()` | Views |
+
+- **Gotcha — `latestAnswer()` only.** No `latestRoundData`, so there is **no
+  staleness or round-completeness check**. A Chainlink feed that stops updating
+  keeps returning its last value indefinitely, and the protocol cannot tell.
+  This is the single largest oracle weakness in v2 and the reason integrators
+  were told to monitor feeds externally. v3 added the price oracle sentinel for
+  L2 sequencer downtime but still reads `latestAnswer` for the price itself.
+- **Gotcha.** A zero or negative answer routes to the fallback rather than
+  reverting, so a misconfigured fallback silently becomes the price source.
+
+### `WETHGateway` (`misc/WETHGateway.sol`, 189 lines)
+
+Wraps ETH so users can interact with a WETH reserve holding native currency.
+
+| Function | Behaviour |
+|---|---|
+| `depositETH(pool, onBehalfOf, referralCode)` | `payable`; wraps `msg.value`, approves, `pool.deposit` |
+| `withdrawETH(pool, amount, to)` | Pulls aWETH from the user, `pool.withdraw`, unwraps, sends ETH |
+| `repayETH(pool, amount, rateMode, onBehalfOf)` | `payable`; wraps and repays, refunding any excess |
+| `borrowETH(pool, amount, interestRateMode, referralCode)` | Requires prior `approveDelegation` on the WETH debt token, then borrows and unwraps |
+| `emergencyTokenTransfer` / `emergencyEtherTransfer` | Owner-only rescue |
+| `receive()` | Accepts ETH only from the WETH contract |
+
+- **Gotcha — `borrowETH` needs credit delegation.** The gateway borrows *on
+  behalf of itself* against the user's collateral, so the user must first call
+  `approveDelegation(gateway, amount)` on the variable or stable WETH debt
+  token. This trips up nearly every first integration.
+- **Gotcha — `withdrawETH` requires an aWETH approval** to the gateway, because
+  the gateway must pull the aTokens before burning them.
+
+### Data providers
+
+**`AaveProtocolDataProvider`** (180 lines) is the canonical read API:
+`getAllReservesTokens()`, `getAllATokens()`, `getReserveConfigurationData(asset)`,
+`getReserveData(asset)`, `getUserReserveData(asset, user)`,
+`getReserveTokensAddresses(asset)`. This is what integrations should use rather
+than reading `LendingPool.getReserveData` and decoding the bitmap themselves.
+
+**`UiPoolDataProvider`** (399), **`UiPoolDataProviderV2`** (224) and
+**`UiPoolDataProviderV2V3`** (241) aggregate a whole market plus one user into a
+single call for front-ends. **`UiIncentiveDataProviderV2`** (287) and
+**`UiIncentiveDataProviderV2V3`** (397) do the same for reward emissions.
+**`WalletBalanceProvider`** (111) batches plain token balances.
+
+- **Gotcha.** The three `UiPoolDataProvider` variants exist because the returned
+  struct is part of the ABI and changing it would break deployed front-ends. The
+  `V2V3` suffix means "works against both a v2 and a v3 market", which is how
+  the Aave interface served both during the migration.

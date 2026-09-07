@@ -545,3 +545,332 @@ fee actually charged, returned so `remove_liquidity_one_coin` can split off the
 admin share.
 
 ---
+
+## 3. `pool-templates/base` — the plain template
+
+`pool-templates/base/SwapTemplateBase.vy`, 891 lines, `@version ^0.2.8`.
+Header: *"Minimal pool implementation with no lending"* (`:6`).
+
+This is the reference implementation. Coins are ordinary ERC20s held directly by
+the pool, and their decimal scaling is baked in at compile time.
+
+### 3.1 Compile-time constants
+
+| Constant | Line | Value | Meaning |
+|---|---|---|---|
+| `N_COINS` | 81 | `___N_COINS___` | Substituted at build time |
+| `PRECISION_MUL` | 82 | `___PRECISION_MUL___` | `10**(18-decimals)` per coin |
+| `RATES` | 83 | `___RATES___` | `PRECISION_MUL[i] * 10**18` |
+| `FEE_DENOMINATOR` | 86 | `10**10` | Fees are parts per 1e10 |
+| `PRECISION` | 87 | `10**18` | Normalised unit |
+| `MAX_ADMIN_FEE` | 89 | `10 * 10**9` | 100% of the swap fee |
+| `MAX_FEE` | 90 | `5 * 10**9` | 50% — an absurd ceiling, never approached |
+| `MAX_A` | 91 | `10**6` | |
+| `MAX_A_CHANGE` | 92 | `10` | One ramp may change `A` by at most 10× |
+| `ADMIN_ACTIONS_DELAY` | 94 | `3 * 86400` | 3-day timelock on fee/owner changes |
+| `MIN_RAMP_TIME` | 95 | `86400` | A ramp must span at least a day |
+| `A_PRECISION` | 105 | `100` | `A` stored ×100 |
+| `KILL_DEADLINE_DT` | 119 | `2 * 30 * 86400` | `kill_me` only works for ~60 days after deploy |
+
+### 3.2 Storage
+
+| Slot order | Variable | Line | Visibility | Notes |
+|---|---|---|---|---|
+| 1 | `coins: address[N_COINS]` | 97 | public | |
+| 2 | `balances: uint256[N_COINS]` | 98 | public | Pool's *accounted* balance, excludes admin fees |
+| 3 | `fee: uint256` | 99 | public | ×1e10 |
+| 4 | `admin_fee: uint256` | 100 | public | ×1e10, share of `fee` taken by the DAO |
+| 5 | `owner: address` | 102 | public | |
+| 6 | `lp_token: address` | 103 | public | |
+| 7 | `initial_A` / `future_A` | 106-107 | public | ×100 |
+| 8 | `initial_A_time` / `future_A_time` | 108-109 | public | |
+| 9 | `admin_actions_deadline` | 111 | public | |
+| 10 | `transfer_ownership_deadline` | 112 | public | |
+| 11 | `future_fee` / `future_admin_fee` | 113-114 | public | |
+| 12 | `future_owner` | 115 | public | |
+| 13 | `is_killed: bool` | 117 | private | |
+| 14 | `kill_deadline: uint256` | 118 | private | |
+
+The critical invariant: `self.balances[i]` is **not** the token balance. The
+difference `ERC20(coins[i]).balanceOf(self) - balances[i]` is the accumulated
+admin fee, which is exactly how `admin_balances` (§3.21) and
+`withdraw_admin_fees` (§3.22) compute their figures. Any token donated directly
+to the pool is therefore indistinguishable from an admin fee and is claimable by
+the owner.
+
+### 3.3 `__init__`
+
+`:123-150`, `@external`.
+
+```
+__init__(_owner: address, _coins: address[N_COINS], _pool_token: address,
+         _A: uint256, _fee: uint256, _admin_fee: uint256)
+```
+
+- Checks: `_coins[i] != ZERO_ADDRESS` for every `i` (`:140-141`).
+- Writes: `coins`, `initial_A = future_A = _A * A_PRECISION`, `fee`,
+  `admin_fee`, `owner`, `kill_deadline = block.timestamp + KILL_DEADLINE_DT`,
+  `lp_token`.
+- Note `_A` is documented as "Amplification coefficient multiplied by n * (n - 1)"
+  (`:136`), a legacy of the pre-`A_PRECISION` parameterisation. In practice the
+  deployment scripts pass the plain `A` from `pooldata.json`.
+- No event. There is no `LP token` sanity check either — the token's `minter`
+  must be set to the pool separately, and getting that wrong bricks deposits.
+
+### 3.4 `_A`, `A`, `A_precise`
+
+Covered in §2.6. `_A` at `:154-171` (`@view @internal`), `A` at `:176-177`,
+`A_precise` at `:182-183` (both `@view @external`, no access control).
+
+### 3.5 `_xp`, `_xp_mem`
+
+Covered in §2.5. `:188-193` and `:197-202`.
+
+### 3.6 `_get_D`, `_get_D_mem`, `get_virtual_price`, `calc_token_amount`
+
+`_get_D` (`:206-243`) and the math are in §2.2. `_get_D_mem` (`:246-247`) is a
+one-liner: `return self._get_D(self._xp_mem(_balances), _amp)`.
+
+`get_virtual_price` (`:252-263`) is in §2.7.
+
+**`calc_token_amount(_amounts, _is_deposit) -> uint256`**, `:267-291`,
+`@view @external`.
+
+- Purpose: estimate LP tokens minted or burned. The docstring is explicit
+  (`:270-271`): *"This calculation accounts for slippage, but not fees. Needed to
+  prevent front-running, not for precise calculations!"*
+- Computes `D0` from current balances, applies `_amounts` in the given direction,
+  computes `D1`, and returns `diff * token_supply / D0`.
+- Because it ignores fees it **over-estimates** deposits and **under-estimates**
+  withdrawal cost. Never use it as a settlement figure; use it to derive a
+  `_min_mint_amount` with a margin.
+- Reverts by underflow if a withdrawal exceeds a balance.
+
+### 3.7 `add_liquidity`
+
+`:296-372`, `@external @nonreentrant('lock')`.
+
+```
+add_liquidity(_amounts: uint256[N_COINS], _min_mint_amount: uint256) -> uint256
+```
+
+Flow:
+
+1. `assert not self.is_killed` (`:303`, `# dev: is killed`).
+2. `D0` from current balances (`:309`).
+3. Build `new_balances`. If `token_supply == 0`, every `_amounts[i]` must be
+   non-zero (`:316`, `# dev: initial deposit requires all coins`) — the first
+   deposit sets the pool's price, so it must define all of it.
+4. `D1` from new balances; `assert D1 > D0` (`:322`).
+5. **If not the first deposit**: charge the imbalance fee per coin (§2.8),
+   recompute `D2` from fee-reduced balances (`:344`), and mint
+   `token_supply * (D2 - D0) / D0` (`:345`).
+   **If first deposit**: store balances directly and mint `mint_amount = D1`
+   (`:347-348`, comment *"Take the dust if there was any"*). This is what pins the
+   initial virtual price at 1e18.
+6. `assert mint_amount >= _min_mint_amount, "Slippage screwed you"` (`:349`).
+7. Pull each non-zero `_amounts[i]` with a hand-rolled safe `transferFrom`
+   (`:352-368`): a `raw_call` of `transferFrom(address,address,uint256)` whose
+   return data is only checked if non-empty — the standard accommodation for
+   USDT and other tokens that return nothing.
+8. `CurveToken(lp_token).mint(msg.sender, mint_amount)` (`:370`).
+9. `log AddLiquidity(msg.sender, _amounts, fees, D1, token_supply + mint_amount)`.
+
+**Gotcha.** Tokens are pulled *after* balances are written and *after* the mint
+amount is decided. The `@nonreentrant('lock')` guard is what makes that safe; a
+fee-on-transfer token would still break the accounting, since the pool credits
+`_amounts[i]` rather than the delta actually received.
+
+### 3.8 `_get_y` and `get_dy`
+
+`_get_y` (`:379-430`) is derived in §2.3.
+
+**`get_dy(i, j, _dx) -> uint256`**, `:434-442`, `@view @external`.
+
+```python
+xp: uint256[N_COINS] = self._xp()
+rates: uint256[N_COINS] = RATES
+x: uint256 = xp[i] + (_dx * rates[i] / PRECISION)
+y: uint256 = self._get_y(i, j, x, xp)
+dy: uint256 = xp[j] - y - 1
+fee: uint256 = self.fee * dy / FEE_DENOMINATOR
+return (dy - fee) * PRECISION / rates[j]
+```
+
+Normalise, solve, subtract the defensive wei, take the flat fee, denormalise.
+Note the fee here is the **flat** `self.fee`, not the imbalance multiplier — swaps
+pay the plain rate.
+
+### 3.9 `exchange`
+
+`:447-508`, `@external @nonreentrant('lock')`.
+
+```
+exchange(i: int128, j: int128, _dx: uint256, _min_dy: uint256) -> uint256
+```
+
+1. `assert not self.is_killed` (`:457`).
+2. Normalise balances, compute `x`, solve `y` via `_get_y` (`:460-464`).
+3. `dy = xp[j] - y - 1`; `dy_fee = dy * self.fee / FEE_DENOMINATOR` (`:466-467`).
+4. Denormalise: `dy = (dy - dy_fee) * PRECISION / rates[j]`; then
+   `assert dy >= _min_dy, "Exchange resulted in fewer coins than expected"` (`:471`).
+5. `dy_admin_fee = dy_fee * self.admin_fee / FEE_DENOMINATOR`, denormalised
+   (`:473-474`).
+6. Balance updates (`:477-479`):
+   ```python
+   self.balances[i] = old_balances[i] + _dx
+   self.balances[j] = old_balances[j] - dy - dy_admin_fee
+   ```
+   The comment at `:478` — *"When rounding errors happen, we undercharge admin
+   fee in favor of LP"* — records the deliberate bias.
+7. Safe `transferFrom` of `_dx` in (`:481-492`), safe `transfer` of `dy` out
+   (`:494-505`).
+8. `log TokenExchange(msg.sender, i, _dx, j, dy)`.
+
+The LP's share of the fee is never moved anywhere: `balances[j]` is reduced by
+`dy + dy_admin_fee` while the contract actually only paid out `dy`, so the LP
+portion silently remains as un-accounted balance and lifts `D`.
+
+### 3.10 `remove_liquidity`
+
+`:513-547`, `@external @nonreentrant('lock')`.
+
+```
+remove_liquidity(_amount, _min_amounts) -> uint256[N_COINS]
+```
+
+The only mutating function with **no** `is_killed` check — by design, LPs must
+always be able to exit a killed pool. It also never calls `_get_D` or `_get_y`,
+so it works even when the invariant solver would fail.
+
+Per coin (`:525-541`): `value = old_balance * _amount / total_supply`, assert
+`value >= _min_amounts[i]` with `"Withdrawal resulted in fewer coins than
+expected"`, decrement the stored balance, safe-transfer out. Then
+`burnFrom(msg.sender, _amount)` (`:543`, `# dev: insufficient funds`) and
+`log RemoveLiquidity(...)` with an all-zero fees array.
+
+**Ordering gotcha.** Tokens go out *before* the LP tokens are burned. Combined
+with a coin that yields control on transfer, that is the read-only reentrancy
+shape described in §17.1 — though in this plain template both legs are ERC20
+transfers, so the risk only materialises with a callback-bearing token.
+
+### 3.11 `remove_liquidity_imbalance`
+
+`:552-609`, `@external @nonreentrant('lock')`.
+
+```
+remove_liquidity_imbalance(_amounts, _max_burn_amount) -> uint256
+```
+
+1. `assert not self.is_killed` (`:559`).
+2. `D0`, subtract `_amounts`, `D1` (`:562-567`).
+3. Imbalance fee per coin exactly as in `add_liquidity` (§2.8), giving `D2`
+   (`:569-584`).
+4. `token_amount = (D0 - D2) * token_supply / D0` (`:587`);
+   `assert token_amount != 0` (`:588`, `# dev: zero tokens burned`);
+   then `token_amount += 1` with the comment *"In case of rounding errors - make
+   it unfavorable for the 'attacker'"* (`:589`);
+   `assert token_amount <= _max_burn_amount, "Slippage screwed you"` (`:590`).
+5. Burn first (`:592`), then transfer each non-zero `_amounts[i]` out
+   (`:593-606`). Note this is the opposite order from `remove_liquidity`.
+6. `log RemoveLiquidityImbalance(...)`.
+
+### 3.12 `_get_y_D`, `_calc_withdraw_one_coin`, `calc_withdraw_one_coin`
+
+`_get_y_D` (`:614-656`) is §2.4; `_calc_withdraw_one_coin` (`:661-687`) is §2.9.
+
+`calc_withdraw_one_coin(_token_amount, i)` (`:692-699`, `@view @external`) simply
+returns element 0 of the internal triple.
+
+### 3.13 `remove_liquidity_one_coin`
+
+`:704-738`, `@external @nonreentrant('lock')`.
+
+1. `assert not self.is_killed` (`:712`).
+2. `dy, dy_fee, total_supply = self._calc_withdraw_one_coin(_token_amount, i)`
+   (`:717`).
+3. `assert dy >= _min_amount, "Not enough coins removed"` (`:718`).
+4. `self.balances[i] -= (dy + dy_fee * self.admin_fee / FEE_DENOMINATOR)`
+   (`:720`) — the admin's slice of the withdrawal fee is removed from accounted
+   balances so it becomes claimable; the LP slice stays and lifts `D`.
+5. `burnFrom` (`:721`), safe-transfer `dy` out (`:723-734`),
+   `log RemoveLiquidityOne(...)`.
+
+### 3.14 Admin: fee and ownership timelocks
+
+All six are `assert msg.sender == self.owner  # dev: only owner`.
+
+| Function | Lines | Behaviour |
+|---|---|---|
+| `commit_new_fee(_new_fee, _new_admin_fee)` | 779-791 | Requires `admin_actions_deadline == 0` (`# dev: active action`), `_new_fee <= MAX_FEE`, `_new_admin_fee <= MAX_ADMIN_FEE`. Sets a deadline 3 days out. Logs `CommitNewFee`. |
+| `apply_new_fee()` | 794-806 | Requires `block.timestamp >= admin_actions_deadline` and `!= 0`. Applies and clears. Logs `NewFee`. |
+| `revert_new_parameters()` | 809-812 | Clears the deadline. No event. |
+| `commit_transfer_ownership(_owner)` | 816-825 | Same 3-day pattern. Logs `CommitNewAdmin`. |
+| `apply_transfer_ownership()` | 828-838 | Applies. Logs `NewAdmin`. |
+| `revert_transfer_ownership()` | 841-844 | Clears. No event. |
+
+The 3-day delay is the DAO's commitment device: fee and ownership changes are
+visible on-chain before they bite, so LPs can exit.
+
+### 3.15 `ramp_A` / `stop_ramp_A`
+
+**`ramp_A(_future_A, _future_time)`**, `:742-761`.
+
+Checks, in order (`:743-753`):
+
+```python
+assert msg.sender == self.owner                                  # dev: only owner
+assert block.timestamp >= self.initial_A_time + MIN_RAMP_TIME
+assert _future_time >= block.timestamp + MIN_RAMP_TIME           # dev: insufficient time
+assert _future_A > 0 and _future_A < MAX_A
+if future_A_p < initial_A:
+    assert future_A_p * MAX_A_CHANGE >= initial_A
+else:
+    assert future_A_p <= initial_A * MAX_A_CHANGE
+```
+
+So: at least one day since the last ramp started, at least one day of duration,
+`0 < A < 1e6`, and at most a 10× change in either direction. Writes
+`initial_A = self._A()` (the *current* interpolated value, not the old target),
+`future_A`, and both timestamps. Logs `RampA`.
+
+**`stop_ramp_A()`**, `:765-775`. Freezes `A` at its current interpolated value by
+setting `initial_A = future_A = self._A()` and both times to now. The comment at
+`:773` explains why that works: *"now (block.timestamp < t1) is always False, so
+we return saved A"*. Logs `StopRampA`. This is the emergency brake.
+
+### 3.16 `admin_balances`, `withdraw_admin_fees`, `donate_admin_fees`
+
+**`admin_balances(i) -> uint256`**, `:849-850`, `@view @external`, no access
+control:
+
+```python
+return ERC20(self.coins[i]).balanceOf(self) - self.balances[i]
+```
+
+**`withdraw_admin_fees()`**, `:854-871`, owner only. Loops coins, computes the
+same difference, and safe-transfers any positive amount to `msg.sender`. Note it
+sends to the *caller* (the owner), not to a configured receiver — the DAO's
+`PoolProxy` is the owner in production and forwards onward.
+
+**`donate_admin_fees()`**, `:875-878`, owner only:
+
+```python
+for i in range(N_COINS):
+    self.balances[i] = ERC20(self.coins[i]).balanceOf(self)
+```
+
+Absorbs the outstanding admin fees into accounted balances, gifting them to LPs.
+This is also the function that "adopts" any tokens donated to the pool.
+
+### 3.17 `kill_me` / `unkill_me`
+
+`:882-886` and `:889-891`, owner only. `kill_me` additionally requires
+`self.kill_deadline > block.timestamp` (`# dev: deadline has passed`), so the
+kill switch expires roughly 60 days after deployment and the pool becomes
+permanently unkillable. `unkill_me` has no deadline.
+
+While killed, `add_liquidity`, `exchange`, `remove_liquidity_imbalance` and
+`remove_liquidity_one_coin` all revert; only `remove_liquidity` works.
+
+---

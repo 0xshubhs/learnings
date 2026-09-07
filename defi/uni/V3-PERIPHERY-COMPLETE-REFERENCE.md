@@ -1,7 +1,7 @@
 # Uniswap V3 Periphery — Complete Reference
 
 Every contract, every library, every function in `uni/v3-periphery/contracts`.
-77 Solidity files, all enumerated. Line numbers verified with `grep -n` against
+76 Solidity files, all enumerated. Line numbers verified with `grep -n` against
 this tree; open the files beside this document.
 
 The core (Pool, Factory, tick/price math) lives in a sibling document,

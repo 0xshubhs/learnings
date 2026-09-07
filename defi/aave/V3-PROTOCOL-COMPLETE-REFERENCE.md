@@ -3466,9 +3466,14 @@ subgraph can reconstruct the full rate history from it alone.
 scaled-balance model legible. `scaledBalanceOf` (`:50`),
 `getScaledUserBalanceAndSupply` (`:58`), `scaledTotalSupply` (`:64`) and
 `getPreviousIndex` (`:71`), plus the `Mint` (`:18`) and `Burn` (`:35`) events.
-Note the comment at `:28`: a burn may emit a `Mint` event when the amount burned
-is smaller than the interest accrued since the last interaction — the balance
-went *up* on a "burn". Any indexer that assumes burn-means-decrease is wrong.
+The `Burn` NatSpec at `:28` also notes that `target` defaults to the zero address
+when no underlying is transferred.
+
+The indexing trap lives one file over: **a burn transaction can emit a `Mint`
+event** when the amount being burned is smaller than the interest accrued since
+the user's last interaction — the balance went *up* on a "burn". It is spelled
+out at `IAToken.sol:42` and `IVariableDebtToken.sol:36`. Any indexer that
+assumes burn-means-decrease is wrong.
 
 **`IPriceOracle.sol` vs `IPriceOracleGetter.sol`.** These look redundant and are
 not. `IPriceOracleGetter` (`:9-30`) is the **production** read interface —
@@ -3704,9 +3709,10 @@ Token-level events come from `IScaledBalanceToken.sol`: `Mint` (`:18`) and
 `Burn` (`:35`), plus `BalanceTransfer` (`IAToken.sol:21`) and
 `BorrowAllowanceDelegated` (`ICreditDelegationToken.sol:17`).
 
-**The indexing trap, restated:** `IScaledBalanceToken.sol:28` warns that a burn
-can emit `Mint` when accrued interest exceeds the amount burned. Index on the
-`value` and `balanceIncrease` fields, never on the event name alone.
+**The indexing trap, restated:** `IAToken.sol:42` and
+`IVariableDebtToken.sol:36` warn that a burn can emit `Mint` when accrued
+interest exceeds the amount burned. Index on the amount fields, never on the
+event name alone.
 
 ### 21.6 The complete `Errors.sol` table
 
