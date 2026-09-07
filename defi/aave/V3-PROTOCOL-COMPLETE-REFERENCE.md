@@ -115,9 +115,10 @@ thing to understand about reading Aave storage.
 
 ## 1. File inventory
 
-37 Solidity files under `src/contracts/protocol/`, 22 under
-`src/contracts/interfaces/`. Every one is covered below; the section column says
-where.
+38 Solidity files under `src/contracts/protocol/`, 22 under
+`src/contracts/interfaces/` — 60 in total. Every one is covered below; the
+section column says where. (Verified: a script checked that all 60 filenames
+appear in this document.)
 
 ### `protocol/pool/` (4 files)
 

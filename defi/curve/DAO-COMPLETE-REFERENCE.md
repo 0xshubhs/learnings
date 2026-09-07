@@ -2792,3 +2792,258 @@ It records `asset -> owner -> amount` so the wrapper's `depositedBalanceOf`
 logic can be exercised.
 
 ---
+
+## 15. The flywheel, end to end
+
+Every arrow is an actual function call, labelled with the contract that makes
+it. Read it as four loops sharing one token.
+
+```
+                                  ERC20CRV.vy
+                          (inflation: rate cut by 2^(1/4)/yr)
+                                       |
+                                       | mint(to, value)   [only from `minter`]
+                                       v
+  +----------------------------->  Minter.vy  <----------------------------+
+  |                                    |                                   |
+  |         mint(gauge)                | 1. gauge.user_checkpoint(msg.sender)
+  |         mint_many / mint_for       | 2. gauge.integrate_fraction(user)
+  |                                    | 3. transfer(user, total - minted[user][gauge])
+  |                                    v
+  |                            LiquidityGauge*.vy
+  |                        (deposit / withdraw LP tokens)
+  |                                    |
+  |   _checkpoint(addr):               |  reads
+  |     rate    <-- ERC20CRV.rate()    +--> GaugeController.gauge_relative_weight(self, week)
+  |     weight  <-- GaugeController         GaugeController.checkpoint_gauge(self)
+  |     integrate_inv_supply += rate*w*dt / working_supply
+  |     integrate_fraction[u] += working_balance[u] * dI
+  |                                    |
+  |   _update_liquidity_limit(u):      |  reads
+  |     lim = min( 0.4*b ,             +--> VotingEscrow.balanceOf(u)
+  |                0.4*b + 0.6*S*ve_u/ve_S )   VotingEscrow.totalSupply()
+  |                                    |
+  |                                    v
+  |                              LP earns CRV
+  |                                    |
+  |                                    | user locks CRV, up to 4 years
+  |                                    v
+  |                            VotingEscrow.vy
+  |                      create_lock / increase_amount /
+  |                      increase_unlock_time / withdraw
+  |                       (bias-slope linear decay, non-transferable)
+  |                                    |
+  |            +-----------------------+----------------------+
+  |            |                       |                      |
+  |     boost (above)          vote_for_gauge_weights   claim fees (below)
+  |            |                       |                      |
+  |            |                       v                      |
+  |            |             GaugeController.vy               |
+  |            |    gauge types, weights, WEEK-bucketed        |
+  |            |    slope_changes; gauge_relative_weight       |
+  |            |                       |                      |
+  +------------+-----------------------+                      |
+                                                              |
+   pool trading fees (50% of each swap's fee)                  |
+            |                                                 |
+            | PoolProxy.withdraw_admin_fees(pool)              |
+            v                                                 |
+       PoolProxy.vy  --burn(coin)-->  burners/*.vy             |
+       (3 admins, burner registry)      aToken->USDC etc.      |
+            |                                |                |
+            |                                v                |
+            |                      UnderlyingBurner.execute()  |
+            |                      add_liquidity(3pool) -> 3CRV|
+            |                                |                |
+            |                                v                |
+            +------------------------> FeeDistributor.vy <-----+
+                                       burn(3CRV)
+                                       _checkpoint_token()
+                                       _checkpoint_total_supply()
+                                       claim(addr):
+                                         tokens_per_week[w] * ve(u,w) / ve_supply[w]
+
+  sidechains
+  ----------
+  RootGauge{Xdai,Polygon,Harmony,Anyswap,Arbitrum}.checkpoint()
+      -> Minter.mint(self) -> bridge   ==>   ChildChainStreamer.notify_reward_amount
+                                              -> RewardsOnlyGauge -> sidechain LPs
+  PoolProxySidechain.bridge(coin) -> {Anyswap,Polygon}Bridger
+                                     -> RootForwarder.transfer -> PoolProxy
+```
+
+The four loops:
+
+1. **Emission.** `ERC20CRV` inflates on a fixed schedule; `GaugeController`
+   splits each week's emission by vote; gauges integrate it per-LP; `Minter`
+   pays it out.
+2. **Boost.** Locking CRV in `VotingEscrow` raises `working_balance` in every
+   gauge you are in, up to 2.5×. This is the loop that makes CRV worth holding
+   rather than selling.
+3. **Governance.** The same veCRV votes gauge weights, deciding where next
+   week's emission goes.
+4. **Fees.** Half of every swap fee is routed by `PoolProxy` through the burner
+   chain into 3CRV, and `FeeDistributor` pays it to the same veCRV holders.
+
+---
+
+## 16. Use-case index
+
+Each row is the exact entry point plus the internal chain it triggers.
+
+### Lock CRV for veCRV
+```
+CRV.approve(VotingEscrow, amount)
+VotingEscrow.create_lock(_value, _unlock_time)            VotingEscrow.vy:459
+  |-- assert_not_contract(msg.sender)                     :305 / :311
+  |-- unlock_time = _unlock_time / WEEK * WEEK            :471
+  |-- assert unlock_time > block.timestamp                :475
+  |-- assert unlock_time <= block.timestamp + MAXTIME     :476
+  |-- _deposit_for(msg.sender, _value, unlock_time, locked, CREATE_LOCK_TYPE)   :351
+       |-- supply += _value; locked.amount += _value
+       |-- _checkpoint(addr, old_locked, new_locked)      :234
+       |     |-- slope = amount / MAXTIME; bias = slope * (end - now)
+       |     |-- write user_point_history / point_history
+       |     |-- schedule slope_changes[unlock_time]
+       |-- ERC20(token).transferFrom(...)
+```
+
+### Extend a lock, or add to it
+```
+VotingEscrow.increase_amount(_value)          :488   (lock must not be expired)
+VotingEscrow.increase_unlock_time(_unlock_time) :510 (new end > old end, <= 4y)
+VotingEscrow.withdraw()                        :533  (only after lock.end)
+```
+
+### Vote for a gauge
+```
+GaugeController.vote_for_gauge_weights(_gauge_addr, _user_weight)   :485
+  |-- slope = VotingEscrow.get_last_user_slope(msg.sender)
+  |-- assert lock_end > next_time                    (lock must outlast the week)
+  |-- assert _user_weight <= 10000
+  |-- assert block.timestamp >= last_user_vote + WEIGHT_VOTE_DELAY  (10 days)
+  |-- remove old vote's bias/slope from gauge + type sums at next_time
+  |-- add new vote's; cancel old slope_change, schedule new at lock_end
+  |-- _get_sum / _get_total / _get_weight catch-up loops
+```
+
+### Stake LP tokens and earn CRV
+```
+LP.approve(gauge, amount)
+LiquidityGaugeV5.deposit(_value, _addr, _claim_rewards)
+  |-- _checkpoint(addr)
+  |     |-- CRV20.start_epoch_time_write() / rate()
+  |     |-- Controller.checkpoint_gauge(self); gauge_relative_weight(self, week)
+  |     |-- integrate_inv_supply += rate*weight*dt / working_supply
+  |     |-- integrate_fraction[addr] += working_balance[addr] * dI / 1e18
+  |-- balanceOf[addr] += _value; totalSupply += _value
+  |-- _update_liquidity_limit(addr, balance, supply)     <- reads VotingEscrow
+  |-- lp_token.transferFrom(...)
+```
+
+### Claim earned CRV
+```
+Minter.mint(gauge_addr)                        Minter.vy:60
+  |-- _mint_for(gauge_addr, msg.sender)        :43
+       |-- assert Controller.gauge_types(gauge_addr) >= 0
+       |-- LiquidityGauge(gauge_addr).user_checkpoint(_for)
+       |-- total_mint = integrate_fraction(_for)
+       |-- to_mint = total_mint - minted[_for][gauge_addr]
+       |-- minted[_for][gauge_addr] = total_mint
+       |-- MERC20(token).mint(_for, to_mint)
+```
+Batched: `Minter.mint_many(gauge_addrs[8])` `:71`. On behalf of someone who
+called `toggle_approve_mint(you)` `:96`: `Minter.mint_for(gauge, for)` `:83`.
+
+### Boost an existing position
+```
+1. VotingEscrow.create_lock(...)               (raises ve balance)
+2. Gauge.user_checkpoint(you)   or any deposit/withdraw
+      |-- _update_liquidity_limit recomputes working_balance
+```
+The boost is **not** retroactive: it applies from the checkpoint onward, so
+lock first, then poke the gauge.
+
+### Kick an expired boost
+```
+LiquidityGaugeV5.kick(addr)
+  |-- assert VotingEscrow.user_point_history__ts(addr, ts) > last_change
+      OR balanceOf(addr) == 0            (their ve expired or they left)
+  |-- _checkpoint(addr); _update_liquidity_limit(...)
+```
+Anyone may call it. It lowers a freeloader's `working_balance` back to 0.4×,
+which raises everyone else's share of `working_supply`.
+
+### Claim trading fees
+```
+FeeDistributor.claim(_addr = msg.sender)       FeeDistributor.vy:298
+  |-- assert not is_killed
+  |-- if can_checkpoint_token and stale: _checkpoint_token()
+  |-- _checkpoint_total_supply() if time_cursor behind
+  |-- _claim(addr, ve, last_token_time)        :228
+       |-- per week: tokens_per_week[w] * ve(u,w) / ve_supply[w]
+       |-- at most 50 weeks per call — repeat if claim_epoch < max_epoch
+  |-- ERC20(token).transfer(addr, amount)
+```
+
+### Deploy a gauge
+```
+1. Deploy LiquidityGaugeV5(lp_token, minter, admin)
+2. GaugeController.add_gauge(addr, gauge_type, weight)   :344   [admin only]
+3. Optionally GaugeProxy.commit_transfer_ownership(gauge, dao)  GaugeProxy.vy:69
+```
+
+### Stream rewards on a sidechain
+```
+mainnet:   RootGaugeXdai.checkpoint()                    RootGaugeXdai.vy:92
+             |-- Controller.checkpoint_gauge(self)
+             |-- accumulate per-week emissions (255-week loop)
+             |-- Minter.mint(self)
+             |-- raw_call(XDAI_BRIDGE, relayTokens(crv, self, amount))
+sidechain: ChildChainStreamer.notify_reward_amount(crv)  ChildChainStreamer.vy:140
+             |-- detects balance surplus, sets rate = amount / duration
+           RewardsOnlyGauge.claim_rewards()
+             |-- calls streamer.get_reward() -> pushes to the gauge
+             |-- gauge distributes per-LP by its own integral
+```
+
+### Vest a grant
+```
+CRV.transfer(VestingEscrowFactory, amount)
+VestingEscrowFactory.deploy_vesting_contract(
+    token, recipient, amount, can_disable, duration, start)   :50
+  |-- assert duration >= MIN_VESTING_DURATION (1 year)
+  |-- create_forwarder_to(target)              (EIP-1167 clone)
+  |-- ERC20.approve(clone, amount)
+  |-- clone.initialize(admin, token, recipient, amount, start, start+duration, can_disable)
+       |-- assert self.admin == ZERO_ADDRESS   (clones only)
+       |-- transferFrom(factory, clone, amount)
+later:
+VestingEscrowSimple.claim(addr)                :196
+  |-- t = disabled_at[addr] or now
+  |-- claimable = min(L*(t-t0)/(t1-t0), L) - total_claimed[addr]
+```
+
+### Route pool fees to veCRV holders
+```
+PoolProxy.withdraw_admin_fees(pool)            PoolProxy.vy:200   [permissionless]
+PoolProxy.burn(coin)                           :223   [EOA only, burner_kill off]
+  |-- Burner(burners[coin]).burn(coin)
+       |-- unwrap / swap; forward to receiver
+UnderlyingBurner.execute()                     UnderlyingBurner.vy:169
+  |-- StableSwap(TRIPOOL).add_liquidity(amounts, 0)
+  |-- ERC20(TRIPOOL_LP).transfer(receiver, amount)
+FeeDistributor.burn(3CRV)                      FeeDistributor.vy:375
+```
+
+### Emergency actions
+```
+PoolProxy.kill_me(pool)             :263   emergency_admin      (pool -> remove_liquidity only)
+PoolProxy.set_burner_kill(True)     :284   emergency or ownership
+GaugeProxy.set_killed(gauge, True)  GaugeProxy.vy:91           (gauge rate -> 0)
+FeeDistributor.kill_me()            :428   admin, irreversible, sweeps balance
+RootGauge*.set_killed(True)         :172   admin (emissions accrue but are not bridged)
+Burner.set_killed(True)                    owner or emergency owner
+```
+
+---

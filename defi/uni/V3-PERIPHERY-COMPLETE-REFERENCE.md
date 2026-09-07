@@ -139,7 +139,7 @@ Every `.sol` in the repo, with where it is covered here.
 | `OracleLibrary.sol` | 180 | [§2.11](#211-oraclelibrary) |
 | `Path.sol` | 69 | [§2.4](#24-path) |
 | `PoolAddress.sol` | 48 | [§2.1](#21-pooladdress) |
-| `PoolTicksCounter.sol` | 96 | [§2.12](#212-poolticjscounter) |
+| `PoolTicksCounter.sol` | 96 | [§2.12](#212-pooltickscounter) |
 | `PositionKey.sol` | 13 | [§2.3](#23-positionkey) |
 | `PositionValue.sol` | 167 | [§2.10](#210-positionvalue) |
 | `SqrtPriceMathPartial.sol` | 62 | [§2.9](#29-sqrtpricemathpartial) |
@@ -1799,7 +1799,7 @@ Additionally reads `pool.slot0()` (`:56`) and reverts with **96 bytes**:
 Reads `tickBefore` from `slot0` **after** the reverted swap (state was rolled
 back, so this is the pre-swap tick), parses the reason for `tickAfter`, and calls
 `pool.countInitializedTicksCrossed(tickBefore, tickAfter)`
-([§2.12](#212-poolticjscounter)).
+([§2.12](#212-pooltickscounter)).
 
 #### `quoteExactInputSingle(QuoteExactInputSingleParams memory params) public returns (uint256 amountOut, uint160 sqrtPriceX96After, uint32 initializedTicksCrossed, uint256 gasEstimate)` — `:123`
 

@@ -3175,8 +3175,7 @@ Inherits `RewardsDistributor` then `VersionedInitializable`, so the parent's slo
 | 3 | `address[]` | `_rewardsList` | `RewardsDistributor.sol:30` |
 | 4 | `address[]` | `_assetsList` | `RewardsDistributor.sol:33` |
 | 5 | `uint256` | `lastInitializedRevision` | `VersionedInitializable.sol:29` |
-| 5 | `bool` | `initializing` | `VersionedInitializable.sol:34` — **packs with slot 5?** no: `uint256` fills the slot, so `initializing` takes slot 6 |
-| 6 | `bool` | `initializing` | `VersionedInitializable.sol:34` |
+| 6 | `bool` | `initializing` | `VersionedInitializable.sol:34` (a `uint256` fills slot 5 completely, so no packing) |
 | 7–56 | `uint256[50]` | `______gap` | `VersionedInitializable.sol:85` |
 | 57 | `mapping(address => address)` | `_authorizedClaimers` | `RewardsController.sol:25` |
 | 58 | `mapping(address => ITransferStrategyBase)` | `_transferStrategy` | `RewardsController.sol:30` |
