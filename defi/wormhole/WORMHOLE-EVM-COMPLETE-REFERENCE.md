@@ -1266,3 +1266,154 @@ The integrator-facing ABI, re-declaring the structs and every public function.
 This is the file to import when writing a contract that talks to the bridge.
 
 ---
+
+## 14. NFT bridge
+
+A parallel stack with the same shape as the token bridge — proxy, setup,
+implementation, governance, getters, setters, state, shutdown, wrapped token — but
+a different payload and one genuinely strange parser.
+
+Module constant at
+[`nft/NFTBridgeGovernance.sol:24`](wormhole/ethereum/contracts/nft/NFTBridgeGovernance.sol#L24):
+`0x...4e4654427269646765`, ASCII `"NFTBridge"`. Governance actions are the same
+three as the token bridge (`RegisterChain` 1, `UpgradeContract` 2,
+`RecoverChainId` 3) with parsers at
+[`:117`](wormhole/ethereum/contracts/nft/NFTBridgeGovernance.sol#L117),
+[`:144`](wormhole/ethereum/contracts/nft/NFTBridgeGovernance.sol#L144) and
+[`:167`](wormhole/ethereum/contracts/nft/NFTBridgeGovernance.sol#L167). There is
+no pauser system here.
+
+### `transferNFT(address, uint256, uint16, bytes32, uint32) public payable` — [`:23`](wormhole/ethereum/contracts/nft/NFTBridge.sol#L23)
+
+Unlike the token bridge, it validates interfaces up front for native tokens:
+
+```solidity
+require(ERC165(token).supportsInterface(type(IERC721).interfaceId), "must support the ERC721 interface");
+require(ERC165(token).supportsInterface(type(IERC721Metadata).interfaceId), "must support the ERC721-Metadata extension");
+```
+
+[`:34-35`](wormhole/ethereum/contracts/nft/NFTBridge.sol#L34-L35).
+
+### The Solana special case
+
+Chain id 1 is Solana, and the code branches on it in three places.
+
+Solana SPL NFTs share unified name and symbol values across a collection, so
+those fields would be lost on a round trip. The bridge caches them. On the way
+out ([`:55-60`](wormhole/ethereum/contracts/nft/NFTBridge.sol#L55-L60)) it reads
+`splCache(tokenID)` and clears it; on the way in
+([`:136-142`](wormhole/ethereum/contracts/nft/NFTBridge.sol#L136-L142)) it writes
+the cache before minting. The `SPLCache` struct is at
+[`nft/NFTBridgeState.sol:22`](wormhole/ethereum/contracts/nft/NFTBridgeState.sol#L22),
+keyed by `tokenID` alone at
+[`:52`](wormhole/ethereum/contracts/nft/NFTBridgeState.sol#L52) — not by
+`(chain, address, tokenID)`.
+
+Note the guard at [`:42`](wormhole/ethereum/contracts/nft/NFTBridge.sol#L42) skips
+the `symbol()` and `name()` staticcalls entirely when `tokenChain == 1`.
+
+### Auto-creating wrappers
+
+`_completeTransfer` creates the wrapper on demand if it does not exist:
+
+```solidity
+if (wrapped == address(0)) {
+    wrapped = _createWrapped(transfer.tokenChain, transfer.tokenAddress, transfer.name, transfer.symbol);
+}
+```
+
+[`:125-127`](wormhole/ethereum/contracts/nft/NFTBridge.sol#L125-L127). The token
+bridge deliberately does **not** do this — it requires a separate `attestToken`
+and `createWrapped`, because an ERC-20 needs `decimals` that only an attestation
+carries. An NFT needs nothing beyond name and symbol, which ride along in the
+transfer payload itself.
+
+### The payload, and its broken parser
+
+Encoder at [`:204`](wormhole/ethereum/contracts/nft/NFTBridge.sol#L204):
+
+| Offset | Size | Field |
+|---|---|---|
+| `0` | 1 | `payloadID` = 1 |
+| `1` | 32 | `tokenAddress` |
+| `33` | 2 | `tokenChain` |
+| `35` | 32 | `symbol` |
+| `67` | 32 | `name` |
+| `99` | 32 | `tokenID` |
+| `131` | 1 | `uriLength` |
+| `132` | `uriLength` | `uri` |
+| … | 32 | `to` |
+| … | 2 | `toChain` |
+
+The URI is capped at 200 bytes:
+
+```solidity
+require(bytes(transfer.uri).length <= 200, "tokenURI must not exceed 200 bytes");
+```
+
+[`:206`](wormhole/ethereum/contracts/nft/NFTBridge.sol#L206), and the comment at
+[`:205`](wormhole/ethereum/contracts/nft/NFTBridge.sol#L205) attributes the limit
+to Solana.
+
+**`parseTransfer` does not trust its own length prefix.** At
+[`:245-247`](wormhole/ethereum/contracts/nft/NFTBridge.sol#L245-L247):
+
+```solidity
+// Ignore length due to malformatted payload
+index += 1;
+transfer.uri = string(encoded.slice(index, encoded.length - index - 34));
+```
+
+It skips the length byte and instead derives the URI length from the total payload
+size minus the trailing 34 bytes (`to` 32 + `toChain` 2). Then it reads those two
+fields **backwards from the end** at
+[`:250-256`](wormhole/ethereum/contracts/nft/NFTBridge.sol#L250-L256), and the
+final length assertion is commented out at
+[`:258`](wormhole/ethereum/contracts/nft/NFTBridge.sol#L258):
+
+```solidity
+//require(encoded.length == index, "invalid Transfer");
+```
+
+This is the only parser in the codebase that abandons its own framing. Some
+historical emitter produced payloads whose length byte disagreed with the actual
+URI, and the fix was to stop reading it. The practical consequence: the URI field
+absorbs whatever sits between `tokenID` and the trailing 34 bytes, whatever the
+length byte claims.
+
+### `onERC721Received` — [`:261`](wormhole/ethereum/contracts/nft/NFTBridge.sol#L261)
+
+```solidity
+require(operator == address(this), "can only bridge tokens via transferNFT method");
+```
+
+[`:267`](wormhole/ethereum/contracts/nft/NFTBridge.sol#L267). The bridge accepts
+an NFT only when it initiated the transfer itself, so a `safeTransferFrom`
+straight to the bridge address reverts instead of stranding the token.
+
+### `nft/token/NFTImplementation.sol` — [254 lines](wormhole/ethereum/contracts/nft/token/NFTImplementation.sol)
+
+A standard OpenZeppelin-derived ERC-721 with the same three additions as the
+fungible wrapper: `chainId()` [`:72`](wormhole/ethereum/contracts/nft/token/NFTImplementation.sol#L72),
+`nativeContract()` [`:76`](wormhole/ethereum/contracts/nft/token/NFTImplementation.sol#L76),
+`owner()` [`:80`](wormhole/ethereum/contracts/nft/token/NFTImplementation.sol#L80),
+plus owner-gated `mint`/`burn`. `tokenURI` is stored per token rather than
+derived from a base URI, because each bridged token carries its own URI in the
+payload.
+
+### The rest of the NFT stack
+
+| File | Role |
+|---|---|
+| [`NFTBridgeEntrypoint.sol`](wormhole/ethereum/contracts/nft/NFTBridgeEntrypoint.sol) | the ERC-1967 proxy |
+| [`NFTBridgeSetup.sol`](wormhole/ethereum/contracts/nft/NFTBridgeSetup.sol) | one-shot initializer |
+| [`NFTBridgeImplementation.sol`](wormhole/ethereum/contracts/nft/NFTBridgeImplementation.sol) | upgrade entry point + token beacon |
+| [`NFTBridgeShutdown.sol`](wormhole/ethereum/contracts/nft/NFTBridgeShutdown.sol) | disabled drop-in, same pattern as `Shutdown` |
+| [`NFTBridgeGetters.sol`](wormhole/ethereum/contracts/nft/NFTBridgeGetters.sol) / [`NFTBridgeSetters.sol`](wormhole/ethereum/contracts/nft/NFTBridgeSetters.sol) | accessors, including `splCache`/`setSplCache`/`clearSplCache` |
+| [`NFTBridgeState.sol`](wormhole/ethereum/contracts/nft/NFTBridgeState.sol) | storage struct with the `splCache` mapping |
+| [`nft/token/NFT.sol`](wormhole/ethereum/contracts/nft/token/NFT.sol) | `BridgeNFT`, the beacon proxy |
+| [`nft/token/NFTState.sol`](wormhole/ethereum/contracts/nft/token/NFTState.sol) | wrapped NFT storage |
+| [`nft/interfaces/INFTBridge.sol`](wormhole/ethereum/contracts/nft/interfaces/INFTBridge.sol) | integrator ABI |
+| [`nft/mock/MockNFTBridgeImplementation.sol`](wormhole/ethereum/contracts/nft/mock/MockNFTBridgeImplementation.sol), [`nft/mock/MockNFTImplementation.sol`](wormhole/ethereum/contracts/nft/mock/MockNFTImplementation.sol) | upgrade doubles |
+
+---
