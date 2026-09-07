@@ -730,3 +730,53 @@ consistent state.
 more than they own. There is no explicit error for that case; the revert is a panic, not
 `ErrorsLib`.
 
+### 3.11 `borrow(marketParams, assets, shares, onBehalf, receiver)`
+
+[`:235-266`](morpho-blue/src/Morpho.sol#L235-L266) · returns `(assets, shares)`.
+
+| | |
+|---|---|
+| **Checks** | market exists; `exactlyOneZero`; `receiver != address(0)`; `_isSenderAuthorized(onBehalf)` |
+| **Accrues** | yes |
+| **Converts** | `toSharesUp` / `toAssetsDown` ([`:251-252`](morpho-blue/src/Morpho.sol#L251-L252)) |
+| **Writes** | adds to `borrowShares`, `totalBorrowShares`, `totalBorrowAssets` |
+| **Post-checks** | `_isHealthy(marketParams, id, onBehalf)` → `INSUFFICIENT_COLLATERAL` ([`:258`](morpho-blue/src/Morpho.sol#L258)); `totalBorrowAssets <= totalSupplyAssets` → `INSUFFICIENT_LIQUIDITY` ([`:259`](morpho-blue/src/Morpho.sol#L259)) |
+| **Emits** | `Borrow` |
+| **Transfer** | `safeTransfer(receiver, assets)` last |
+| **Callback** | **none** |
+
+The health check is *after* the state write, so it validates the post-borrow position. This is the
+only place a price is read during a borrow, via `_isHealthy` → `IOracle.price()` (§3.19).
+
+`borrow` has no callback, unlike `supply`, `repay` and `supplyCollateral`. It does not need one:
+the caller receives assets, so any follow-up logic can simply run after the call returns. The
+callbacks exist only where Blue *pulls* tokens from the caller.
+
+### 3.12 `repay(marketParams, assets, shares, onBehalf, data)`
+
+[`:269-298`](morpho-blue/src/Morpho.sol#L269-L298) · returns `(assets, shares)`.
+
+| | |
+|---|---|
+| **Checks** | market exists; `exactlyOneZero`; `onBehalf != address(0)` |
+| **Accrues** | yes |
+| **Converts** | `toSharesDown` / `toAssetsUp` ([`:283-284`](morpho-blue/src/Morpho.sol#L283-L284)) |
+| **Writes** | subtracts `borrowShares`, `totalBorrowShares`; `totalBorrowAssets = zeroFloorSub(totalBorrowAssets, assets)` |
+| **Emits** | `Repay` |
+| **Callback** | `IMorphoRepayCallback(msg.sender).onMorphoRepay(assets, data)` if `data.length > 0` |
+| **Transfer** | `safeTransferFrom(msg.sender, address(this), assets)` last |
+
+No authorization check — repaying someone's debt is a gift, like supplying.
+
+The `zeroFloorSub` at [`:288`](morpho-blue/src/Morpho.sol#L288) with its comment at
+[`:290`](morpho-blue/src/Morpho.sol#L290) handles the documented one-wei overshoot: when the
+caller passes `shares`, `toAssetsUp` can round `assets` one wei above `totalBorrowAssets`. A
+plain subtraction would revert on the final repayment of a market; saturating to zero is correct
+and lets the last borrower actually close their position.
+
+The repay callback is what makes **collateral-swap and deleverage** atomic: repay with
+`data`, and inside `onMorphoRepay` withdraw the freed collateral, swap it, and end up holding the
+loan token that the trailing `transferFrom` then pulls. The bundler's `morphoRepay` at
+[`morpho-blue-bundlers/src/MorphoBundler.sol:171`](morpho-blue-bundlers/src/MorphoBundler.sol#L171)
+is built on exactly this.
+
