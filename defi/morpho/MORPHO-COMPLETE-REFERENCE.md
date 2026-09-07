@@ -2296,3 +2296,226 @@ declared as `error X(...)` so several carry the offending `Id`:
 The parameterised errors are a real usability gain over Blue's bare strings: a failing
 `updateWithdrawQueue` tells you *which* market blocked it.
 
+---
+
+<a id="16-use-case-index"></a>
+## 16. Use-case index
+
+Each entry names the exact entry point and the full internal chain.
+
+### 16.1 List a new market
+
+```
+createMarket(MarketParams)                                    Morpho.sol:150
+ ├─ require isIrmEnabled[irm]                                            :152
+ ├─ require isLltvEnabled[lltv]                                          :153
+ ├─ require market[id].lastUpdate == 0                                   :154
+ ├─ market[id].lastUpdate = block.timestamp                              :157
+ ├─ idToMarketParams[id] = marketParams                                  :158
+ └─ IIrm(irm).borrowRate(...)          // initialise stateful IRM        :163
+```
+
+Permissionless. Only the IRM and LLTV must already be on the owner's allowlist.
+
+### 16.2 Supply and earn
+
+```
+supply(marketParams, assets, 0, onBehalf, "")                 Morpho.sol:169
+ ├─ _accrueInterest                                                      :181
+ │   └─ IIrm.borrowRate → wTaylorCompounded → totalBorrow/SupplyAssets += :488
+ ├─ shares = assets.toSharesDown(totalSupplyAssets, totalSupplyShares)   :183
+ ├─ position/​market totals updated                                       :186
+ └─ safeTransferFrom(msg.sender → Morpho, assets)                        :194
+```
+
+### 16.3 Borrow against collateral
+
+```
+supplyCollateral(marketParams, collAmount, onBehalf, "")      Morpho.sol:303
+ └─ collateral += collAmount   (no accrual, no oracle)                   :313
+
+borrow(marketParams, assets, 0, onBehalf, receiver)           Morpho.sol:235
+ ├─ _isSenderAuthorized(onBehalf)                                        :247
+ ├─ _accrueInterest                                                      :249
+ ├─ shares = assets.toSharesUp(...)                                      :251
+ ├─ _isHealthy(marketParams, id, onBehalf)                               :258
+ │   └─ IOracle.price() → maxBorrow = coll·price/1e36·lltv ≥ borrowed    :534
+ ├─ require totalBorrowAssets ≤ totalSupplyAssets                        :259
+ └─ safeTransfer(receiver, assets)                                       :263
+```
+
+### 16.4 Open a leveraged position in one transaction, no flash loan
+
+```
+supplyCollateral(marketParams, targetColl, user, encodedCalls)  Morpho.sol:303
+ ├─ collateral += targetColl                                             :313
+ ├─ onMorphoSupplyCollateral(assets, data)   ← control returns to you    :317
+ │    ├─ borrow(loanToken)                                               :235
+ │    ├─ swap loanToken → collateralToken   (any DEX)
+ │    └─ leave collateralToken on the caller
+ └─ safeTransferFrom(caller → Morpho, targetColl)   // now it is there   :319
+```
+
+Blue's callback ordering (state → callback → pull) is what makes this legal. Via the bundler this
+is `morphoSupplyCollateral` with a nested `bytes[]`
+([`MorphoBundler.sol:117`](morpho-blue-bundlers/src/MorphoBundler.sol#L117)).
+
+### 16.5 Liquidate with no capital
+
+```
+liquidate(marketParams, borrower, seizedAssets, 0, encodedCalls)  Morpho.sol:347
+ ├─ _accrueInterest                                                       :358
+ ├─ price = IOracle.price()                                               :361
+ ├─ require !_isHealthy(...)                                              :363
+ ├─ LIF = min(1.15e18, 1/(1 − 0.3·(1 − lltv)))                            :366
+ ├─ repaidShares = toSharesUp(ceil(seized·price/1e36) / LIF)              :374
+ ├─ debt + collateral written down                                        :384
+ ├─ if collateral == 0 → socialise bad debt to suppliers                  :392
+ ├─ safeTransfer(liquidator, seizedAssets)     ← collateral first         :410
+ ├─ onMorphoLiquidate(repaidAssets, data)      ← sell it here             :412
+ └─ safeTransferFrom(liquidator, repaidAssets) ← pay from proceeds        :414
+```
+
+### 16.6 Free flash loan
+
+```
+flashLoan(token, assets, data)                                Morpho.sol:422
+ ├─ safeTransfer(msg.sender, assets)                                     :427
+ ├─ onMorphoFlashLoan(assets, data)                                      :429
+ └─ safeTransferFrom(msg.sender, assets)      // zero fee                :431
+```
+
+### 16.7 Deposit into a curated vault
+
+```
+MetaMorpho.deposit(assets, receiver)                     MetaMorpho.sol:535
+ ├─ _accrueFee()                                                         :536
+ │   └─ totalAssets() → Σ expectedSupplyAssets over withdrawQueue        :589
+ ├─ lastTotalAssets = newTotalAssets   (reentrancy guard)                :540
+ ├─ shares = assets·(supply+10^offset)/(total+1)                         :542
+ └─ _deposit → super._deposit → _supplyMorpho(assets)                    :674
+      └─ walk supplyQueue, MORPHO.supply up to each cap, try/catch       :795
+```
+
+### 16.8 Rebalance a vault between markets
+
+```
+MetaMorpho.reallocate(allocations)                       MetaMorpho.sol:366
+ ├─ per allocation: withdrawn = supplyAssets − target                    :374
+ │   ├─ withdraw branch → MORPHO.withdraw                                :387
+ │   └─ supply branch  → cap checks → MORPHO.supply                      :406
+ └─ require totalWithdrawn == totalSupplied                              :414
+```
+
+### 16.9 Raise a supply cap (timelocked)
+
+```
+submitCap(marketParams, newCap)      curator            MetaMorpho.sol:273
+ ├─ loanToken == asset(), market exists, no pending                      :275
+ └─ if raising  → pendingCap.update(newCap, timelock)                    :285
+    if lowering → _setCap immediately                                    :283
+  … wait `timelock` (1–14 days) …
+acceptCap(marketParams)              anyone                             :470
+ └─ afterTimelock(pendingCap[id].validAt) → _setCap                      :475
+```
+
+A guardian may call `revokePendingCap`
+([`:434`](metamorpho/src/MetaMorpho.sol#L434)) at any point during the wait.
+
+### 16.10 Remove a market from a vault safely
+
+```
+submitCap(marketParams, 0)           curator            MetaMorpho.sol:273 → cap 0 immediately
+submitMarketRemoval(marketParams)    curator                            :292
+ └─ config[id].removableAt = block.timestamp + timelock                  :300
+  … wait …
+reallocate([{market, 0}])            allocator                          :366  ← drains by shares
+updateWithdrawQueue(indexes)         allocator                          :323
+ └─ dropped market passes cap/pending/supply checks → delete config      :345
+```
+
+### 16.11 Read a position accurately off-chain
+
+```
+MorphoBalancesLib.expectedSupplyAssets(morpho, marketParams, user)
+ ├─ expectedMarketBalances → replays accrual with borrowRateView         :44
+ ├─ MorphoLib.supplyShares → extSloads(positionSupplySharesSlot)         :13
+ └─ toAssetsDown(shares, totalSupplyAssets, totalSupplyShares)           :103
+```
+
+Never read `market(id)` directly for a balance: it is stale between accruals.
+
+### 16.12 Migrate a position from Aave or Compound
+
+```
+EthereumBundlerV2.multicall([...])                      BaseBundler.sol:51
+ ├─ morphoFlashLoan(debtToken, debtAmount, [                            :236
+ │      repay on Aave/Compound,
+ │      withdraw old collateral,
+ │      morphoSupplyCollateral,
+ │      morphoBorrow
+ │  ])
+ └─ flash loan repaid from the new Blue borrow
+```
+
+Concrete implementations in
+[`migration/`](morpho-blue-bundlers/src/migration/) for Aave v2, Aave v3, the Aave v3 Optimizer,
+Compound v2 and Compound v3.
+
+---
+
+<a id="17-gotchas-collected"></a>
+## 17. Gotchas, collected
+
+1. **A market's identity is its parameters.** There is no "change the oracle". Any change is a
+   different market with no liquidity. [`MarketParamsLib.sol:16`](morpho-blue/src/libraries/MarketParamsLib.sol#L16)
+2. **`MarketParams` must stay five 32-byte words.** The `keccak256(marketParams, 5*32)` assembly
+   silently breaks otherwise. [`:13`](morpho-blue/src/libraries/MarketParamsLib.sol#L13)
+3. **Donations to the singleton are lost, not credited.** Blue never reads `balanceOf` for
+   accounting, which is the real anti-inflation defence. Virtual shares are secondary. §2.1
+4. **Virtual borrow shares are permanent dust debt** — entitled to assets nobody repays.
+   [`SharesMathLib.sol:17-19`](morpho-blue/src/libraries/SharesMathLib.sol#L17-L19)
+5. **`repay` and `liquidate` can overshoot `totalBorrowAssets` by 1 wei.** Hence `zeroFloorSub`.
+   [`Morpho.sol:288`](morpho-blue/src/Morpho.sol#L288), [`:386`](morpho-blue/src/Morpho.sol#L386)
+6. **The IRM is called before state settles**, and it is arbitrary code.
+   [`:488`](morpho-blue/src/Morpho.sol#L488)
+7. **`enableIrm` and `enableLltv` are one-way.** No disable function exists — deliberately, so
+   governance cannot strand a live market. §3.4
+8. **`irm == address(0)` is a valid, zero-interest market.**
+   [`:487`](morpho-blue/src/Morpho.sol#L487)
+9. **No close factor.** A single `liquidate` may clear an entire position. §3.15
+10. **Bad debt hits suppliers immediately**, in the liquidating transaction, by reducing
+    `totalSupplyAssets`. [`:400`](morpho-blue/src/Morpho.sol#L400)
+11. **The oracle interface has no staleness data at all**, and the Chainlink adapter deliberately
+    checks none. §10.2
+12. **`WstEthStEthExchangeRateChainlinkAdapter` returns `updatedAt = 0`** — permanently "stale" to
+    any consumer that checks. §10.4
+13. **`DOMAIN_SEPARATOR` is immutable**, so it does not follow a chain-id change after a fork. §3.1
+14. **`setOwner` is single-step.** A typo is permanent. §3.3
+15. **Authorization is global and unlimited**, not per-market or per-amount. §3.17
+16. **`setAuthorizationWithSig` is not ERC-1271 compatible** — no smart-wallet signatures. §3.18
+17. **Withdrawing more than you own reverts with `Panic(0x11)`**, not an `ErrorsLib` string. §15.1
+18. **`MorphoStorageLib` hardcodes storage slots.** Safe only because Blue is immutable. §5.1
+19. **MetaMorpho's `totalAssets()` loops up to 30 markets**, each with an external call, on every
+    conversion. [`MetaMorpho.sol:589`](metamorpho/src/MetaMorpho.sol#L589)
+20. **Vault caps bound new allocation, not position size** — interest and donations can exceed
+    them. [`PendingLib.sol:6`](metamorpho/src/libraries/PendingLib.sol#L6)
+21. **`DECIMALS_OFFSET` is 0 for 18-decimal assets**, so seed the vault. The NatSpec says so.
+    [`MetaMorpho.sol:532-534`](metamorpho/src/MetaMorpho.sol#L532-L534)
+22. **`maxWithdraw`/`maxRedeem` over-report inside a Blue callback.**
+    [`:510-514`](metamorpho/src/MetaMorpho.sol#L510-L514)
+23. **`maxMint` over-reports if the supply queue has duplicates**, which is not forbidden.
+    [`:502`](metamorpho/src/MetaMorpho.sol#L502)
+24. **The vault grants Blue an infinite permanent approval at construction.**
+    [`:133`](metamorpho/src/MetaMorpho.sol#L133)
+25. **`reallocate` is asset-neutral but not risk-neutral.** An allocator can legally move
+    everything into the riskiest approved market. [`:414`](metamorpho/src/MetaMorpho.sol#L414)
+26. **Fee shares are minted with no `Supply` event.** Indexers must read `AccrueInterest`.
+    [`EventsLib.sol:38`](morpho-blue/src/libraries/EventsLib.sol#L38)
+27. **Bundler functions must all be `payable` and must not trust `msg.value`** — it repeats across
+    delegatecalled steps. [`BaseBundler.sol:15-17`](morpho-blue-bundlers/src/BaseBundler.sol#L15-L17)
+28. **The bundler holds live approvals.** `protected` plus `_initiator` is the only thing standing
+    between an attacker and them. [`:31-36`](morpho-blue-bundlers/src/BaseBundler.sol#L31-L36)
+29. **Blue is a legitimate `msg.sender` for the bundler** during callbacks, by design.
+    [`MorphoBundler.sol:268-270`](morpho-blue-bundlers/src/MorphoBundler.sol#L268-L270)
+30. **Blue's errors are strings; MetaMorpho's are custom errors.** Two repos, two conventions. §15
