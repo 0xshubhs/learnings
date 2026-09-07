@@ -873,7 +873,7 @@ epoch mechanism.
 2. `_computeRewardsPerUnitStaked` ([`v1-dev/packages/contracts/contracts/StabilityPool.sol:531`](v1-dev/packages/contracts/contracts/StabilityPool.sol#L531)) derives the per-unit ETH gain and
    LUSD loss.
 3. `_updateRewardSumAndProduct` ([`v1-dev/packages/contracts/contracts/StabilityPool.sol:580`](v1-dev/packages/contracts/contracts/StabilityPool.sol#L580)) writes the new `S` and `P`, handling
-   epoch and scale transitions.
+   the scale transition if one is due.
 4. `_moveOffsetCollAndDebt` ([`v1-dev/packages/contracts/contracts/StabilityPool.sol:628`](v1-dev/packages/contracts/contracts/StabilityPool.sol#L628)) burns the LUSD and pulls the ETH from
    `ActivePool`.
 
