@@ -21,47 +21,42 @@ the *how*: signatures, parameters, checks, state writes, call chains.
 
 ## Contents
 
-**[Part 1 — Liquity v1](#part-1--liquity-v1)**
+**[Part 1 — Liquity v1](#part-1-liquity-v1)**
 
-- [1.1 File inventory (82 files)](#11-file-inventory)
-- [1.2 Architecture and the `setAddresses` access-control pattern](#12-architecture-and-access-control)
-- [1.3 Math foundations: `LiquityMath`, `LiquityBase`, `SafeMath`](#13-math-foundations)
+- [1.1 File inventory](#11-file-inventory)
+- [1.2 Architecture and access control](#12-architecture-and-access-control)
+- [1.3 Math foundations](#13-math-foundations)
 - [1.4 `TroveManager`](#14-trovemanager)
 - [1.5 `BorrowerOperations`](#15-borroweroperations)
-- [1.6 `StabilityPool` — the product-sum algorithm](#16-stabilitypool)
-- [1.7 `SortedTroves` — the ordered list](#17-sortedtroves)
-- [1.8 The pools: `ActivePool`, `DefaultPool`, `CollSurplusPool`, `GasPool`](#18-the-pools)
-- [1.9 Tokens and staking: `LUSDToken`, `LQTYToken`, `LQTYStaking`, `CommunityIssuance`, lockups](#19-tokens-and-staking)
-- [1.10 `PriceFeed` and the Tellor fallback](#110-pricefeed)
-- [1.11 Periphery: `HintHelpers`, `MultiTroveGetter`, `Proxy/`, `LPRewards/`](#111-periphery)
-- [1.12 v1 reference tables](#112-v1-reference-tables)
-- [1.13 v1 use-case index](#113-v1-use-case-index)
+- [1.6 `StabilityPool`](#16-stabilitypool)
+- [1.7 `SortedTroves`](#17-sortedtroves)
+- [1.8 The pools](#18-the-pools)
+- [1.9 Tokens](#19-tokens)
+- [1.10 `LQTYStaking`](#110-lqtystaking)
+- [1.11 `CommunityIssuance`](#111-communityissuance)
+- [1.12 `PriceFeed`](#112-pricefeed)
+- [1.13 Helper and peripheral contracts](#113-helper-and-peripheral-contracts)
+- [1.14 v1 reference tables](#114-v1-reference-tables)
 
-**[Part 2 — Liquity v2 (BOLD)](#part-2--liquity-v2-bold)**
+**[Part 2 — Liquity v2 (BOLD)](#part-2-liquity-v2-bold)**
 
-- [2.1 File inventory (102 files)](#21-file-inventory)
-- [2.2 Architecture: branches, the registry, and what changed](#22-architecture)
-- [2.3 Constants and math foundations](#23-constants-and-math)
-- [2.4 The interest-rate machinery](#24-the-interest-rate-machinery)
-- [2.5 `TroveManager`](#25-trovemanager-v2)
-- [2.6 `BorrowerOperations`](#26-borroweroperations-v2)
-- [2.7 Batches and delegation](#27-batches-and-delegation)
-- [2.8 `StabilityPool` v2](#28-stabilitypool-v2)
-- [2.9 `SortedTroves` v2 — ordered by interest rate](#29-sortedtroves-v2)
-- [2.10 `ActivePool` and aggregate accounting](#210-activepool-v2)
-- [2.11 `CollateralRegistry` and cross-branch redemption](#211-collateralregistry)
-- [2.12 Shutdown and urgent redemption](#212-shutdown)
-- [2.13 Price feeds](#213-price-feeds)
-- [2.14 `TroveNFT` and on-chain metadata](#214-trovenft)
-- [2.15 Zappers and leverage](#215-zappers)
-- [2.16 v2 reference tables](#216-v2-reference-tables)
-- [2.17 v2 use-case index](#217-v2-use-case-index)
+- [2.1 What changed, and why](#21-what-changed-and-why)
+- [2.2 Constants](#22-constants)
+- [2.3 The interest rate model](#23-the-interest-rate-model)
+- [2.4 `BorrowerOperations`](#24-borroweroperations)
+- [2.5 `TroveManager`](#25-trovemanager)
+- [2.6 `CollateralRegistry`](#26-collateralregistry)
+- [2.7 `StabilityPool`](#27-stabilitypool)
+- [2.8 Pools, registry, NFT and helpers](#28-pools-registry-nft-and-helpers)
+- [2.9 Price feeds](#29-price-feeds)
+- [2.10 Zappers](#210-zappers)
+- [2.11 v2 reference tables](#211-v2-reference-tables)
 
-**[Part 3 — v1 to v2](#part-3--v1-to-v2)**
+**[Part 3 — v1 versus v2](#part-3-v1-versus-v2)**
 
-- [3.1 Function-by-function migration map](#31-migration-map)
-- [3.2 Parameter comparison](#32-parameter-comparison)
-- [3.3 What was removed, and why](#33-what-was-removed)
+- [3.1 Mechanism comparison](#31-mechanism-comparison)
+- [3.2 The through-line](#32-the-through-line)
+- [3.3 Function migration map](#33-function-migration-map)
 
 ---
 
