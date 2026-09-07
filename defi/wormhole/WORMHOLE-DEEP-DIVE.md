@@ -396,3 +396,161 @@ floor-based, so it is strictly more than two thirds:
 
 Both `parseVM` and `quorum` are `virtual`, so a subclass can override the wire
 format or the threshold. That is used by test harnesses and by forks.
+
+---
+
+## 2. Publishing a message
+
+Verification is the hard half. Publishing is almost trivially simple, and that
+simplicity is the design.
+
+### 2.1 `publishMessage`
+
+[`wormhole/ethereum/contracts/Implementation.sol:15-26`](wormhole/ethereum/contracts/Implementation.sol#L15-L26):
+
+```solidity
+function publishMessage(
+    uint32 nonce,
+    bytes memory payload,
+    uint8 consistencyLevel
+) public payable returns (uint64 sequence) {
+    // check fee
+    require(msg.value == messageFee(), "invalid fee");
+
+    sequence = useSequence(msg.sender);
+    // emit log
+    emit LogMessagePublished(msg.sender, sequence, nonce, payload, consistencyLevel);
+}
+```
+
+That is the entire on-chain publish path. Walked properly:
+
+- **Inputs.** `nonce` is application-defined and opaque to the protocol.
+  `payload` is arbitrary bytes. `consistencyLevel` tells Guardians how long to
+  wait before signing.
+- **Checks.** Exactly one: `msg.value == messageFee()`, at
+  [`:21`](wormhole/ethereum/contracts/Implementation.sol#L21). Note it is
+  equality, not `>=`. Overpaying reverts. Integrators must read
+  [`messageFee()`](wormhole/ethereum/contracts/Getters.sol#L49) and forward
+  precisely that amount, which is why every bridge contract in section 3 threads
+  a `wormholeFee` through its accounting.
+- **State writes.** One, via
+  [`useSequence`](wormhole/ethereum/contracts/Implementation.sol#L28-L31):
+  `_state.sequences[msg.sender] += 1`, returning the pre-increment value.
+- **External calls.** None. This is important — publishing cannot reenter.
+- **Emits.** `LogMessagePublished(sender, sequence, nonce, payload, consistencyLevel)`,
+  declared at
+  [`:12`](wormhole/ethereum/contracts/Implementation.sol#L12), with `sender`
+  indexed.
+
+**There is no storage of the message.** The payload is never written to state; it
+exists only as event data. The contract does not know or care whether anyone
+observed it. That is what "the core protocol is decoupled from application logic"
+actually means in code: the core is a fee-metered, sequence-numbered event
+emitter, and everything else is built by reading its logs.
+
+**The emitter is `msg.sender`, always.** There is no way to publish on behalf of
+another address on EVM. The whitepaper explains the general rule: the emitter *"is
+either a parameter to the postMessage method if the chain allows proving that the
+caller controls or is authorized by said address (i.e. Solana PDAs), or it is the
+sender of the transaction"*
+([`wormhole/whitepapers/0004_message_publishing.md`](wormhole/whitepapers/0004_message_publishing.md)).
+EVM has no PDA equivalent, so it takes the second branch. Solana takes the
+first — see section 5.
+
+The consequence is that **`(emitterChainId, emitterAddress)` is the security
+boundary for every application built on Wormhole.** A VAA proves only "this
+address on this chain emitted these bytes". If your destination contract does not
+check *who* emitted, anyone can publish a message with your payload format and
+your contract will honour it. The token bridge's check is
+[`verifyBridgeVM`](wormhole/ethereum/contracts/bridge/Bridge.sol#L774-L777), and
+governance's is
+[`verifyGovernanceVM`](wormhole/ethereum/contracts/Governance.sol#L190-L220).
+
+Sequence numbers are per-emitter, read back through
+[`nextSequence(address)`](wormhole/ethereum/contracts/Getters.sol#L53-L55). They
+give each emitter a totally-ordered, gapless message stream. Combined with
+`emitterChain` and `emitterAddress`, the triple
+`(emitterChain, emitterAddress, sequence)` uniquely identifies a message across
+the entire network — that triple is exactly the replay key used on Solana
+([`wormhole/solana/bridge/program/src/accounts/claim.rs:108-112`](wormhole/solana/bridge/program/src/accounts/claim.rs#L108-L112)),
+whereas EVM instead keys on `vm.hash`.
+
+### 2.2 The contract is not payable, except here
+
+[`wormhole/ethereum/contracts/Implementation.sol:77-79`](wormhole/ethereum/contracts/Implementation.sol#L77-L79):
+
+```solidity
+fallback() external payable {revert("unsupported");}
+receive() external payable {revert("the Wormhole contract does not accept assets");}
+```
+
+Fees accumulate as the contract's ETH balance and are later swept by governance
+via `submitTransferFees` (section 4). But you cannot simply send ETH to the core
+bridge; the only way in is through `publishMessage`.
+
+### 2.3 What the Guardians actually do
+
+The on-chain half stops at the event. The rest is off-chain and is worth stating
+plainly because it is where the trust lives:
+
+1. Each Guardian runs a **full node** for every connected chain. Not a light
+   client — a full node. They see `LogMessagePublished` as a normal log.
+2. They wait for the requested `consistencyLevel`.
+3. Each independently reconstructs the VAA **body** from the log plus block
+   metadata, computes `keccak256(keccak256(body))`, and signs it with its
+   secp256k1 guardian key.
+4. Signatures are gossiped over a p2p network. Once ≥ quorum exist, anyone can
+   concatenate header + signatures + body into a VAA.
+
+Step 3 is the interesting one. The `timestamp` field is **not** supplied by the
+publisher; it is derived by the Guardians from the block. The whitepaper: *"The
+timestamp is derived by the guardian software using the finalized timestamp of
+the block the message was published in."* So a VAA's timestamp is an attestation
+about the source chain's clock, not a user input.
+
+Step 4 explains why VAAs are bearer credentials and why "relayer" is an
+unprivileged role in this protocol. A relayer is just someone willing to pay
+destination gas.
+
+### 2.4 `consistencyLevel`, and why finality is per-chain
+
+`consistencyLevel` is one byte, opaque to the contract, and interpreted entirely
+by Guardian software. It exists because **finality does not mean the same thing
+on every chain**.
+
+On Solana, "confirmed" and "finalized" are distinct states seconds apart. On
+Ethereum post-merge there is a two-epoch (~13 minute) finality gap during which a
+block can still be reorganised. On BSC or Polygon, deeper reorgs have happened in
+production.
+
+This creates a genuine and unavoidable tension. Guardians sign an observation of
+a block. If that block is later reorganised away, the Guardians have signed an
+attestation to an event that no longer exists — but the VAA is already valid
+forever on every other chain, because signatures do not expire. **A reorg after
+signing is unrecoverable**: tokens were locked in a transaction that got undone,
+yet the mint on the far side is fully authorised.
+
+So `consistencyLevel` is the application's dial between latency and safety. The
+whitepaper frames it exactly that way: it *"allows latency sensitive applications
+to make sacrifices on safety while critical applications can sacrifice latency
+over safety"*, and *"chains with instant finality can omit the argument"*.
+
+The token bridge does not expose the dial to users. It hardcodes a per-deployment
+value read from storage,
+[`finality()`](wormhole/ethereum/contracts/bridge/BridgeGetters.sol#L75), stored
+as a `uint8` at
+[`wormhole/ethereum/contracts/bridge/BridgeState.sol:13`](wormhole/ethereum/contracts/bridge/BridgeState.sol#L13),
+and passes it on every publish — see `attestToken` at
+[`Bridge.sol:253`](wormhole/ethereum/contracts/bridge/Bridge.sol#L253). Moving
+money is the "sacrifice latency over safety" case.
+
+### 2.5 The fee model
+
+Fees exist for spam control, not revenue. The whitepaper: *"In order to
+incentivize guardians and prevent spamming of the Wormhole network, publishing a
+message will require a fee payment."* The fee is denominated in the chain's
+native currency, set per chain by governance, and is frequently **zero** on
+mainnet EVM deployments — which is why `require(msg.value == messageFee())` with
+`msg.value == 0` is the common case and integrators often forget the fee exists
+at all until they hit a chain where it does not.
