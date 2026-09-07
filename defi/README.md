@@ -70,6 +70,15 @@ Each reference ends with an ABI/selector table, a storage-layout table, an event
 reference, a revert-string decoder, and a use-case index that maps "I want to do
 X" to the exact function and its full internal call chain.
 
+## The map
+
+[`DEFILLAMA.md`](DEFILLAMA.md) zooms out: where each of these eight protocols
+sits in the wider landscape, how DefiLlama actually computes the numbers (its
+adapters are open-source JavaScript, and a slice is cloned under
+`defillama/adapters`), why TVL is the wrong metric for two of the eight, and
+which categories remain uncovered. Read it first if you want the lay of the land,
+or last if you want the numbers to mean something.
+
 ## Practice
 
 Reading will not make it stick. [`PRACTICE.md`](PRACTICE.md) is a seven-week plan
