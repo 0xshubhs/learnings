@@ -1137,7 +1137,7 @@ and that the message is exactly 32 bytes
 ([`:157-160`](wormhole/solana/bridge/program/src/api/verify_signature.rs#L157-L160)).
 
 Finally it records progress into the `SignatureSet`
-([`:196-215`](wormhole/solana/bridge/program/src/api/verify_signature.rs#L196-L215)):
+([`:196-215`](wormhole/solana/bridge/program/src/api/verify_signature.rs#L203-L214)):
 
 ```rust
 let key = accs.guardian_set.keys[s.signer_index as usize];
@@ -1153,14 +1153,14 @@ accs.signature_set.signatures[s.signer_index as usize] = true;
 **Note the data structure.** EVM uses an *array of signatures* and enforces
 strictly ascending indices to prevent double-counting (section 1.4). Solana uses
 a **bitmap indexed by guardian index**, `signatures: vec![false; keys.len()]`
-([`:171`](wormhole/solana/bridge/program/src/api/verify_signature.rs#L171)).
+([`:172`](wormhole/solana/bridge/program/src/api/verify_signature.rs#L172)).
 Setting the same bit twice is idempotent, so duplicates are structurally
 impossible and no ordering rule is needed. That is not a stylistic difference; it
 falls out of the fact that state persists across transactions, so a bitmap can be
 accumulated where an array could not.
 
 The first call creates the account and pins its parameters; later calls must
-match ([`:170-194`](wormhole/solana/bridge/program/src/api/verify_signature.rs#L170-L194)):
+match ([`:186-193`](wormhole/solana/bridge/program/src/api/verify_signature.rs#L186-L193)):
 
 ```rust
 if accs.signature_set.guardian_set_index != accs.guardian_set.index {
