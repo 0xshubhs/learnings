@@ -789,3 +789,147 @@ requires a guardian quorum. That is the structural reason liquid staking with
 unknown operators is viable at all.
 
 ---
+
+## 6. Lido v3: stVaults
+
+### 6.1 The problem v2 could not solve
+
+In v2 there is exactly one pool with one risk profile and one set of terms.
+Everyone's ETH is commingled, everyone gets the same fee, and everyone shares the
+same operators. That is the right product for a retail depositor and the wrong
+one for an institution that needs its own operator, its own collateral
+segregation, or a bespoke fee.
+
+**stVaults** are Lido's answer: a depositor gets their own vault contract holding
+their own validators, and can optionally connect it to the core protocol to mint
+stETH against it.
+
+### 6.2 It is a CDP
+
+This is the framing that makes the code legible, and it is the reason this
+section is easier than it looks: **a connected stVault is a collateralised debt
+position, and you have already read two of those.**
+
+```
+        StakingVault                         VaultHub
+   (holds ETH + validators)  <---------->  (the lending side)
+        = collateral                        = tracks debt, enforces ratios
+                                                  |
+                                             mints stETH
+                                            (liabilityShares)
+```
+
+The accounting sits in two structs. `VaultConnection`
+([`VaultHub.sol:48-75`](core/contracts/0.8.25/vaults/VaultHub.sol#L48-L75))
+holds the terms:
+
+| Field | CDP equivalent |
+|---|---|
+| `shareLimit` | a debt ceiling for this vault |
+| `reserveRatioBP` | over-collateralisation requirement |
+| `forcedRebalanceThresholdBP` | the liquidation trigger |
+| `infraFeeBP`, `liquidityFeeBP`, `reservationFeeBP` | interest, in three parts |
+
+and `VaultRecord` ([`:77-100`](core/contracts/0.8.25/vaults/VaultHub.sol#L77-L100))
+holds the position: `liabilityShares` is the debt, `inOutDelta` tracks net
+deposits, `redemptionShares` marks debt reserved for core redemptions.
+
+The comment on `reserveRatioBP` spells out the arithmetic:
+
+> RR=30% means that for 1stETH minted 1/(1-0.3)=1.428571428571428571 ETH is
+> locked on the vault
+
+[`VaultHub.sol:62-63`](core/contracts/0.8.25/vaults/VaultHub.sol#L62-L63)
+
+That is a 142.86% collateral ratio, sitting between Liquity's 110% minimum and a
+typical Aave LTV. `forcedRebalanceThresholdBP` is the point at which the vault is
+rebalanced against its will, which is liquidation under a gentler name.
+
+The supporting cast: `OperatorGrid`
+([`OperatorGrid.sol`](core/contracts/0.8.25/vaults/OperatorGrid.sol#L1)) holds the
+tier system deciding which terms a given operator's vaults get; `Dashboard`
+([`Dashboard.sol`](core/contracts/0.8.25/vaults/dashboard/Dashboard.sol#L1)) is
+the owner-facing role-gated front end; `LazyOracle`
+([`LazyOracle.sol`](core/contracts/0.8.25/vaults/LazyOracle.sol#L1)) supplies
+per-vault valuations without forcing every vault into the main oracle report.
+
+### 6.3 Externalising the share supply
+
+Section 1.2 mentioned "external shares" without explaining them. This is where
+they come from. stETH minted against a vault is backed by *that vault's* ether,
+not by the main pool, so it must not enter the internal share rate. Hence
+`Lido.mintExternalShares` ([`Lido.sol:927`](core/contracts/0.4.24/Lido.sol#L927))
+and `burnExternalShares` ([`:949`](core/contracts/0.4.24/Lido.sol#L949)), and the
+split numerator and denominator you read earlier.
+
+The exposure is capped protocol-wide by `maxExternalRatioBP`, with the algebra
+worked out in the comment above `_getMaxMintableExternalShares`
+([`Lido.sol:1312-1320`](core/contracts/0.4.24/Lido.sol#L1312-L1320)):
+
+```
+(externalShares + x) / (totalShares + x) <= maxRatioBP / totalBP
+x <= (totalShares * maxRatioBP - externalShares * totalBP) / (totalBP - maxRatioBP)
+```
+
+If a vault goes bad, `internalizeExternalBadDebt`
+([`Lido.sol:1037`](core/contracts/0.4.24/Lido.sol#L1037)) moves the shortfall onto
+the main pool, socialising it across all stETH holders. That is the ultimate
+backstop, and the ratio cap is what bounds how much damage it can do.
+
+### 6.4 The predeposit guarantee
+
+Section 2.2 described the deposit front-running attack and the guardian committee
+that stops it. stVaults cannot use that solution: they are permissionless, so
+there is no vetted operator set and no committee watching.
+
+`PredepositGuarantee` solves it with collateral instead of trust. The contract's
+own header states the design:
+
+> It allows Node Operators(NO) to provide ether to back up their validators'
+> deposits. While only Staking Vault ether is used to deposit to the beacon
+> chain, NO's ether is locked. And can only be unlocked if the validator is
+> proven to have valid Withdrawal Credentials on Ethereum Consensus Layer.
+
+[`PredepositGuarantee.sol:6-11`](core/contracts/0.8.25/vaults/predeposit_guarantee/PredepositGuarantee.sol#L6-L11)
+
+The flow:
+
+```
+1  NO posts 1 ETH bond per validator          PREDEPOSIT_AMOUNT :91
+2  predeposit() sends 1 ETH from the vault    predeposit()      :397
+3  NO proves the validator's withdrawal
+   credentials really point at the vault,
+   via a Merkle proof against the beacon
+   block root (EIP-4788)
+4a proof valid   -> bond unlocked, vault may deposit the rest
+4b proof invalid -> proveInvalidValidatorWC() :563, bond is
+                    compensated to the vault
+```
+
+The attack is now unprofitable rather than impossible. An operator *can* set
+hostile withdrawal credentials, but doing so forfeits their bond to the very
+vault they tried to rob. Economic security replacing committee security, which is
+what permissionlessness costs you.
+
+### 6.5 Why on-chain BLS
+
+Step 3 needs to verify that a validator's deposit message was signed correctly,
+and beacon-chain deposit signatures are **BLS12-381**, not ECDSA. So Lido ships a
+BLS verification library:
+
+> Modified & stripped BLS Lib to support ETH beacon spec for validator deposit
+> message verification.
+> Uses the Cancun-only `mcopy` opcode; deployment requires an EVM with Cancun support.
+
+[`core/contracts/common/lib/BLS.sol:1-4`](core/contracts/common/lib/BLS.sol#L1-L4)
+
+Together with `SSZ.sol`
+([`core/contracts/common/lib/SSZ.sol`](core/contracts/common/lib/SSZ.sol#L1)) for
+beacon-chain serialisation and `CLProofVerifier`
+([`CLProofVerifier.sol`](core/contracts/0.8.25/vaults/predeposit_guarantee/CLProofVerifier.sol#L1))
+for the Merkle proofs, this is the execution layer learning to read consensus
+layer state directly. It is the most technically demanding code in the repo, and
+it exists because permissionless vaults removed the option of just trusting a
+committee.
+
+---
