@@ -85,7 +85,7 @@ Three structural facts define v1:
 
 1. **`LendingPoolCore` custodies every asset of every reserve.** One contract, one
    balance, all markets. Its fallback only accepts ETH from contracts
-   (`v1-aave-protocol/contracts/lendingpool/LendingPoolCore.sol:385`).
+   ([`v1-aave-protocol/contracts/lendingpool/LendingPoolCore.sol:385`](v1-aave-protocol/contracts/lendingpool/LendingPoolCore.sol#L385)).
 2. **aTokens rebase off a per-user index**, not a scaled balance
    (`.../tokenization/AToken.sol:338`).
 3. **Liquidation is a `delegatecall`** from `LendingPool` into
@@ -442,7 +442,7 @@ The fee is charged **once, at borrow time**, accumulated in `user.originationFee
 routed to the `TokenDistributor` (`.../fees/TokenDistributor.sol`), which split it toward
 LEND/AAVE buyback-and-burn.
 
-The comment at `FeeProvider.sol:30` says "0.0025%" — the code means **0.25%**. A doc bug
+The comment at [`FeeProvider.sol:30`](v1-aave-protocol/contracts/fees/FeeProvider.sol#L30) says "0.0025%" — the code means **0.25%**. A doc bug
 frozen in the repo forever.
 
 v2 kept a flash-loan premium but dropped the borrow origination fee. v3 replaced protocol
@@ -499,7 +499,7 @@ revenue entirely with the reserve factor and liquidation protocol fee.
 Three inversions relative to v1:
 
 1. **Each aToken custodies its own underlying.** `transferUnderlyingTo`
-   (`v2-protocol/contracts/protocol/tokenization/AToken.sol:308`) is how the pool
+   ([`v2-protocol/contracts/protocol/tokenization/AToken.sol:308`](v2-protocol/contracts/protocol/tokenization/AToken.sol#L308)) is how the pool
    releases funds; deposits `safeTransferFrom(msg.sender, aToken, amount)`
    (`.../lendingpool/LendingPool.sol:119`). A bug in one market can no longer drain another.
 2. **Logic is libraries.** `ReserveLogic`, `ValidationLogic`, `GenericLogic` are linked
@@ -762,7 +762,7 @@ function calculateHealthFactorFromBalances(uint256 totalCollateralInETH, uint256
 (`.../libraries/logic/GenericLogic.sol:242`)
 
 Note `totalFeesETH` is gone — v1's health factor had to add origination fees to the debt
-side (`v1-aave-protocol/.../LendingPoolDataProvider.sol:331`); v2 has no such fee.
+side ([`v1-aave-protocol/.../LendingPoolDataProvider.sol:331`](v1-aave-protocol/contracts/lendingpool/LendingPoolDataProvider.sol#L331)); v2 has no such fee.
 
 Every guard lives in `ValidationLogic`: `validateDeposit` (line 41), `validateWithdraw`
 (60), `validateBorrow` (120), `validateRepay` (223), `validateSwapRateMode` (259),
@@ -858,15 +858,15 @@ replaces the whole reserve model, read `aave/AAVE-V4-DEEP-DIVE.md`.
 ## 4. Security notes specific to v1 and v2
 
 **1. v1's per-user index is a rounding surface.** `calculateCumulatedBalanceInternal`
-(`v1/.../AToken.sol:522`) does `rayMul` then `rayDiv` per user, and materialises the
+([`v1/.../AToken.sol:522`](v1-aave-protocol/contracts/tokenization/AToken.sol#L522)) does `rayMul` then `rayDiv` per user, and materialises the
 result by minting. Every interaction re-rounds. `getCompoundedBorrowBalance` explicitly
 adds `1 wei` when rounding would produce zero interest
-(`v1/.../CoreLibrary.sol:283`) — evidence the team hit this in practice. v3.5's
+([`v1/.../CoreLibrary.sol:283`](v1-aave-protocol/contracts/libraries/CoreLibrary.sol#L283)) — evidence the team hit this in practice. v3.5's
 `TokenMath` exists to make all such rounding deliberately favour the protocol.
 
 **2. The `delegatecall` liquidation pattern.** Both versions run the liquidation manager
-inside the pool's storage (`v1/.../LendingPool.sol:815`,
-`v2/.../LendingPool.sol:436`). The manager's storage layout **must** match the pool's
+inside the pool's storage ([`v1/.../LendingPool.sol:815`](v1-aave-protocol/contracts/lendingpool/LendingPool.sol#L815),
+[`v2/.../LendingPool.sol:436`](v1-aave-protocol/contracts/lendingpool/LendingPool.sol#L436)). The manager's storage layout **must** match the pool's
 exactly — v2 enforces this by having `LendingPoolCollateralManager` inherit the same
 `LendingPoolStorage`. Get the layout wrong on an upgrade and you corrupt the pool. v3
 removed the pattern entirely.
@@ -876,32 +876,32 @@ contract. v2's per-aToken custody is a genuine blast-radius reduction, and a lar
 of why the refactor was worth doing.
 
 **4. Stable rate manipulation.** A stable rate below the supply rate is a money loop.
-v1's `rebalanceStableBorrowRate` (`v1/.../LendingPool.sol:741`) and the borrow-time
+v1's `rebalanceStableBorrowRate` ([`v1/.../LendingPool.sol:741`](v1-aave-protocol/contracts/lendingpool/LendingPool.sol#L741)) and the borrow-time
 caps are mitigations, not fixes. The `avgStableRate` in v2's `StableDebtToken` is a
 weighted average that can be shifted by a large borrow at an extreme rate, and the
-"accumulation errors" comment at `v2/.../StableDebtToken.sol:205` is a live admission
+"accumulation errors" comment at [`v2/.../StableDebtToken.sol:205`](v2-protocol/contracts/protocol/tokenization/StableDebtToken.sol#L205) is a live admission
 that two independent accruals can disagree. Removed in v3.2.
 
 **5. Flash loan modes 1 and 2 (v2).** `flashLoan` can end by opening debt on
-`onBehalfOf` (`v2/.../LendingPool.sol:539`). Combined with credit delegation, the
+`onBehalfOf` ([`v2/.../LendingPool.sol:539`](v1-aave-protocol/contracts/lendingpool/LendingPool.sol#L539)). Combined with credit delegation, the
 allowance check in `_decreaseBorrowAllowance` is the only thing standing between a flash
 loan and someone else's collateral. Delegate credit only to contracts you have read.
 
 **6. Oracle dependence.** Both versions take a single price per asset from
 `IPriceOracleGetter` inside the health-factor loop
-(`v1/.../LendingPoolDataProvider.sol:114`, `v2/.../GenericLogic.sol:186`). No
+([`v1/.../LendingPoolDataProvider.sol:114`](v1-aave-protocol/contracts/lendingpool/LendingPoolDataProvider.sol#L114), [`v2/.../GenericLogic.sol:186`](v2-protocol/contracts/protocol/libraries/logic/GenericLogic.sol#L186)). No
 staleness check, no circuit breaker, no sequencer check. Everything downstream —
 borrow limits, liquidation eligibility, liquidation size — is only as good as that feed.
 v3 adds the sentinel.
 
 **7. First-deposit / empty-reserve edges.** Indexes start at `1e27`
-(`v1/.../CoreLibrary.sol:171`). v1's `updateCumulativeIndexes` skips accrual entirely
+([`v1/.../CoreLibrary.sol:171`](v1-aave-protocol/contracts/libraries/CoreLibrary.sol#L171)). v1's `updateCumulativeIndexes` skips accrual entirely
 when `totalBorrows == 0`, and v2's `_updateIndexes` skips when `currentLiquidityRate == 0`
-(`v2/.../ReserveLogic.sol:347`). Both mean a reserve can sit with a static index for
+([`v2/.../ReserveLogic.sol:347`](v2-protocol/contracts/protocol/libraries/logic/ReserveLogic.sol#L347)). Both mean a reserve can sit with a static index for
 long stretches. v3's virtual balances address the donation/inflation variants of this.
 
 **8. `mintToTreasury` deliberately skips the zero check.** The comment at
-`v2/.../AToken.sol:174` says a rounding-to-zero treasury mint is accepted as a tiny loss
+[`v2/.../AToken.sol:174`](v1-aave-protocol/contracts/tokenization/AToken.sol#L174) says a rounding-to-zero treasury mint is accepted as a tiny loss
 rather than reverting a user's transaction. Correct call — but it is an explicit,
 documented asymmetry, and worth knowing when auditing treasury accounting.
 
@@ -915,46 +915,46 @@ no `Transfer` event. Any integrator caching a balance, or any accounting that as
 ## 5. Exercises: trace these yourself
 
 1. **Follow one wei of interest to the treasury in v2.** Start at
-   `v2-protocol/contracts/protocol/libraries/logic/ReserveLogic.sol:110`, walk into
+   [`v2-protocol/contracts/protocol/libraries/logic/ReserveLogic.sol:110`](v2-protocol/contracts/protocol/libraries/logic/ReserveLogic.sol#L110), walk into
    `_updateIndexes` (line 334) and then `_mintToTreasury` (line 274). Then open
    `.../DefaultReserveInterestRateStrategy.sol:216` and prove that the aTokens minted to
    the treasury exactly equal the interest suppliers did *not* receive.
 
 2. **Prove v1 and v2 aTokens are different animals.** Compare
-   `v1-aave-protocol/contracts/tokenization/AToken.sol:338` with
-   `v2-protocol/contracts/protocol/tokenization/AToken.sol:208`. Then answer: in each
+   [`v1-aave-protocol/contracts/tokenization/AToken.sol:338`](v1-aave-protocol/contracts/tokenization/AToken.sol#L338) with
+   [`v2-protocol/contracts/protocol/tokenization/AToken.sol:208`](v2-protocol/contracts/protocol/tokenization/AToken.sol#L208). Then answer: in each
    version, does a user's *stored* ERC20 balance change when nobody touches their
    position? Confirm with `cumulateBalanceInternal` (v1 line 452) and `mint` (v2 line 144).
 
 3. **Trace interest redirection through a transfer.** Open
-   `v1-aave-protocol/contracts/tokenization/AToken.sol:540` (`executeTransferInternal`)
+   [`v1-aave-protocol/contracts/tokenization/AToken.sol:540`](v1-aave-protocol/contracts/tokenization/AToken.sol#L540) (`executeTransferInternal`)
    and `:479`. Work out what happens when A redirects to B, B redirects to C, and A
    transfers half their balance to D.
 
 4. **Measure the compounding change.** Compare
-   `v1-aave-protocol/contracts/libraries/CoreLibrary.sol:413` (with `WadRayMath.sol:72`)
-   against `v2-protocol/contracts/protocol/libraries/math/MathUtils.sol:45`. For a 5% APR
+   [`v1-aave-protocol/contracts/libraries/CoreLibrary.sol:413`](v1-aave-protocol/contracts/libraries/CoreLibrary.sol#L413) (with `WadRayMath.sol:72`)
+   against [`v2-protocol/contracts/protocol/libraries/math/MathUtils.sol:45`](v2-protocol/contracts/protocol/libraries/math/MathUtils.sol#L45). For a 5% APR
    over 30 days, compute both results and the relative error. Which direction does the
    error favour?
 
-5. **Follow the origination fee end to end.** `v1/.../FeeProvider.sol:40` →
-   `v1/.../LendingPool.sol:442` → `v1/.../LendingPoolCore.sol:1342` →
-   repayment at `v1/.../LendingPool.sol:572` → liquidation at
-   `v1/.../LendingPoolLiquidationManager.sol:256`. Then confirm no equivalent exists
+5. **Follow the origination fee end to end.** [`v1/.../FeeProvider.sol:40`](v1-aave-protocol/contracts/fees/FeeProvider.sol#L40) →
+   [`v1/.../LendingPool.sol:442`](v1-aave-protocol/contracts/lendingpool/LendingPool.sol#L442) → [`v1/.../LendingPoolCore.sol:1342`](v1-aave-protocol/contracts/lendingpool/LendingPoolCore.sol#L1342) →
+   repayment at [`v1/.../LendingPool.sol:572`](v1-aave-protocol/contracts/lendingpool/LendingPool.sol#L572) → liquidation at
+   [`v1/.../LendingPoolLiquidationManager.sol:256`](v1-aave-protocol/contracts/lendingpool/LendingPoolLiquidationManager.sol#L256). Then confirm no equivalent exists
    anywhere in `v2-protocol`.
 
 6. **Both liquidations, side by side.** Read
-   `v1/.../LendingPoolLiquidationManager.sol:124` and
-   `v2/.../LendingPoolCollateralManager.sol:81`. List every difference in ordering,
+   [`v1/.../LendingPoolLiquidationManager.sol:124`](v1-aave-protocol/contracts/lendingpool/LendingPoolLiquidationManager.sol#L124) and
+   [`v2/.../LendingPoolCollateralManager.sol:81`](v2-protocol/contracts/protocol/lendingpool/LendingPoolCollateralManager.sol#L81). List every difference in ordering,
    units (percent vs bps), and the debt-burn priority rule in v2 at lines 165–184.
 
 7. **Make credit delegation dangerous on paper.** Read
-   `v2/.../tokenization/base/DebtTokenBase.sol:40` and `:121`, then
-   `v2/.../LendingPool.sol:539`. Write out the exact sequence by which a delegatee
+   [`v2/.../tokenization/base/DebtTokenBase.sol:40`](v2-protocol/contracts/protocol/tokenization/base/DebtTokenBase.sol#L40) and `:121`, then
+   [`v2/.../LendingPool.sol:539`](v1-aave-protocol/contracts/lendingpool/LendingPool.sol#L539). Write out the exact sequence by which a delegatee
    converts a flash loan into permanent debt for a delegator, and identify the single
    check that bounds it.
 
 8. **Count the storage reads.** For a `deposit` of an already-supplied asset, list every
-   `SLOAD`/`SSTORE` in v1 (`LendingPool.sol:299` → `LendingPoolCore.sol:107`) versus v2
-   (`LendingPool.sol:104` → `ReserveLogic.sol:110`). The bitmap in
-   `DataTypes.sol:30` should account for most of the gap.
+   `SLOAD`/`SSTORE` in v1 ([`LendingPool.sol:299`](v1-aave-protocol/contracts/lendingpool/LendingPool.sol#L299) → [`LendingPoolCore.sol:107`](v1-aave-protocol/contracts/lendingpool/LendingPoolCore.sol#L107)) versus v2
+   ([`LendingPool.sol:104`](v1-aave-protocol/contracts/lendingpool/LendingPool.sol#L104) → [`ReserveLogic.sol:110`](v2-protocol/contracts/protocol/libraries/logic/ReserveLogic.sol#L110)). The bitmap in
+   [`DataTypes.sol:30`](v2-protocol/contracts/protocol/libraries/types/DataTypes.sol#L30) should account for most of the gap.

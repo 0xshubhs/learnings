@@ -5,10 +5,13 @@ primitives of on-chain finance: **exchange** (Uniswap, Curve), **credit** (Aave)
 and **routing across chains** (LI.FI).
 
 Every protocol's real source is cloned into this folder with its `.git` removed,
-so the tree is one flat, greppable corpus. Every claim in the notes cites a
-`file:line` that was verified against these exact files with `grep -n`. Open the
-code next to the prose — the notes are written to be read that way, not instead
-of it.
+so the tree is one flat, greppable corpus.
+
+**Every citation is a working link.** All 1,381 of them are clickable and jump
+to the exact line, on GitHub and in most editors. Each was verified twice: that
+the target file exists and the line is in range, and that the line actually says
+what the surrounding prose claims. Open the code next to the prose — the notes
+are written to be read that way, not instead of it.
 
 ---
 

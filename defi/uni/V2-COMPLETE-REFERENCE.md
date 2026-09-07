@@ -156,7 +156,7 @@ event PairCreated(address indexed token0, address indexed token1, address pair, 
 | 2 | `mapping` | `getPair` | populated in BOTH directions, see `:34-35` |
 | 3 | `address[]` | `allPairs` | append-only; `allPairs.length` is the pair count |
 
-**`constructor(address _feeToSetter)`** — `v2-core/contracts/UniswapV2Factory.sol:15-17`.
+**`constructor(address _feeToSetter)`** — [`v2-core/contracts/UniswapV2Factory.sol:15-17`](v2-core/contracts/UniswapV2Factory.sol#L15-L17).
 Sets `feeToSetter = _feeToSetter`. Note `feeTo` is left at zero, so the protocol
 fee starts off. No validation: passing `address(0)` permanently bricks fee
 governance (nobody can ever call `setFeeTo`).
@@ -193,7 +193,7 @@ function createPair(address tokenA, address tokenB) external returns (address pa
 - **External calls:** `IUniswapV2Pair(pair).initialize(token0, token1)` at `:33`.
 - **Returns:** the new pair address. **Emits:** `PairCreated(token0, token1, pair, allPairs.length)` at `:37`.
 - **Who may call:** anyone. Pair creation is permissionless.
-- **Callers in repo:** `UniswapV2Router01.sol:40` and `UniswapV2Router02.sol:43`, both inside `_addLiquidity`, which auto-creates the pair if it does not exist.
+- **Callers in repo:** [`UniswapV2Router01.sol:40`](v2-periphery/contracts/UniswapV2Router01.sol#L40) and [`UniswapV2Router02.sol:43`](v2-periphery/contracts/UniswapV2Router02.sol#L43), both inside `_addLiquidity`, which auto-creates the pair if it does not exist.
 
 The deployment itself:
 
@@ -211,10 +211,10 @@ address is `keccak256(0xff ++ factory ++ salt ++ keccak256(creationCode))[12:]`.
 For this to be computable off-chain without any RPC call, `keccak256(creationCode)`
 must be a *constant* — which means the creation code cannot contain constructor
 arguments. So the tokens are set afterwards by `initialize`, and the constructor
-only records `factory = msg.sender` (`UniswapV2Pair.sol:61-63`).
+only records `factory = msg.sender` ([`UniswapV2Pair.sol:61-63`](v2-core/contracts/UniswapV2Pair.sol#L61-L63)).
 
 That constant is the famous **init code hash**, hardcoded in the periphery at
-`v2-periphery/contracts/libraries/UniswapV2Library.sol:24`:
+[`v2-periphery/contracts/libraries/UniswapV2Library.sol:24`](v2-periphery/contracts/libraries/UniswapV2Library.sol#L24):
 
 ```
 0x96e8ac4277198ff8b6f785478aa9a39f403cb768dd02cbee326c3e7da348845f
@@ -234,7 +234,7 @@ function setFeeTo(address _feeTo) external          v2-core/contracts/UniswapV2F
 - **Purpose:** turn the protocol fee on (non-zero) or off (zero) and choose its recipient.
 - **Checks:** `:41` `require(msg.sender == feeToSetter, 'UniswapV2: FORBIDDEN')`.
 - **State writes:** `feeTo = _feeTo`. **Events:** none (deliberately — no event on a governance change is a real observability gap).
-- **Effect elsewhere:** every `UniswapV2Pair._mintFee` reads `IUniswapV2Factory(factory).feeTo()` (`UniswapV2Pair.sol:90`) on every `mint` and `burn`. Flipping this one address changes fee behaviour for every pair at once.
+- **Effect elsewhere:** every `UniswapV2Pair._mintFee` reads `IUniswapV2Factory(factory).feeTo()` ([`UniswapV2Pair.sol:90`](v2-core/contracts/UniswapV2Pair.sol#L90)) on every `mint` and `burn`. Flipping this one address changes fee behaviour for every pair at once.
 
 ### 1.5 `setFeeToSetter(address)`
 
@@ -354,14 +354,14 @@ require(success && (data.length == 0 || abi.decode(data, (bool))), 'UniswapV2: T
 
 ### 2.5 `constructor()` and `initialize(address,address)`
 
-**`constructor()`** — `v2-core/contracts/UniswapV2Pair.sol:61-63`. Sets
+**`constructor()`** — [`v2-core/contracts/UniswapV2Pair.sol:61-63`](v2-core/contracts/UniswapV2Pair.sol#L61-L63). Sets
 `factory = msg.sender`. Takes no arguments so that the creation code hash is
 constant (see §1.3).
 
 **`initialize(address _token0, address _token1)`** — `:66-70`.
 
 - **Purpose:** one-time setting of the two token addresses, called by the Factory immediately after `create2`.
-- **Checks:** `:67` `require(msg.sender == factory, 'UniswapV2: FORBIDDEN')`. The source comment calls this "sufficient check" — it is, because the Factory only ever calls it once, at `UniswapV2Factory.sol:33`, immediately after deployment, within the same transaction.
+- **Checks:** `:67` `require(msg.sender == factory, 'UniswapV2: FORBIDDEN')`. The source comment calls this "sufficient check" — it is, because the Factory only ever calls it once, at [`UniswapV2Factory.sol:33`](v2-core/contracts/UniswapV2Factory.sol#L33), immediately after deployment, within the same transaction.
 - **State writes:** `token0`, `token1`.
 - **Gotcha:** there is no `initialized` flag. The safety rests entirely on the Factory calling it exactly once. A forked factory that calls `initialize` twice would re-point a live pool at different tokens.
 
@@ -505,7 +505,7 @@ emit Mint(msg.sender, amount0, amount1);                               // :130
 - **State writes:** `totalSupply`, `balanceOf[to]`, `balanceOf[address(0)]` (first mint only), `reserve0/1`, `blockTimestampLast`, accumulators, possibly `kLast`.
 - **External calls:** two `balanceOf`, plus `factory.feeTo()` inside `_mintFee`.
 - **Emits:** `Transfer` (from `_mint`), possibly a second `Transfer` for the fee, `Sync`, `Mint`.
-- **Callers:** `Router01.sol:72`, `:94`; `Router02.sol:75`, `:97`.
+- **Callers:** [`Router01.sol:72`](v2-periphery/contracts/UniswapV2Router01.sol#L72), `:94`; [`Router02.sol:75`](v2-periphery/contracts/UniswapV2Router02.sol#L75), `:97`.
 
 **First mint — `sqrt(amount0 * amount1)`.** The geometric mean makes the initial
 share count independent of the units of either token, so LP token value does not
@@ -522,7 +522,7 @@ valuable, which costs at least 1000× more than the profit.
 **Subsequent mints — `min` of the two ratios.** You get shares proportional to
 the *scarcer* of your two contributions. Anything you over-contribute is simply
 absorbed by the pool and given to existing LPs. This is why the Router computes
-optimal amounts with `quote` first (`Router02.sol:49`, `:54`) — the Pair itself
+optimal amounts with `quote` first ([`Router02.sol:49`](v2-periphery/contracts/UniswapV2Router02.sol#L49), `:54`) — the Pair itself
 will happily eat your excess.
 
 - **Gotchas:**
@@ -560,10 +560,10 @@ emit Burn(msg.sender, amount0, amount1, to);                           // :155
 - **State writes:** `balanceOf[address(this)]`, `totalSupply`, reserves, accumulators, possibly `kLast`.
 - **External calls:** 2 `balanceOf` before, 2 `_safeTransfer`, 2 `balanceOf` after, plus `feeTo()`.
 - **Emits:** `Transfer` (burn), `Sync`, `Burn`.
-- **Callers:** `Router01.sol:110`, `Router02.sol:114`.
+- **Callers:** [`Router01.sol:110`](v2-periphery/contracts/UniswapV2Router01.sol#L110), [`Router02.sol:114`](v2-periphery/contracts/UniswapV2Router02.sol#L114).
 - **Why balances, not reserves (`:144-145`, and the source comment says "using balances ensures pro-rata distribution").** If someone donated tokens to the pair, those donated tokens belong to LPs. Using `balance` distributes them; using `reserve` would strand them until `skim`.
 - **Why balances are re-read at `:150-151`.** With a fee-on-transfer token, the pair sends `amount0` but its balance drops by more than `amount0`. Re-reading makes the reserves reflect what the pair *actually* holds.
-- **Gotcha:** LP tokens must be transferred to the pair first. `Router02.sol:113` does `transferFrom(msg.sender, pair, liquidity)` immediately before calling `burn`.
+- **Gotcha:** LP tokens must be transferred to the pair first. [`Router02.sol:113`](v2-periphery/contracts/UniswapV2Router02.sol#L113) does `transferFrom(msg.sender, pair, liquidity)` immediately before calling `burn`.
 
 ### 2.10 `swap(uint,uint,address,bytes)`
 
@@ -614,7 +614,7 @@ emit Swap(msg.sender, amount0In, amount1In, amount0Out, amount1Out, to);        
 - **State writes:** reserves, timestamp, accumulators (all via `_update`).
 - **External calls, in order:** `transfer` out (up to 2), then `uniswapV2Call` on `to` if `data` is non-empty, then 2 `balanceOf`.
 - **Emits:** `Sync`, `Swap`.
-- **Callers:** `Router01.sol:176`, `Router02.sol:219` (`_swap`), `Router02.sol:336` (`_swapSupportingFeeOnTransferTokens`).
+- **Callers:** [`Router01.sol:176`](v2-periphery/contracts/UniswapV2Router01.sol#L176), [`Router02.sol:219`](v2-periphery/contracts/UniswapV2Router02.sol#L219) (`_swap`), [`Router02.sol:336`](v2-periphery/contracts/UniswapV2Router02.sol#L336) (`_swapSupportingFeeOnTransferTokens`).
 
 **The k-check, derived.** The fee is 0.30% of the input. Rather than deducting it,
 V2 checks the invariant against *fee-adjusted* balances. `balance0Adjusted =
@@ -648,7 +648,7 @@ The `lock` modifier is what makes handing control to `to` safe: the borrower
 cannot re-enter `swap`, `mint`, `burn`, `skim`, or `sync`.
 
 - **Gotchas:**
-  - `msg.sender` is passed to the callback (`:172`) so the borrower knows who initiated. `ExampleFlashSwap.sol:55` uses it to return profit.
+  - `msg.sender` is passed to the callback (`:172`) so the borrower knows who initiated. [`ExampleFlashSwap.sol:55`](v2-periphery/contracts/examples/ExampleFlashSwap.sol#L55) uses it to return profit.
   - Because the pool checks its own balances, a fee-on-transfer token silently reduces the input. The plain Router path computes amounts with `getAmountsOut` and will fail the k-check; `Router02`'s `SupportingFeeOnTransferTokens` variants (`:321`) measure the actual delivered amount instead.
   - Nothing stops you from swapping both directions at once. The k-check handles it.
   - Anyone can call `swap` directly. If you send tokens and request too little output, the surplus is simply donated to LPs — no revert.
@@ -771,7 +771,7 @@ _transfer(from, to, value);
 ```
 
 - **Gotcha:** `uint(-1)` (max uint256) is treated as *infinite* approval and is never decremented — a gas optimisation that also means a max approval can never be partially consumed.
-- **Callers:** `Router01.sol:109` and `Router02.sol:113` use it to pull LP tokens from the user into the pair before `burn`.
+- **Callers:** [`Router01.sol:109`](v2-periphery/contracts/UniswapV2Router01.sol#L109) and [`Router02.sol:113`](v2-periphery/contracts/UniswapV2Router02.sol#L113) use it to pull LP tokens from the user into the pair before `burn`.
 
 ### 3.4 `permit(...)` — EIP-2612
 
@@ -795,7 +795,7 @@ _approve(owner, spender, value);                                        // :92
 - **Checks:** `:82` deadline; `:91` signature recovers to `owner` and is not the zero address (`ecrecover` returns zero on malformed input, hence the explicit check).
 - **State writes:** `nonces[owner]++` (inside the hash, `:87`), then `allowance[owner][spender]`.
 - **Emits:** `Approval`.
-- **Callers:** `Router01.sol:149`, `:163`; `Router02.sol:153`, `:167`, `:204`.
+- **Callers:** [`Router01.sol:149`](v2-periphery/contracts/UniswapV2Router01.sol#L149), `:163`; [`Router02.sol:153`](v2-periphery/contracts/UniswapV2Router02.sol#L153), `:167`, `:204`.
 - **Gotchas:**
   - The nonce increments *inside the digest computation* at `:87`, which is correct but easy to misread. Each signature is single-use.
   - No EIP-1271 support: contract wallets cannot use `permit` here.
@@ -1107,7 +1107,7 @@ receive() external payable {
 ```
 
 - **`immutable`** means both are baked into bytecode — no `SLOAD`, and no possibility of an admin changing them. The Router has **no owner and no storage**.
-- **`ensure(deadline)`** protects against a transaction sitting in the mempool and executing hours later at a stale price. Applied to every state-changing function *except* the four `WithPermit` variants (`:141`, `:156`, `:193`) — those pass the deadline through to the inner call, which does have `ensure`, and to `permit` itself, which checks its own deadline at `UniswapV2ERC20.sol:82`.
+- **`ensure(deadline)`** protects against a transaction sitting in the mempool and executing hours later at a stale price. Applied to every state-changing function *except* the four `WithPermit` variants (`:141`, `:156`, `:193`) — those pass the deadline through to the inner call, which does have `ensure`, and to `permit` itself, which checks its own deadline at [`UniswapV2ERC20.sol:82`](v2-core/contracts/UniswapV2ERC20.sol#L82).
 - **`receive()`** uses `assert`, not `require`. In 0.6.6 `assert` consumes all remaining gas on failure. This is deliberate: receiving ETH from anything other than WETH means something is deeply wrong. It exists so that `IWETH(WETH).withdraw()` (at `:138`, `:190`, `:281`, `:298`, `:398`) can send ETH back.
 - **Gotcha:** because `receive` rejects everything but WETH, you cannot accidentally donate ETH to the Router. Any ETH that does end up there is stuck forever — there is no rescue function.
 
@@ -1202,7 +1202,7 @@ then delegate to the non-permit version.
 
 - **Purpose:** remove liquidity in one transaction, no prior `approve`.
 - **`approveMax`:** if true, the signature authorises infinite allowance (which `transferFrom` then never decrements — see §3.3). Convenient but leaves a standing infinite approval.
-- **No `ensure` modifier** on these — the deadline is enforced by `permit` (`UniswapV2ERC20.sol:82`) and by the inner `removeLiquidity`.
+- **No `ensure` modifier** on these — the deadline is enforced by `permit` ([`UniswapV2ERC20.sol:82`](v2-core/contracts/UniswapV2ERC20.sol#L82)) and by the inner `removeLiquidity`.
 
 ### 8.4 Remove liquidity (fee-on-transfer)
 
@@ -1355,8 +1355,8 @@ function getAmountIn(uint amountOut, uint reserveIn, uint reserveOut) public pur
 }
 ```
 
-`UniswapV2Router01.sol:270` calls **`getAmountOut`** from a function named
-`getAmountIn`. Compare `Router02.sol:424`, which correctly calls
+[`UniswapV2Router01.sol:270`](v2-periphery/contracts/UniswapV2Router01.sol#L270) calls **`getAmountOut`** from a function named
+`getAmountIn`. Compare [`Router02.sol:424`](v2-periphery/contracts/UniswapV2Router02.sol#L424), which correctly calls
 `UniswapV2Library.getAmountIn`.
 
 - **Impact:** anyone calling `Router01.getAmountIn(...)` as a quoting helper gets a
@@ -1795,7 +1795,7 @@ factory.createPair(tokenA, tokenB)                       UniswapV2Factory.sol:23
  `-- emit PairCreated                                    :37
 ```
 
-Usually you skip this: `_addLiquidity` creates the pair for you (`Router02.sol:42-44`).
+Usually you skip this: `_addLiquidity` creates the pair for you ([`Router02.sol:42-44`](v2-periphery/contracts/UniswapV2Router02.sol#L42-L44)).
 
 ### 16.2 Add liquidity to a new or existing pair
 
@@ -1909,10 +1909,10 @@ yourContract.startArb()
       `-- require(adjusted k-check)                                            Pair:182
 ```
 
-Reference implementation: `examples/ExampleFlashSwap.sol:28`. Two ways to repay:
+Reference implementation: [`examples/ExampleFlashSwap.sol:28`](v2-periphery/contracts/examples/ExampleFlashSwap.sol#L28). Two ways to repay:
 send the *other* token (a normal swap paid late) or the *same* token plus 0.3%
 (a true flash loan). Compute the repayment with
-`UniswapV2Library.getAmountsIn(...)[0]` as at `ExampleFlashSwap.sol:51`.
+`UniswapV2Library.getAmountsIn(...)[0]` as at [`ExampleFlashSwap.sol:51`](v2-periphery/contracts/examples/ExampleFlashSwap.sol#L51).
 
 ### 16.8 Swap a fee-on-transfer token
 
@@ -2022,7 +2022,7 @@ name. It is a public race — bots watch for this. The alternative, `pair.sync()
 ## 17. Selector / ABI tables
 
 Computed with keccak256 and verified: `PERMIT_TYPEHASH` derived here matches the
-hardcoded literal at `UniswapV2ERC20.sol:18` exactly.
+hardcoded literal at [`UniswapV2ERC20.sol:18`](v2-core/contracts/UniswapV2ERC20.sol#L18) exactly.
 
 ### 17.1 UniswapV2Pair (ERC-20 surface, from UniswapV2ERC20)
 
@@ -2082,7 +2082,7 @@ Internal/private (no selector): `_safeTransfer` `:44`, `_update` `:73`,
 
 | Function | Selector | Implemented by |
 |---|---|---|
-| `uniswapV2Call(address,uint256,uint256,bytes)` | `0x10d1e85c` | any flash-swap borrower; e.g. `ExampleFlashSwap.sol:28` |
+| `uniswapV2Call(address,uint256,uint256,bytes)` | `0x10d1e85c` | any flash-swap borrower; e.g. [`ExampleFlashSwap.sol:28`](v2-periphery/contracts/examples/ExampleFlashSwap.sol#L28) |
 
 ### 17.5 UniswapV2Router02 (and Router01 where shared)
 
@@ -2140,21 +2140,21 @@ Plus `receive()` at `:28` (payable, WETH-only) and internal `_addLiquidity:33`,
 
 | Slot | Offset | Type | Name | Declared at |
 |---|---|---|---|---|
-| 0 | 0 | `uint256` | `totalSupply` | `UniswapV2ERC20.sol:12` |
-| 1 | 0 | `mapping(address=>uint256)` | `balanceOf` | `UniswapV2ERC20.sol:13` |
-| 2 | 0 | `mapping(address=>mapping(address=>uint256))` | `allowance` | `UniswapV2ERC20.sol:14` |
-| 3 | 0 | `bytes32` | `DOMAIN_SEPARATOR` | `UniswapV2ERC20.sol:16` |
-| 4 | 0 | `mapping(address=>uint256)` | `nonces` | `UniswapV2ERC20.sol:19` |
-| 5 | 0 | `address` | `factory` | `UniswapV2Pair.sol:18` |
-| 6 | 0 | `address` | `token0` | `UniswapV2Pair.sol:19` |
-| 7 | 0 | `address` | `token1` | `UniswapV2Pair.sol:20` |
-| **8** | **0** | `uint112` | `reserve0` | `UniswapV2Pair.sol:22` |
-| **8** | **14** | `uint112` | `reserve1` | `UniswapV2Pair.sol:23` |
-| **8** | **28** | `uint32` | `blockTimestampLast` | `UniswapV2Pair.sol:24` |
-| 9 | 0 | `uint256` | `price0CumulativeLast` | `UniswapV2Pair.sol:26` |
-| 10 | 0 | `uint256` | `price1CumulativeLast` | `UniswapV2Pair.sol:27` |
-| 11 | 0 | `uint256` | `kLast` | `UniswapV2Pair.sol:28` |
-| 12 | 0 | `uint256` | `unlocked` | `UniswapV2Pair.sol:30` |
+| 0 | 0 | `uint256` | `totalSupply` | [`UniswapV2ERC20.sol:12`](v2-core/contracts/UniswapV2ERC20.sol#L12) |
+| 1 | 0 | `mapping(address=>uint256)` | `balanceOf` | [`UniswapV2ERC20.sol:13`](v2-core/contracts/UniswapV2ERC20.sol#L13) |
+| 2 | 0 | `mapping(address=>mapping(address=>uint256))` | `allowance` | [`UniswapV2ERC20.sol:14`](v2-core/contracts/UniswapV2ERC20.sol#L14) |
+| 3 | 0 | `bytes32` | `DOMAIN_SEPARATOR` | [`UniswapV2ERC20.sol:16`](v2-core/contracts/UniswapV2ERC20.sol#L16) |
+| 4 | 0 | `mapping(address=>uint256)` | `nonces` | [`UniswapV2ERC20.sol:19`](v2-core/contracts/UniswapV2ERC20.sol#L19) |
+| 5 | 0 | `address` | `factory` | [`UniswapV2Pair.sol:18`](v2-core/contracts/UniswapV2Pair.sol#L18) |
+| 6 | 0 | `address` | `token0` | [`UniswapV2Pair.sol:19`](v2-core/contracts/UniswapV2Pair.sol#L19) |
+| 7 | 0 | `address` | `token1` | [`UniswapV2Pair.sol:20`](v2-core/contracts/UniswapV2Pair.sol#L20) |
+| **8** | **0** | `uint112` | `reserve0` | [`UniswapV2Pair.sol:22`](v2-core/contracts/UniswapV2Pair.sol#L22) |
+| **8** | **14** | `uint112` | `reserve1` | [`UniswapV2Pair.sol:23`](v2-core/contracts/UniswapV2Pair.sol#L23) |
+| **8** | **28** | `uint32` | `blockTimestampLast` | [`UniswapV2Pair.sol:24`](v2-core/contracts/UniswapV2Pair.sol#L24) |
+| 9 | 0 | `uint256` | `price0CumulativeLast` | [`UniswapV2Pair.sol:26`](v2-core/contracts/UniswapV2Pair.sol#L26) |
+| 10 | 0 | `uint256` | `price1CumulativeLast` | [`UniswapV2Pair.sol:27`](v2-core/contracts/UniswapV2Pair.sol#L27) |
+| 11 | 0 | `uint256` | `kLast` | [`UniswapV2Pair.sol:28`](v2-core/contracts/UniswapV2Pair.sol#L28) |
+| 12 | 0 | `uint256` | `unlocked` | [`UniswapV2Pair.sol:30`](v2-core/contracts/UniswapV2Pair.sol#L30) |
 
 **Slot 8 is the famous one** — `112+112+32 = 256` bits exactly. One `SLOAD` for
 `getReserves()`, one `SSTORE` for `_update`. Offsets are in bytes from the low

@@ -152,7 +152,7 @@ applying for the extra elapsed time.
 | `future_epoch_time_write() -> uint256` | `:151` | any | Same, but returns `start_epoch_time + RATE_REDUCTION_TIME` |
 
 `future_epoch_time_write` is the one every gauge calls in its constructor and
-in `_checkpoint` (e.g. `LiquidityGaugeV5.vy:170`, `:291`) — the gauge needs to
+in `_checkpoint` (e.g. [`LiquidityGaugeV5.vy:170`](curve-dao-contracts/contracts/gauges/LiquidityGaugeV5.vy#L170), `:291`) — the gauge needs to
 know *when the rate will next change* so it can split its integral at that
 boundary.
 
@@ -627,7 +627,7 @@ controller only ever handles non-negative aggregates.
 The `+1` offset on `gauge_types_` (`:83-85`) is why `gauge_types(_addr)`
 (`:153`) asserts `gauge_type != 0` (`:160`) and returns `gauge_type - 1`
 (`:162`). `Minter._mint_for` relies on this reverting for unregistered gauges
-(`Minter.vy:44`).
+([`Minter.vy:44`](curve-dao-contracts/contracts/Minter.vy#L44)).
 
 `__init__(_token, _voting_escrow)` `:113` asserts both non-zero (`:119-120`)
 and sets `time_total = block.timestamp / WEEK * WEEK` (`:125`).
@@ -714,7 +714,7 @@ zero and returns 0 — hence the write variant.
 
 **`gauge_relative_weight(addr, time = block.timestamp)` `@external @view`
 `:371`** — the view wrapper. This is what gauges call inside their integral
-loop (`LiquidityGaugeV5.vy:308`) — a view, so the *gauge* must have ensured the
+loop ([`LiquidityGaugeV5.vy:308`](curve-dao-contracts/contracts/gauges/LiquidityGaugeV5.vy#L308)) — a view, so the *gauge* must have ensured the
 history exists first, which it does by calling `checkpoint_gauge` at `:302`.
 
 **`gauge_relative_weight_write(addr, time = block.timestamp)` `@external`
@@ -1385,7 +1385,7 @@ if to_mint != 0:
 Four lines carry the whole design:
 
 1. **Registration check.** `gauge_types` reverts for an unregistered gauge
-   (`GaugeController.vy:160`), so a fake gauge cannot mint. The `>= 0` is
+   ([`GaugeController.vy:160`](curve-dao-contracts/contracts/GaugeController.vy#L160)), so a fake gauge cannot mint. The `>= 0` is
    almost decorative — the revert does the work.
 2. **Force a checkpoint.** `user_checkpoint(_for)` brings
    `integrate_fraction[_for]` up to now. The gauge allows this because the
@@ -1825,7 +1825,7 @@ are plain escrows over an ERC-20.
 ### 8.1 The vesting curve
 
 Both escrows share the same three-line schedule
-(`VestingEscrowSimple.vy:124-131`, `VestingEscrow.vy:164-173`):
+([`VestingEscrowSimple.vy:124-131`](curve-dao-contracts/contracts/vests/VestingEscrowSimple.vy#L124-L131), [`VestingEscrow.vy:164-173`](curve-dao-contracts/contracts/vests/VestingEscrow.vy#L164-L173)):
 
 ```python
 if _time < start:
@@ -3143,15 +3143,15 @@ time:
 | String | Where | Cause |
 |---|---|---|
 | `"Access denied"` | `PoolProxy` `:105`, `:119`, `:176`, `:189`, `:268`, `:279`, `:289`, `:301`, `:332`, `:353`, `:408`, `:421`, `:444`, `:455`, `:467`, `:479`, `:492`; `CryptoPoolProxy` similarly; `GaugeProxy` `:44`, `:58`, `:75`, `:98`, `:117`; `PoolProxySidechain` throughout | wrong admin role |
-| `"Unsafe to apply"` | `PoolProxy.vy:396` | pool asymmetry below `min_asymmetries[pool]` |
-| `"Coin not approved for bridging"` | `PoolProxySidechain.vy:459` | `bridge_minimums[coin] == 0` |
-| `"Balance below minimum bridge amount"` | `PoolProxySidechain.vy:460` | see the inverted-comparison note in §7.6 |
-| `"Cannot disable"` | `VestingEscrowSimple.vy:102`, `VestingEscrow.vy:133` | `can_disable` already renounced |
+| `"Unsafe to apply"` | [`PoolProxy.vy:396`](curve-dao-contracts/contracts/PoolProxy.vy#L396) | pool asymmetry below `min_asymmetries[pool]` |
+| `"Coin not approved for bridging"` | [`PoolProxySidechain.vy:459`](curve-dao-contracts/contracts/PoolProxySidechain.vy#L459) | `bridge_minimums[coin] == 0` |
+| `"Balance below minimum bridge amount"` | [`PoolProxySidechain.vy:460`](curve-dao-contracts/contracts/PoolProxySidechain.vy#L460) | see the inverted-comparison note in §7.6 |
+| `"Cannot disable"` | [`VestingEscrowSimple.vy:102`](curve-dao-contracts/contracts/vests/VestingEscrowSimple.vy#L102), [`VestingEscrow.vy:133`](curve-dao-contracts/contracts/vests/VestingEscrow.vy#L133) | `can_disable` already renounced |
 | `"Gauge can only mint for itself"` | `RootGauge*.vy:167` | `integrate_fraction` called with any address but the gauge |
-| `"Reward token already added"` | `ChildChainStreamer.vy:50` | duplicate `add_reward` |
-| `"Reward token not added"` | `ChildChainStreamer.vy:67` | `remove_reward` on an unknown token |
-| `"Reward period still active"` | `ChildChainStreamer.vy:169`, `:191` | non-distributor tried to reset a live period, or `set_reward_duration` during one |
-| `"Invalid token or no new reward"` | `ChildChainStreamer.vy:178` | `notify_reward_amount` with an unregistered token or no surplus |
+| `"Reward token already added"` | [`ChildChainStreamer.vy:50`](curve-dao-contracts/contracts/streamers/ChildChainStreamer.vy#L50) | duplicate `add_reward` |
+| `"Reward token not added"` | [`ChildChainStreamer.vy:67`](curve-dao-contracts/contracts/streamers/ChildChainStreamer.vy#L67) | `remove_reward` on an unknown token |
+| `"Reward period still active"` | [`ChildChainStreamer.vy:169`](curve-dao-contracts/contracts/streamers/ChildChainStreamer.vy#L169), `:191` | non-distributor tried to reset a live period, or `set_reward_duration` during one |
+| `"Invalid token or no new reward"` | [`ChildChainStreamer.vy:178`](curve-dao-contracts/contracts/streamers/ChildChainStreamer.vy#L178) | `notify_reward_amount` with an unregistered token or no surplus |
 | `"Kick not allowed"` / `"Kick not needed"` | `LiquidityGauge*` | see §4 |
 
 Common `# dev:` comment-asserts (invisible on-chain):
@@ -3160,19 +3160,19 @@ Common `# dev:` comment-asserts (invisible on-chain):
 |---|---|---|
 | `# dev: admin only` | everywhere | wrong caller |
 | `# dev: future admin only` | `accept_transfer_ownership` in most contracts | not the pending admin |
-| `# dev: can only initialize once` | `VestingEscrowSimple.vy:75` | `initialize` on the master copy or twice |
-| `# dev: start time too soon` | `VestingEscrowFactory.vy:71` | `_vesting_start < block.timestamp` |
-| `# dev: duration too short` | `VestingEscrowFactory.vy:72` | under one year |
+| `# dev: can only initialize once` | [`VestingEscrowSimple.vy:75`](curve-dao-contracts/contracts/vests/VestingEscrowSimple.vy#L75) | `initialize` on the master copy or twice |
+| `# dev: start time too soon` | [`VestingEscrowFactory.vy:71`](curve-dao-contracts/contracts/vests/VestingEscrowFactory.vy#L71) | `_vesting_start < block.timestamp` |
+| `# dev: duration too short` | [`VestingEscrowFactory.vy:72`](curve-dao-contracts/contracts/vests/VestingEscrowFactory.vy#L72) | under one year |
 | `# dev: is killed` | every burner's `burn` | `is_killed` set |
 | `# dev: only owner` | burners `recover_balance`, streamers | wrong owner |
-| `# dev: only distributor` | `RewardStream.vy:110` | `notify_reward_amount` by a non-distributor |
-| `# dev: caller is not receiver` | `RewardStream.vy:94` | `get_reward` by a non-receiver |
-| `# dev: receiver is active` / `inactive` | `RewardStream.vy:62`, `:78` | double add / remove |
-| `# dev: should implement burn()` | `PoolProxy.vy:236`, `:258` | no burner registered for the coin |
+| `# dev: only distributor` | [`RewardStream.vy:110`](curve-dao-contracts/contracts/streamers/RewardStream.vy#L110) | `notify_reward_amount` by a non-distributor |
+| `# dev: caller is not receiver` | [`RewardStream.vy:94`](curve-dao-contracts/contracts/streamers/RewardStream.vy#L94) | `get_reward` by a non-receiver |
+| `# dev: receiver is active` / `inactive` | [`RewardStream.vy:62`](curve-dao-contracts/contracts/streamers/RewardStream.vy#L62), `:78` | double add / remove |
+| `# dev: should implement burn()` | [`PoolProxy.vy:236`](curve-dao-contracts/contracts/PoolProxy.vy#L236), `:258` | no burner registered for the coin |
 | `# dev: if implemented by the pool` | `PoolProxy` parameter calls | older pool lacks that entry point |
-| `# dev: transfer failed` / `# dev: approve failed` | `VestingEscrow.vy:93`, `VestingEscrowFactory.vy:75` | ERC-20 returned false |
-| `# dev: invalid response` | `RewardStream.vy:85`, `:98` | ERC-20 returned false |
-| `# dev: access denied` | `FeeDistributor.vy:398` | non-admin `commit_admin` |
+| `# dev: transfer failed` / `# dev: approve failed` | [`VestingEscrow.vy:93`](curve-dao-contracts/contracts/vests/VestingEscrow.vy#L93), [`VestingEscrowFactory.vy:75`](curve-dao-contracts/contracts/vests/VestingEscrowFactory.vy#L75) | ERC-20 returned false |
+| `# dev: invalid response` | [`RewardStream.vy:85`](curve-dao-contracts/contracts/streamers/RewardStream.vy#L85), `:98` | ERC-20 returned false |
+| `# dev: access denied` | [`FeeDistributor.vy:398`](curve-dao-contracts/contracts/FeeDistributor.vy#L398) | non-admin `commit_admin` |
 
 > **The compiler caveat.** Vyper **0.2.15, 0.2.16 and 0.3.0** emitted broken
 > `@nonreentrant` locks. In this tree, `grep '# @version'` shows the DAO core

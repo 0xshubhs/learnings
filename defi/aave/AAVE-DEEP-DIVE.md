@@ -4,12 +4,12 @@
 > All paths below are relative to `aave/aave-v3-origin/`. Line numbers were verified against the clone with `grep -n`.
 >
 > **Version note.** `package.json` says `3.6.0`, but the code is the *post-3.6 main branch* with the
-> v3.7 changes already merged (`PoolInstance.POOL_REVISION = 11`, `src/contracts/instances/PoolInstance.sol:15`;
+> v3.7 changes already merged (`PoolInstance.POOL_REVISION = 11`, [`src/contracts/instances/PoolInstance.sol:15`](aave-v3-origin/src/contracts/instances/PoolInstance.sol#L15);
 > `docs/3.7/Aave-v3.7-changelog.md`). Concretely, in this tree:
 > - **Isolation mode, siloed borrowing and the debt ceiling are gone** (`IsolationModeLogic.sol` deleted; bits 61/62 and 212-251 of the reserve config are "unoccupied holes", `ReserveConfiguration.sol:22,30`).
 > - **PriceOracleSentinel / sequencer grace period is gone** (`docs/3.7/sentinel-removal.md`).
 > - **`dropReserve` is gone** (`docs/3.7/drop-reserve-removal.md`).
-> - **A new `isolated` flag on eMode categories** replaces isolation mode (`DataTypes.sol:147`, `docs/3.7/isolated-emode.md`).
+> - **A new `isolated` flag on eMode categories** replaces isolation mode ([`DataTypes.sol:147`](aave-v3-origin/src/contracts/protocol/libraries/types/DataTypes.sol#L147), `docs/3.7/isolated-emode.md`).
 > - **Stable-rate debt was removed in 3.2**, **`unbacked`/Portals in 3.4**, and there is exactly one debt token per reserve: the `VariableDebtToken`.
 >
 > When this doc says "Aave v3" it means the code in this tree. Where a behaviour is version-specific I say which version introduced it.
@@ -38,7 +38,7 @@ The gap between LTV and LT is a safety buffer: you cannot borrow right up to the
 ```
 HF = Σ(collateral_i_in_USD × LT_i) / Σ(debt_j_in_USD)
 ```
-HF ≥ 1 → healthy. HF < 1 → anyone may liquidate. Aave stores it as an 18-decimal number; `1e18` is the boundary (`ValidationLogic.HEALTH_FACTOR_LIQUIDATION_THRESHOLD`, `src/contracts/protocol/libraries/logic/ValidationLogic.sol:32`).
+HF ≥ 1 → healthy. HF < 1 → anyone may liquidate. Aave stores it as an 18-decimal number; `1e18` is the boundary (`ValidationLogic.HEALTH_FACTOR_LIQUIDATION_THRESHOLD`, [`src/contracts/protocol/libraries/logic/ValidationLogic.sol:32`](aave-v3-origin/src/contracts/protocol/libraries/logic/ValidationLogic.sol#L32)).
 
 ### 0.4 Utilization-driven interest rates
 There is no negotiation. The borrow rate is a *function of utilization* `U = totalDebt / (availableLiquidity + totalDebt)`. Low U → cheap borrowing to attract borrowers; U above an "optimal" kink → the rate rises steeply to attract suppliers and push borrowers to repay, keeping liquidity available for withdrawals. The supply rate is the borrow rate × U × (1 − reserve factor). The reserve factor is the protocol's cut.
@@ -78,7 +78,7 @@ Everything below is how the code implements exactly this.
 | `AToken` (one proxy per reserve) | Interest-bearing receipt. **Also the vault**: the underlying ERC20 sits in the aToken contract, not in the Pool. | `src/contracts/protocol/tokenization/AToken.sol` |
 | `VariableDebtToken` (one proxy per reserve) | Non-transferable debt receipt. | `src/contracts/protocol/tokenization/VariableDebtToken.sol` |
 | `RewardsController` / `EmissionManager` | Liquidity-mining accounting, driven by `handleAction` hooks from the tokens. | `src/contracts/rewards/` |
-| Treasury (`Collector`) | Receives reserve-factor cut and liquidation fees as aTokens. Address is an immutable on each aToken (`AToken.sol:32`). | `src/contracts/treasury/` |
+| Treasury (`Collector`) | Receives reserve-factor cut and liquidation fees as aTokens. Address is an immutable on each aToken ([`AToken.sol:32`](aave-v3-origin/src/contracts/protocol/tokenization/AToken.sol#L32)). | `src/contracts/treasury/` |
 | Logic libraries | `SupplyLogic`, `BorrowLogic`, `LiquidationLogic`, `FlashLoanLogic`, `PoolLogic` are **externally linked libraries** (deployed once, called via `DELEGATECALL`). `ReserveLogic`, `ValidationLogic`, `GenericLogic`, `ConfiguratorLogic` are internal (inlined). | `src/contracts/protocol/libraries/logic/` |
 
 ### 1.2 Who calls whom
@@ -111,18 +111,18 @@ Everything below is how the code implements exactly this.
   transfer → Pool.finalizeTransfer() (callback for HF check)
 ```
 
-The `Pool` is the *state* and the *router*. Tokens are *dumb*: they only mint/burn when the Pool tells them to (`onlyPool`, `IncentivizedERC20.sol:45-48`) and they hold the actual ERC20 balances.
+The `Pool` is the *state* and the *router*. Tokens are *dumb*: they only mint/burn when the Pool tells them to (`onlyPool`, [`IncentivizedERC20.sol:45-48`](aave-v3-origin/src/contracts/protocol/tokenization/base/IncentivizedERC20.sol#L45-L48)) and they hold the actual ERC20 balances.
 
 ### 1.3 Why external libraries, and how linking works
-`Pool.sol` imports the logic libraries and calls e.g. `SupplyLogic.executeSupply(_reserves, _eModeCategories, _usersConfig[onBehalfOf], params)` (`Pool.sol:124-137`). `executeSupply` is declared `external` in a `library` (`SupplyLogic.sol:40-45`). Solidity compiles a call to an *external library function* as a `DELEGATECALL` to the library's deployed address, passing storage pointers (`mapping(...) storage`) as slot references. The Pool's bytecode contains a placeholder `__$...$__` that the deployer fills in with the library address (Foundry `--libraries`).
+`Pool.sol` imports the logic libraries and calls e.g. `SupplyLogic.executeSupply(_reserves, _eModeCategories, _usersConfig[onBehalfOf], params)` ([`Pool.sol:124-137`](aave-v3-origin/src/contracts/protocol/pool/Pool.sol#L124-L137)). `executeSupply` is declared `external` in a `library` ([`SupplyLogic.sol:40-45`](aave-v3-origin/src/contracts/protocol/libraries/logic/SupplyLogic.sol#L40-L45)). Solidity compiles a call to an *external library function* as a `DELEGATECALL` to the library's deployed address, passing storage pointers (`mapping(...) storage`) as slot references. The Pool's bytecode contains a placeholder `__$...$__` that the deployer fills in with the library address (Foundry `--libraries`).
 
-Reason: the EIP-170 24 KB contract size limit. The Pool alone cannot hold all this logic. Splitting into libraries keeps the Pool small, and each library can be upgraded by redeploying it and relinking the Pool implementation. The Pool exposes the linked addresses via `getSupplyLogic()` etc. (`Pool.sol:918-940`).
+Reason: the EIP-170 24 KB contract size limit. The Pool alone cannot hold all this logic. Splitting into libraries keeps the Pool small, and each library can be upgraded by redeploying it and relinking the Pool implementation. The Pool exposes the linked addresses via `getSupplyLogic()` etc. ([`Pool.sol:918-940`](aave-v3-origin/src/contracts/protocol/pool/Pool.sol#L918-L940)).
 
 Storage is *not* duplicated: because it is `DELEGATECALL`, the library code runs in the Pool's storage context. That is why every `execute*` takes the storage mappings as parameters.
 
 ### 1.4 Storage: `PoolStorage`
 
-`src/contracts/protocol/pool/PoolStorage.sol:21-56`
+[`src/contracts/protocol/pool/PoolStorage.sol:21-56`](aave-v3-origin/src/contracts/protocol/pool/PoolStorage.sol#L21-L56)
 ```solidity
 mapping(address => DataTypes.ReserveData) internal _reserves;            // asset => reserve state
 mapping(address => DataTypes.UserConfigurationMap) internal _usersConfig; // user => 2-bit-per-reserve bitmap
@@ -138,7 +138,7 @@ mapping(address user => mapping(address permittedPositionManager => bool)) inter
 ```
 Note the deprecated slots are kept to preserve the layout across proxy upgrades.
 
-### 1.5 `DataTypes.ReserveData` field by field (`src/contracts/protocol/libraries/types/DataTypes.sol:42-79`)
+### 1.5 `DataTypes.ReserveData` field by field ([`src/contracts/protocol/libraries/types/DataTypes.sol:42-79`](aave-v3-origin/src/contracts/protocol/libraries/types/DataTypes.sol#L42-L79))
 
 | Field | Type | Meaning |
 |---|---|---|
@@ -149,19 +149,19 @@ Note the deprecated slots are kept to preserve the layout across proxy upgrades.
 | `currentVariableBorrowRate` | uint128 ray | Current borrow APR. |
 | `deficit` | uint128 | Bad debt in underlying units recognised but not yet covered (3.3+). Reuses the old stable-rate slot. |
 | `lastUpdateTimestamp` | uint40 | When indexes were last accrued. |
-| `id` | uint16 | Index in `_reservesList`; also the bit position in user bitmaps. Max 128 reserves (`ReserveConfiguration.MAX_RESERVES_COUNT`, `ReserveConfiguration.sol:64`). |
+| `id` | uint16 | Index in `_reservesList`; also the bit position in user bitmaps. Max 128 reserves (`ReserveConfiguration.MAX_RESERVES_COUNT`, [`ReserveConfiguration.sol:64`](aave-v3-origin/src/contracts/protocol/libraries/configuration/ReserveConfiguration.sol#L64)). |
 | `liquidationGracePeriodUntil` | uint40 | Liquidations blocked until this timestamp (set on un-pause, ≤ 4h). |
 | `aTokenAddress`, `variableDebtTokenAddress` | address | Per-reserve token proxies. |
-| `__deprecatedStableDebtTokenAddress`, `__deprecatedInterestRateStrategyAddress` | | Kept for layout. Strategy is now `Pool.RESERVE_INTEREST_RATE_STRATEGY` (immutable, `Pool.sol:43`). |
+| `__deprecatedStableDebtTokenAddress`, `__deprecatedInterestRateStrategyAddress` | | Kept for layout. Strategy is now `Pool.RESERVE_INTEREST_RATE_STRATEGY` (immutable, [`Pool.sol:43`](aave-v3-origin/src/contracts/protocol/pool/Pool.sol#L43)). |
 | `accruedToTreasury` | uint128 *scaled* | Reserve-factor income owed to treasury, not yet minted as aTokens. |
 | `virtualUnderlyingBalance` | uint128 | The protocol's *own* count of underlying it believes is in the aToken (3.1+). Used for utilization instead of `balanceOf` so donations/rebases cannot move rates. |
 | `__deprecatedIsolationModeTotalDebt`, `__deprecatedVirtualUnderlyingBalance` | | Layout padding. |
 
-`ReserveDataLegacy` (`DataTypes.sol:9-40`) is what the public `getReserveData()` returns for backwards compatibility (`Pool.sol:438-460`); note it hard-codes `unbacked = 0`, `isolationModeTotalDebt = 0` and returns a `MOCK_STABLE_DEBT` address.
+`ReserveDataLegacy` ([`DataTypes.sol:9-40`](aave-v3-origin/src/contracts/protocol/libraries/types/DataTypes.sol#L9-L40)) is what the public `getReserveData()` returns for backwards compatibility ([`Pool.sol:438-460`](aave-v3-origin/src/contracts/protocol/pool/Pool.sol#L438-L460)); note it hard-codes `unbacked = 0`, `isolationModeTotalDebt = 0` and returns a `MOCK_STABLE_DEBT` address.
 
 ### 1.6 `ReserveConfigurationMap` bit layout
 
-One `uint256` per reserve. Masks and bit positions in `src/contracts/protocol/libraries/configuration/ReserveConfiguration.sol:13-53`. Comment map in `DataTypes.sol:82-102`.
+One `uint256` per reserve. Masks and bit positions in [`src/contracts/protocol/libraries/configuration/ReserveConfiguration.sol:13-53`](aave-v3-origin/src/contracts/protocol/libraries/configuration/ReserveConfiguration.sol#L13-L53). Comment map in [`DataTypes.sol:82-102`](aave-v3-origin/src/contracts/protocol/libraries/types/DataTypes.sol#L82-L102).
 
 ```
 bit   0-15   LTV                       (bps, 8000 = 80%)          LTV_MASK
@@ -185,7 +185,7 @@ bit 212-251  [hole] pre-3.7 debt ceiling
 bit 252      virtual accounting active (always 1 since 3.4)       VIRTUAL_ACC_ACTIVE_MASK
 bit 253-255  unused
 ```
-Accessors are pure bit ops on a `memory` copy, e.g. `getLtv` (`ReserveConfiguration.sol:82-84`) `return self.data & LTV_MASK;` and `setLtv` (`:71-75`) `self.data = (self.data & ~LTV_MASK) | ltv;`. Since 3.3 masks are "read-optimised" (the mask selects the field rather than clearing it). `getFlags` (`:403-414`) returns (active, frozen, borrowingEnabled, paused) in one read; `getParams` (`:425-437`) returns (ltv, lt, lb, decimals, reserveFactor).
+Accessors are pure bit ops on a `memory` copy, e.g. `getLtv` ([`ReserveConfiguration.sol:82-84`](aave-v3-origin/src/contracts/protocol/libraries/configuration/ReserveConfiguration.sol#L82-L84)) `return self.data & LTV_MASK;` and `setLtv` (`:71-75`) `self.data = (self.data & ~LTV_MASK) | ltv;`. Since 3.3 masks are "read-optimised" (the mask selects the field rather than clearing it). `getFlags` (`:403-414`) returns (active, frozen, borrowingEnabled, paused) in one read; `getParams` (`:425-437`) returns (ltv, lt, lb, decimals, reserveFactor).
 
 ### 1.7 `UserConfigurationMap`: 2 bits per reserve (`UserConfiguration.sol`)
 
@@ -193,7 +193,7 @@ Accessors are pure bit ops on a `memory` copy, e.g. `getLtv` (`ReserveConfigurat
 bit 2·id     = user is BORROWING reserve id
 bit 2·id + 1 = user is USING reserve id AS COLLATERAL
 ```
-`BORROWING_MASK = 0x5555…` (every even bit), `COLLATERAL_MASK = 0xAAAA…` (every odd bit) (`UserConfiguration.sol:17-20`).
+`BORROWING_MASK = 0x5555…` (every even bit), `COLLATERAL_MASK = 0xAAAA…` (every odd bit) ([`UserConfiguration.sol:17-20`](aave-v3-origin/src/contracts/protocol/libraries/configuration/UserConfiguration.sol#L17-L20)).
 - `setBorrowing` / `setUsingAsCollateral` (`:28-72`) flip one bit; the collateral setter also emits `ReserveUsedAsCollateralEnabled/Disabled`.
 - `isBorrowingAny`, `isUsingAsCollateralAny`, `isEmpty` (`:124-157`) are one `AND`.
 - `isUsingAsCollateralOne` / `isBorrowingOne` (`:112-139`) use the power-of-two trick `n & (n-1) == 0`.
@@ -201,7 +201,7 @@ bit 2·id + 1 = user is USING reserve id AS COLLATERAL
 
 Consequence: a user's whole position is enumerable in O(#reserves used), and "does this user borrow anything?" is O(1).
 
-### 1.8 eMode configuration (`DataTypes.sol:141-151`, `EModeConfiguration.sol`)
+### 1.8 eMode configuration ([`DataTypes.sol:141-151`](aave-v3-origin/src/contracts/protocol/libraries/types/DataTypes.sol#L141-L151), `EModeConfiguration.sol`)
 ```solidity
 struct EModeCategory {
   uint16 ltv; uint16 liquidationThreshold; uint16 liquidationBonus;
@@ -212,15 +212,15 @@ struct EModeCategory {
   uint128 ltvzeroBitmap;      // 3.6: asset in collateralBitmap but forced LTV 0 (ltv0 rules)
 }
 ```
-`EModeConfiguration.isReserveEnabledOnBitmap(bitmap, id)` is `(bitmap >> id) & 1` (`EModeConfiguration.sol:44-52`). Category `0` means "no eMode" and can never be configured (`Pool.sol:657`).
+`EModeConfiguration.isReserveEnabledOnBitmap(bitmap, id)` is `(bitmap >> id) & 1` ([`EModeConfiguration.sol:44-52`](aave-v3-origin/src/contracts/protocol/libraries/configuration/EModeConfiguration.sol#L44-L52)). Category `0` means "no eMode" and can never be configured ([`Pool.sol:657`](aave-v3-origin/src/contracts/protocol/pool/Pool.sol#L657)).
 
 ---
 
 ## 2. Interest math (the heart)
 
 ### 2.1 Fixed-point units
-- **wad** = 1e18, **ray** = 1e27 (`WadRayMath.sol:20-26`). Indexes and rates are rays; token amounts are in the asset's own decimals.
-- **PercentageMath**: `PERCENTAGE_FACTOR = 1e4`, so `8000` = 80.00% (`PercentageMath.sol:13`).
+- **wad** = 1e18, **ray** = 1e27 ([`WadRayMath.sol:20-26`](aave-v3-origin/src/contracts/protocol/libraries/math/WadRayMath.sol#L20-L26)). Indexes and rates are rays; token amounts are in the asset's own decimals.
+- **PercentageMath**: `PERCENTAGE_FACTOR = 1e4`, so `8000` = 80.00% ([`PercentageMath.sol:13`](aave-v3-origin/src/contracts/protocol/libraries/math/PercentageMath.sol#L13)).
 - Default `rayMul`/`rayDiv`/`percentMul`/`percentDiv` round **half-up** (`WadRayMath.sol:64-72,104-112`). Since 3.5 there are explicit `Floor`/`Ceil` variants (`rayMulFloor`, `rayMulCeil`, `rayDivFloor`, `rayDivCeil`, `percentMulFloor/Ceil`, `percentDivFloor/Ceil`) and every balance-affecting path uses a deliberate direction (§2.4).
 
 ### 2.2 Linear vs compounded interest (`MathUtils.sol`)
@@ -240,15 +240,15 @@ The comment at `:40-44` explains the choice: slightly *under*-charges borrowers 
 
 ### 2.3 Index accrual: `ReserveLogic.updateState`
 
-Every state-changing action starts with the same three lines (see `SupplyLogic.sol:46-49`):
+Every state-changing action starts with the same three lines (see [`SupplyLogic.sol:46-49`](aave-v3-origin/src/contracts/protocol/libraries/logic/SupplyLogic.sol#L46-L49)):
 ```solidity
 DataTypes.ReserveData storage reserve = reservesData[params.asset];
 DataTypes.ReserveCache memory reserveCache = reserve.cache();   // snapshot storage → memory
 reserve.updateState(reserveCache);                              // accrue interest to "now"
 ```
-`cache()` (`ReserveLogic.sol:251-274`) copies config, both indexes (as `curr` and `next`), both rates, token addresses, timestamp and `scaledTotalSupply()` of the debt token into a `ReserveCache` struct (`DataTypes.sol:159-173`) to avoid repeated SLOADs.
+`cache()` ([`ReserveLogic.sol:251-274`](aave-v3-origin/src/contracts/protocol/libraries/logic/ReserveLogic.sol#L251-L274)) copies config, both indexes (as `curr` and `next`), both rates, token addresses, timestamp and `scaledTotalSupply()` of the debt token into a `ReserveCache` struct ([`DataTypes.sol:159-173`](aave-v3-origin/src/contracts/protocol/libraries/types/DataTypes.sol#L159-L173)) to avoid repeated SLOADs.
 
-`updateState` (`ReserveLogic.sol:85-101`):
+`updateState` ([`ReserveLogic.sol:85-101`](aave-v3-origin/src/contracts/protocol/libraries/logic/ReserveLogic.sol#L85-L101)):
 1. If `lastUpdateTimestamp == block.timestamp` → return (already accrued this block).
 2. `_updateIndexes` (`:211-243`):
    - if `currLiquidityRate != 0`: `nextLiquidityIndex = linearInterest(rate, ts).rayMul(currLiquidityIndex)` and store.
@@ -262,7 +262,7 @@ reserve.updateState(reserveCache);                              // accrue intere
    i.e. "interest that accrued on all debt since last update × reserve factor", stored **scaled** by the new liquidity index so it keeps earning like any other aToken. It is materialised later by `mintToTreasury` (§3.11).
 4. Write `lastUpdateTimestamp = now`.
 
-`getNormalizedIncome` / `getNormalizedDebt` (`ReserveLogic.sol:39-78`) compute the *same* `next` index as a **view**, which is what `aToken.balanceOf` uses (§4.1) so balances are live without any transaction.
+`getNormalizedIncome` / `getNormalizedDebt` ([`ReserveLogic.sol:39-78`](aave-v3-origin/src/contracts/protocol/libraries/logic/ReserveLogic.sol#L39-L78)) compute the *same* `next` index as a **view**, which is what `aToken.balanceOf` uses (§4.1) so balances are live without any transaction.
 
 ### 2.4 Scaled balances and rounding (`TokenMath.sol`)
 
@@ -282,7 +282,7 @@ Tokens store a **scaled** balance `s`. The visible balance is `s × index`. Mint
 
 Note the asymmetry: the same `rayDivCeil` that is "bad" for a withdrawer is "good" for the protocol; the naming in `TokenMath` encodes intent, not just arithmetic.
 
-`ScaledBalanceTokenBase._mintScaled` (`ScaledBalanceTokenBase.sol:69-92`) and `_burnScaled` (`:105-134`) now take the already-scaled amount and a *function pointer* `getTokenBalance` (`TokenMath.getATokenBalance` or `getVTokenBalance`) so a single implementation serves both tokens with the right rounding. They also update `_userState[user].additionalData = index` — the user's "last index" — and emit `Mint`/`Burn` with the interest accrued since the user's last interaction (`balanceIncrease`), which is how the UI shows "interest earned".
+`ScaledBalanceTokenBase._mintScaled` ([`ScaledBalanceTokenBase.sol:69-92`](aave-v3-origin/src/contracts/protocol/tokenization/base/ScaledBalanceTokenBase.sol#L69-L92)) and `_burnScaled` (`:105-134`) now take the already-scaled amount and a *function pointer* `getTokenBalance` (`TokenMath.getATokenBalance` or `getVTokenBalance`) so a single implementation serves both tokens with the right rounding. They also update `_userState[user].additionalData = index` — the user's "last index" — and emit `Mint`/`Burn` with the interest accrued since the user's last interaction (`balanceIncrease`), which is how the UI shows "interest earned".
 
 ### 2.5 Numeric example: indexes over one year
 Take the rates from §2.6 at 80% utilization: borrow 3.5556%, supply 2.56%.
@@ -294,7 +294,7 @@ No storage on either token changed during that year.
 
 ### 2.6 Rate model: `DefaultReserveInterestRateStrategyV2.calculateInterestRates`
 
-Called from `ReserveLogic.updateInterestRatesAndVirtualBalance` (`ReserveLogic.sol:130-175`) at the *end* of every action, after balances changed:
+Called from `ReserveLogic.updateInterestRatesAndVirtualBalance` ([`ReserveLogic.sol:130-175`](aave-v3-origin/src/contracts/protocol/libraries/logic/ReserveLogic.sol#L130-L175)) at the *end* of every action, after balances changed:
 ```solidity
 uint256 totalVariableDebt = reserveCache.nextScaledVariableDebt.getVTokenBalance(reserveCache.nextVariableBorrowIndex);
 (nextLiquidityRate, nextVariableRate) = IReserveInterestRateStrategy(strategy).calculateInterestRates(
@@ -305,7 +305,7 @@ reserve.currentLiquidityRate = ...; reserve.currentVariableBorrowRate = ...;
 if (liquidityAdded > 0)  reserve.virtualUnderlyingBalance += liquidityAdded;
 if (liquidityTaken > 0)  reserve.virtualUnderlyingBalance -= liquidityTaken;
 ```
-Params per reserve (stored in bps in the strategy, `IDefaultInterestRateStrategyV2.sol:24-29`): `optimalUsageRatio`, `baseVariableBorrowRate`, `variableRateSlope1`, `variableRateSlope2`. Setter guards (`DefaultReserveInterestRateStrategyV2.sol:177-208`): optimal in [1%, 99%], slope1 ≤ slope2, base+slope1+slope2 ≤ 1000%.
+Params per reserve (stored in bps in the strategy, [`IDefaultInterestRateStrategyV2.sol:24-29`](aave-v3-origin/src/contracts/interfaces/IDefaultInterestRateStrategyV2.sol#L24-L29)): `optimalUsageRatio`, `baseVariableBorrowRate`, `variableRateSlope1`, `variableRateSlope2`. Setter guards ([`DefaultReserveInterestRateStrategyV2.sol:177-208`](aave-v3-origin/src/contracts/misc/DefaultReserveInterestRateStrategyV2.sol#L177-L208)): optimal in [1%, 99%], slope1 ≤ slope2, base+slope1+slope2 ≤ 1000%.
 
 `calculateInterestRates` (`:124-170`):
 ```
@@ -338,11 +338,11 @@ Note `liquidityAdded/liquidityTaken` are passed *before* `virtualUnderlyingBalan
 
 ## 3. User actions, traced Pool → logic library → tokens
 
-Every action follows the same skeleton (documented in `FlashLoanLogic.sol:64-66`): **cache → updateState → validate → change state → updateInterestRates**. Flash loans deliberately reorder it (§3.9).
+Every action follows the same skeleton (documented in [`FlashLoanLogic.sol:64-66`](aave-v3-origin/src/contracts/protocol/libraries/logic/FlashLoanLogic.sol#L64-L66)): **cache → updateState → validate → change state → updateInterestRates**. Flash loans deliberately reorder it (§3.9).
 
 ### 3.1 `supply(asset, amount, onBehalfOf, referralCode)`
 
-`Pool.supply` (`Pool.sol:118-138`) builds `ExecuteSupplyParams` and calls `SupplyLogic.executeSupply` (`SupplyLogic.sol:40-92`):
+`Pool.supply` ([`Pool.sol:118-138`](aave-v3-origin/src/contracts/protocol/pool/Pool.sol#L118-L138)) builds `ExecuteSupplyParams` and calls `SupplyLogic.executeSupply` ([`SupplyLogic.sol:40-92`](aave-v3-origin/src/contracts/protocol/libraries/logic/SupplyLogic.sol#L40-L92)):
 
 ```
 Pool.supply
@@ -361,12 +361,12 @@ Pool.supply
 ```
 Details worth noticing:
 - The supply cap check is done in *scaled* terms then scaled up once (3.5 change) to avoid double rounding.
-- `isFirstSupply` is `scaledBalance == 0` before the mint (`ScaledBalanceTokenBase.sol:91`). Only a *first* supply auto-enables collateral; subsequent supplies leave the flag alone.
-- `validateUseAsCollateral` (`ValidationLogic.sol:509-516`) is simply `getUserReserveLtv(...) != 0`: an asset with LTV 0 (frozen, or ltv0 in the user's eMode, or outside an `isolated` eMode's bitmap) is **not** auto-enabled. This is the "ltv0 rule".
-- `supplyWithPermit` (`Pool.sol:141-176`) wraps a `try permit() {} catch {}` around the same call; the try/catch prevents griefing by front-running the permit.
-- `deposit` (`Pool.sol:799-819`) is the legacy alias.
+- `isFirstSupply` is `scaledBalance == 0` before the mint ([`ScaledBalanceTokenBase.sol:91`](aave-v3-origin/src/contracts/protocol/tokenization/base/ScaledBalanceTokenBase.sol#L91)). Only a *first* supply auto-enables collateral; subsequent supplies leave the flag alone.
+- `validateUseAsCollateral` ([`ValidationLogic.sol:509-516`](aave-v3-origin/src/contracts/protocol/libraries/logic/ValidationLogic.sol#L509-L516)) is simply `getUserReserveLtv(...) != 0`: an asset with LTV 0 (frozen, or ltv0 in the user's eMode, or outside an `isolated` eMode's bitmap) is **not** auto-enabled. This is the "ltv0 rule".
+- `supplyWithPermit` ([`Pool.sol:141-176`](aave-v3-origin/src/contracts/protocol/pool/Pool.sol#L141-L176)) wraps a `try permit() {} catch {}` around the same call; the try/catch prevents griefing by front-running the permit.
+- `deposit` ([`Pool.sol:799-819`](aave-v3-origin/src/contracts/protocol/pool/Pool.sol#L799-L819)) is the legacy alias.
 
-### 3.2 `withdraw(asset, amount, to)` → `SupplyLogic.executeWithdraw` (`SupplyLogic.sol:106-176`)
+### 3.2 `withdraw(asset, amount, to)` → `SupplyLogic.executeWithdraw` ([`SupplyLogic.sol:106-176`](aave-v3-origin/src/contracts/protocol/libraries/logic/SupplyLogic.sol#L106-L176))
 
 ```
 ├─ cache, require(to != aToken), updateState                                                    :113-118
@@ -382,9 +382,9 @@ Details worth noticing:
 │     if userConfig.isBorrowingAny(): ValidationLogic.validateHFAndLtvzero(...)  // HF ≥ 1 after
 └─ emit Withdraw; return amountToWithdraw
 ```
-The health check runs only if the asset *was* collateral and the user *has* debt: withdrawing non-collateral or having no debt can never make you liquidatable. `validateHFAndLtvzero` (`ValidationLogic.sol:398-430`) additionally enforces: if the user holds any ltv0 collateral, the asset being withdrawn must *be* an ltv0 asset ("withdraw ltv0 collateral first", so you cannot leave a position backed only by LTV-0 collateral).
+The health check runs only if the asset *was* collateral and the user *has* debt: withdrawing non-collateral or having no debt can never make you liquidatable. `validateHFAndLtvzero` ([`ValidationLogic.sol:398-430`](aave-v3-origin/src/contracts/protocol/libraries/logic/ValidationLogic.sol#L398-L430)) additionally enforces: if the user holds any ltv0 collateral, the asset being withdrawn must *be* an ltv0 asset ("withdraw ltv0 collateral first", so you cannot leave a position backed only by LTV-0 collateral).
 
-### 3.3 `borrow(asset, amount, interestRateMode, referralCode, onBehalfOf)` → `BorrowLogic.executeBorrow` (`BorrowLogic.sol:41-114`)
+### 3.3 `borrow(asset, amount, interestRateMode, referralCode, onBehalfOf)` → `BorrowLogic.executeBorrow` ([`BorrowLogic.sol:41-114`](aave-v3-origin/src/contracts/protocol/libraries/logic/BorrowLogic.sol#L41-L114))
 
 ```
 ├─ cache, updateState                                                                            :48-51
@@ -410,7 +410,7 @@ The health check runs only if the asset *was* collateral and the user *has* debt
 ```
 Two separate checks after the borrow: the **HF** check (LT-based) and the **LTV** check (`collateral × LTV ≥ debt`). The LTV check is the stricter one and is what actually limits new borrowing; the HF check is a belt-and-braces guard. `releaseUnderlying = false` is used by flash loans that are converted into debt (§3.9).
 
-### 3.4 `repay` / `repayWithPermit` / `repayWithATokens` → `BorrowLogic.executeRepay` (`BorrowLogic.sol:126-223`)
+### 3.4 `repay` / `repayWithPermit` / `repayWithATokens` → `BorrowLogic.executeRepay` ([`BorrowLogic.sol:126-223`](aave-v3-origin/src/contracts/protocol/libraries/logic/BorrowLogic.sol#L126-L223))
 
 ```
 ├─ cache, updateState                                                                            :133-135
@@ -431,15 +431,15 @@ Two separate checks after the borrow: the **HF** check (LT-based) and the **LTV*
 │     IERC20(asset).safeTransferFrom(user, aToken, paybackAmount)                                :211
 └─ emit Repay(asset, onBehalfOf, user, paybackAmount, useATokens)
 ```
-`repayWithATokens` (`Pool.sol:304-327`) forces `onBehalfOf = msg.sender`: it burns your aUSDC and your vUSDC simultaneously, no ERC20 transfer needed, no virtual-balance change (`liquidityAdded = 0` because the underlying never left the aToken).
+`repayWithATokens` ([`Pool.sol:304-327`](aave-v3-origin/src/contracts/protocol/pool/Pool.sol#L304-L327)) forces `onBehalfOf = msg.sender`: it burns your aUSDC and your vUSDC simultaneously, no ERC20 transfer needed, no virtual-balance change (`liquidityAdded = 0` because the underlying never left the aToken).
 
-### 3.5 `setUserUseReserveAsCollateral(asset, useAsCollateral)` → `SupplyLogic.executeUseReserveAsCollateral` (`SupplyLogic.sol:240-289`)
+### 3.5 `setUserUseReserveAsCollateral(asset, useAsCollateral)` → `SupplyLogic.executeUseReserveAsCollateral` ([`SupplyLogic.sol:240-289`](aave-v3-origin/src/contracts/protocol/libraries/logic/SupplyLogic.sol#L240-L289))
 - Enable: require `scaledBalanceOf != 0` and `validateUseAsCollateral` (LTV ≠ 0 in your eMode; `UserHasAssetWithZeroLtv` otherwise), then set the bit.
 - Disable: clear the bit, then `validateHFAndLtvzero` so you cannot drop collateral you need.
 - Noop if already in the requested state (`:256`).
-- `setUserUseReserveAsCollateralOnBehalfOf` (`Pool.sol:859-875`) is the same, gated by `onlyPositionManager(onBehalfOf)` (3.4 position managers, §3.12).
+- `setUserUseReserveAsCollateralOnBehalfOf` ([`Pool.sol:859-875`](aave-v3-origin/src/contracts/protocol/pool/Pool.sol#L859-L875)) is the same, gated by `onlyPositionManager(onBehalfOf)` (3.4 position managers, §3.12).
 
-### 3.6 `GenericLogic.calculateUserAccountData` — the health-factor engine (`GenericLogic.sol:65-183`)
+### 3.6 `GenericLogic.calculateUserAccountData` — the health-factor engine ([`GenericLogic.sol:65-183`](aave-v3-origin/src/contracts/protocol/libraries/logic/GenericLogic.sol#L65-L183))
 
 Inputs: the user's bitmap, address, oracle, eMode. Output: `(totalCollateralBase, totalDebtBase, avgLtv, avgLiquidationThreshold, healthFactor, hasZeroLtvCollateral)`.
 
@@ -466,32 +466,32 @@ healthFactor = totalDebt == 0 ? max : avgLiquidationThreshold.wadDiv(totalDebt) 
 avgLtv /= totalCollateral; avgLiquidationThreshold /= totalCollateral;                     // :166-173
 ```
 Points:
-- Collateral value is rounded **down**, debt value **up** (`mulDivCeil`, `MathUtils.sol:100-115`), so any non-zero debt is ≥ 1 wei of base currency and cannot vanish from HF (3.5).
+- Collateral value is rounded **down**, debt value **up** (`mulDivCeil`, [`MathUtils.sol:100-115`](aave-v3-origin/src/contracts/protocol/libraries/math/MathUtils.sol#L100-L115)), so any non-zero debt is ≥ 1 wei of base currency and cannot vanish from HF (3.5).
 - `avgLiquidationThreshold` before division is `Σ bal$ × LT` with 8+4 decimals; `wadDiv` by `totalDebt` (8 dec) then `/1e4` yields an 18-decimal HF (comment `:156-161`).
-- `getUserReserveLtv` (`ValidationLogic.sol:524-549`) is the single source of truth for "effective LTV of asset X for user U":
+- `getUserReserveLtv` ([`ValidationLogic.sol:524-549`](aave-v3-origin/src/contracts/protocol/libraries/logic/ValidationLogic.sol#L524-L549)) is the single source of truth for "effective LTV of asset X for user U":
   1. in eMode and asset in `collateralBitmap` → `ltvzeroBitmap` bit ? 0 : eMode LTV;
   2. in eMode and category `isolated` → 0 (3.7);
   3. else reserve LTV.
   Every auto-collateral decision and the `hasZeroLtvCollateral` rule flow from this one function.
 - eMode LT/LB apply **only** to assets in the category's `collateralBitmap`; other collateral keeps its normal LT (liquid eModes, 3.2). Since 3.6, an asset can be collateral or borrowable *exclusively* inside an eMode.
 
-`Pool.getUserAccountData` (`Pool.sol:470-498`) → `PoolLogic.executeGetUserAccountData` (`PoolLogic.sol:162-193`) adds `availableBorrowsBase = collateral.percentMulFloor(ltv) - debt` (`GenericLogic.calculateAvailableBorrows`, `:193-206`).
+`Pool.getUserAccountData` ([`Pool.sol:470-498`](aave-v3-origin/src/contracts/protocol/pool/Pool.sol#L470-L498)) → `PoolLogic.executeGetUserAccountData` ([`PoolLogic.sol:162-193`](aave-v3-origin/src/contracts/protocol/libraries/logic/PoolLogic.sol#L162-L193)) adds `availableBorrowsBase = collateral.percentMulFloor(ltv) - debt` (`GenericLogic.calculateAvailableBorrows`, `:193-206`).
 
 ### 3.7 Risk modes and caps — what each is for and where enforced
 
 | Feature | Purpose | Enforced in |
 |---|---|---|
-| **Supply cap** | Limit protocol exposure to an asset (oracle/liquidity risk). | `validateSupply` (`ValidationLogic.sol:53-63`) |
+| **Supply cap** | Limit protocol exposure to an asset (oracle/liquidity risk). | `validateSupply` ([`ValidationLogic.sol:53-63`](aave-v3-origin/src/contracts/protocol/libraries/logic/ValidationLogic.sol#L53-L63)) |
 | **Borrow cap** | Limit total debt in an asset (avoid utilization spikes, bank-run risk). | `validateBorrow` (`:149-156`) |
-| **Frozen** | Off-boarding: no new supply/borrow, but withdraw/repay/liquidate still work. Freezing also sets LTV to 0 (moves it to `_pendingLtv`) and flags the asset ltv0 in every eMode it is collateral in (`PoolConfigurator.setReserveFreeze`, `PoolConfigurator.sol:195-227`). | `validateSupply`, `validateBorrow` |
-| **Paused** | Emergency: *nothing* works, including aToken transfers (`validateTransfer`, `:436-438`). Un-pausing can set a liquidation grace period ≤ 4h (`PoolConfigurator.sol:245-251`). | every validate* |
-| **eMode** (`setUserEMode`) | Higher LTV/LT for correlated assets (stETH/ETH, stables). User opts in per account. `SupplyLogic.executeSetUserEMode` (`SupplyLogic.sol:304-336`) → `validateSetUserEMode` (`ValidationLogic.sol:448-498`): every borrowed asset must be borrowable in the target category, every collateral must keep LTV ≠ 0, then HF re-validated. | validateBorrow (borrowable bitmap), calculateUserAccountData (LT), liquidation (LB) |
+| **Frozen** | Off-boarding: no new supply/borrow, but withdraw/repay/liquidate still work. Freezing also sets LTV to 0 (moves it to `_pendingLtv`) and flags the asset ltv0 in every eMode it is collateral in (`PoolConfigurator.setReserveFreeze`, [`PoolConfigurator.sol:195-227`](aave-v3-origin/src/contracts/protocol/pool/PoolConfigurator.sol#L195-L227)). | `validateSupply`, `validateBorrow` |
+| **Paused** | Emergency: *nothing* works, including aToken transfers (`validateTransfer`, `:436-438`). Un-pausing can set a liquidation grace period ≤ 4h ([`PoolConfigurator.sol:245-251`](aave-v3-origin/src/contracts/protocol/pool/PoolConfigurator.sol#L245-L251)). | every validate* |
+| **eMode** (`setUserEMode`) | Higher LTV/LT for correlated assets (stETH/ETH, stables). User opts in per account. `SupplyLogic.executeSetUserEMode` ([`SupplyLogic.sol:304-336`](aave-v3-origin/src/contracts/protocol/libraries/logic/SupplyLogic.sol#L304-L336)) → `validateSetUserEMode` ([`ValidationLogic.sol:448-498`](aave-v3-origin/src/contracts/protocol/libraries/logic/ValidationLogic.sol#L448-L498)): every borrowed asset must be borrowable in the target category, every collateral must keep LTV ≠ 0, then HF re-validated. | validateBorrow (borrowable bitmap), calculateUserAccountData (LT), liquidation (LB) |
 | **ltv0 bitmap** (3.6) | Per-eMode "this asset gives no borrowing power" without freezing. | `getUserReserveLtv` |
 | **isolated eMode** (3.7) | Replaces old isolation mode: in an isolated category, anything outside `collateralBitmap` has LTV 0, so you cannot borrow against unrelated collateral. Entry is blocked if you hold such collateral enabled. | `getUserReserveLtv` |
 | **Liquidation grace period** (3.1) | After an un-pause, block liquidations for ≤ 4 h so users can top up. | `validateLiquidationCall` (`:275-279`) |
 | **Isolation mode / debt ceiling / siloed borrowing** | **Removed in 3.7** (`docs/3.7/mode-removal.md`). Old data providers return `0/false`. | — |
 
-### 3.8 `liquidationCall(collateralAsset, debtAsset, borrower, debtToCover, receiveAToken)` → `LiquidationLogic.executeLiquidationCall` (`LiquidationLogic.sol:166-460`)
+### 3.8 `liquidationCall(collateralAsset, debtAsset, borrower, debtToCover, receiveAToken)` → `LiquidationLogic.executeLiquidationCall` ([`LiquidationLogic.sol:166-460`](aave-v3-origin/src/contracts/protocol/libraries/logic/LiquidationLogic.sol#L166-L460))
 
 Constants (`:43-64`):
 - `DEFAULT_LIQUIDATION_CLOSE_FACTOR = 50%`
@@ -554,7 +554,7 @@ The protocol fee is a share of the *bonus*, not of the collateral, so the liquid
 
 `_burnBadDebt` (`:636-678`) loops the borrower's bitmap and calls `_burnDebtTokens` with `hasNoCollateralLeft = true` and `actualDebtToLiquidate = 0` for every *other* borrowed reserve, so the whole position's remaining debt becomes deficit in one liquidation.
 
-`eliminateReserveDeficit` (`Pool.sol:822-837`, `onlyUmbrella`) → `executeEliminateDeficit` (`LiquidationLogic.sol:76-132`): the Umbrella safety module (address registered as `'UMBRELLA'` in the addresses provider, `Pool.sol:46,76`) burns its own aTokens of that asset (`aToken.burn(..., receiverOfUnderlying = aToken)` so no underlying moves) and `reserve.deficit -= amount`. Umbrella must hold no debt. Returns the amount actually covered (3.5).
+`eliminateReserveDeficit` ([`Pool.sol:822-837`](aave-v3-origin/src/contracts/protocol/pool/Pool.sol#L822-L837), `onlyUmbrella`) → `executeEliminateDeficit` ([`LiquidationLogic.sol:76-132`](aave-v3-origin/src/contracts/protocol/libraries/logic/LiquidationLogic.sol#L76-L132)): the Umbrella safety module (address registered as `'UMBRELLA'` in the addresses provider, `Pool.sol:46,76`) burns its own aTokens of that asset (`aToken.burn(..., receiverOfUnderlying = aToken)` so no underlying moves) and `reserve.deficit -= amount`. Umbrella must hold no debt. Returns the amount actually covered (3.5).
 
 Numeric walk-through (from §0.7, extended). Threshold $2,000, HF thresholds as coded:
 
@@ -588,33 +588,33 @@ _handleFlashLoanRepayment:                                                      
 - `isAuthorizedFlashBorrower` (ACL `FLASH_BORROWER_ROLE`) → premium 0 (`:75`).
 - Per asset, `interestRateModes[i]`: `NONE` = repay now; `VARIABLE` = **do not repay, open a borrow instead** via `BorrowLogic.executeBorrow` with `releaseUnderlying = false` (`:122-153`). The user already has the tokens, so this is "borrow without transfer" and requires collateral like any borrow. No premium in that path.
 
-`FLASHLOAN_PREMIUM_TO_PROTOCOL()` now always returns `100_00` (`Pool.sol:566-568`); the only tunable is `_flashLoanPremium` (`updateFlashloanPremium`, `PoolConfigurator.sol:490-500`).
+`FLASHLOAN_PREMIUM_TO_PROTOCOL()` now always returns `100_00` ([`Pool.sol:566-568`](aave-v3-origin/src/contracts/protocol/pool/Pool.sol#L566-L568)); the only tunable is `_flashLoanPremium` (`updateFlashloanPremium`, [`PoolConfigurator.sol:490-500`](aave-v3-origin/src/contracts/protocol/pool/PoolConfigurator.sol#L490-L500)).
 
-Receiver contract: implement `IFlashLoanSimpleReceiver.executeOperation` (`src/contracts/misc/flashloan/interfaces/IFlashLoanSimpleReceiver.sol:25-32`), approve the *Pool*... careful: the pull is `safeTransferFrom(receiver, aToken)` executed by the Pool's delegatecalled library, so the receiver approves the **Pool** address. `FlashLoanSimpleReceiverBase` (`base/FlashLoanSimpleReceiverBase.sol`) just stores `POOL`.
+Receiver contract: implement `IFlashLoanSimpleReceiver.executeOperation` ([`src/contracts/misc/flashloan/interfaces/IFlashLoanSimpleReceiver.sol:25-32`](aave-v3-origin/src/contracts/misc/flashloan/interfaces/IFlashLoanSimpleReceiver.sol#L25-L32)), approve the *Pool*... careful: the pull is `safeTransferFrom(receiver, aToken)` executed by the Pool's delegatecalled library, so the receiver approves the **Pool** address. `FlashLoanSimpleReceiverBase` (`base/FlashLoanSimpleReceiverBase.sol`) just stores `POOL`.
 
 Reentrancy: there is no reentrancy guard on the Pool. Safety comes from ordering (state is not read until after the callback) plus virtual accounting (the flash-borrowed amount is already subtracted from `virtualUnderlyingBalance` before the callback, so the callback cannot borrow/withdraw "phantom" liquidity) plus `flashLoanEnabled` per asset.
 
-### 3.10 aToken transfers → `Pool.finalizeTransfer` → `SupplyLogic.executeFinalizeTransfer` (`SupplyLogic.sol:188-222`)
-When `AToken._transfer` runs (§4.1) it calls back `POOL.finalizeTransfer(asset, from, to, scaledAmount, scaledBalanceFromBefore)` (`Pool.sol:576-599`, `require(msg.sender == aToken)`):
+### 3.10 aToken transfers → `Pool.finalizeTransfer` → `SupplyLogic.executeFinalizeTransfer` ([`SupplyLogic.sol:188-222`](aave-v3-origin/src/contracts/protocol/libraries/logic/SupplyLogic.sol#L188-L222))
+When `AToken._transfer` runs (§4.1) it calls back `POOL.finalizeTransfer(asset, from, to, scaledAmount, scaledBalanceFromBefore)` ([`Pool.sol:576-599`](aave-v3-origin/src/contracts/protocol/pool/Pool.sol#L576-L599), `require(msg.sender == aToken)`):
 - `validateTransfer`: reserve not paused.
 - If sender had it as collateral: clear the flag if they sent their whole scaled balance; if they borrow anything, `validateHFAndLtvzero(from)`.
 - **The receiver is not auto-enabled as collateral** (3.6 change; saves ~25k gas). They must call `setUserUseReserveAsCollateral` (or use multicall).
 
 ### 3.11 Housekeeping
-- `mintToTreasury(assets[])` (`Pool.sol:433-435` → `PoolLogic.executeMintToTreasury`, `PoolLogic.sol:108-133`): for each active reserve, take `accruedToTreasury` (scaled), zero it, and `aToken.mintToTreasury(scaled, normalizedIncome)`. Permissionless.
-- `rescueTokens` (`Pool.sol:789-795`, `onlyPoolAdmin`): transfer tokens stuck in the Pool contract (the Pool should never hold tokens).
-- `syncIndexesState` / `syncRatesState` (`Pool.sol:625-632`, `onlyPoolConfigurator`): accrue indexes / recompute rates with zero flows. The configurator calls them around reserve-factor and rate-parameter changes (`PoolConfigurator.sol:279,287,461,470`) so old parameters apply up to "now" and new ones from "now".
-- `getReserveNormalizedIncome` / `getReserveNormalizedVariableDebt` (`Pool.sol:515-526`): view versions of the next index (§2.3).
-- `getReservesList` (`Pool.sol:529-548`): still skips `address(0)` gaps left by the removed `dropReserve`.
+- `mintToTreasury(assets[])` ([`Pool.sol:433-435`](aave-v3-origin/src/contracts/protocol/pool/Pool.sol#L433-L435) → `PoolLogic.executeMintToTreasury`, [`PoolLogic.sol:108-133`](aave-v3-origin/src/contracts/protocol/libraries/logic/PoolLogic.sol#L108-L133)): for each active reserve, take `accruedToTreasury` (scaled), zero it, and `aToken.mintToTreasury(scaled, normalizedIncome)`. Permissionless.
+- `rescueTokens` ([`Pool.sol:789-795`](aave-v3-origin/src/contracts/protocol/pool/Pool.sol#L789-L795), `onlyPoolAdmin`): transfer tokens stuck in the Pool contract (the Pool should never hold tokens).
+- `syncIndexesState` / `syncRatesState` ([`Pool.sol:625-632`](aave-v3-origin/src/contracts/protocol/pool/Pool.sol#L625-L632), `onlyPoolConfigurator`): accrue indexes / recompute rates with zero flows. The configurator calls them around reserve-factor and rate-parameter changes (`PoolConfigurator.sol:279,287,461,470`) so old parameters apply up to "now" and new ones from "now".
+- `getReserveNormalizedIncome` / `getReserveNormalizedVariableDebt` ([`Pool.sol:515-526`](aave-v3-origin/src/contracts/protocol/pool/Pool.sol#L515-L526)): view versions of the next index (§2.3).
+- `getReservesList` ([`Pool.sol:529-548`](aave-v3-origin/src/contracts/protocol/pool/Pool.sol#L529-L548)): still skips `address(0)` gaps left by the removed `dropReserve`.
 
 ### 3.12 3.4–3.7 additions present in this tree
-- **Multicall** (3.4): `Pool is ... Multicall` (`Pool.sol:38`), OZ's `multicall(bytes[])` → e.g. `[supply, setUserEMode, borrow]` in one tx. (`Pool.sol:4`; the Pool uses `_msgSender()` throughout so a meta-tx context could be added.)
-- **Position managers** (3.4): `approvePositionManager(manager, bool)`, `renouncePositionManagerRole(user)`, `isApprovedPositionManager` (`Pool.sol:840-900`), gating `setUserUseReserveAsCollateralOnBehalfOf` and `setUserEModeOnBehalfOf` (`Pool.sol:859-892`).
-- **`eliminateReserveDeficit`** (3.3, returns amount since 3.5) and `getReserveDeficit` (`Pool.sol:903-905`).
+- **Multicall** (3.4): `Pool is ... Multicall` ([`Pool.sol:38`](aave-v3-origin/src/contracts/protocol/pool/Pool.sol#L38)), OZ's `multicall(bytes[])` → e.g. `[supply, setUserEMode, borrow]` in one tx. ([`Pool.sol:4`](aave-v3-origin/src/contracts/protocol/pool/Pool.sol#L4); the Pool uses `_msgSender()` throughout so a meta-tx context could be added.)
+- **Position managers** (3.4): `approvePositionManager(manager, bool)`, `renouncePositionManagerRole(user)`, `isApprovedPositionManager` ([`Pool.sol:840-900`](aave-v3-origin/src/contracts/protocol/pool/Pool.sol#L840-L900)), gating `setUserUseReserveAsCollateralOnBehalfOf` and `setUserEModeOnBehalfOf` ([`Pool.sol:859-892`](aave-v3-origin/src/contracts/protocol/pool/Pool.sol#L859-L892)).
+- **`eliminateReserveDeficit`** (3.3, returns amount since 3.5) and `getReserveDeficit` ([`Pool.sol:903-905`](aave-v3-origin/src/contracts/protocol/pool/Pool.sol#L903-L905)).
 - **Dedicated getters** `getReserveAToken`, `getReserveVariableDebtToken`, `getVirtualUnderlyingBalance`, `getLiquidationGracePeriod`, eMode bitmap getters, `getIsEModeCategoryIsolated` (3.7) (`Pool.sol:463-467, 705-751, 773-777, 908-915`).
-- **`renounceAllowance`** on aTokens and **`renounceDelegation`** on debt tokens (3.6) (`IncentivizedERC20.sol:178-180`, `DebtTokenBase.sol:45-47`).
-- **Deterministic liquidation rounding** and scaled-balance-based `hasNoCollateralLeft` (3.7) (`LiquidationLogic.sol:327-377`, `docs/3.7/liquidation-rounding.md`).
-- **L2Pool** (`src/contracts/protocol/pool/L2Pool.sol`): same functions taking a single `bytes32 args` (asset id 16 bits | amount 128 bits | referral 16 bits) decoded by `CalldataLogic` (`CalldataLogic.sol:18-32`) to save calldata gas on rollups.
+- **`renounceAllowance`** on aTokens and **`renounceDelegation`** on debt tokens (3.6) ([`IncentivizedERC20.sol:178-180`](aave-v3-origin/src/contracts/protocol/tokenization/base/IncentivizedERC20.sol#L178-L180), [`DebtTokenBase.sol:45-47`](aave-v3-origin/src/contracts/protocol/tokenization/base/DebtTokenBase.sol#L45-L47)).
+- **Deterministic liquidation rounding** and scaled-balance-based `hasNoCollateralLeft` (3.7) ([`LiquidationLogic.sol:327-377`](aave-v3-origin/src/contracts/protocol/libraries/logic/LiquidationLogic.sol#L327-L377), `docs/3.7/liquidation-rounding.md`).
+- **L2Pool** (`src/contracts/protocol/pool/L2Pool.sol`): same functions taking a single `bytes32 args` (asset id 16 bits | amount 128 bits | referral 16 bits) decoded by `CalldataLogic` ([`CalldataLogic.sol:18-32`](aave-v3-origin/src/contracts/protocol/libraries/logic/CalldataLogic.sol#L18-L32)) to save calldata gas on rollups.
 
 ---
 
@@ -623,9 +623,9 @@ When `AToken._transfer` runs (§4.1) it calls back `POOL.finalizeTransfer(asset,
 Inheritance: `IncentivizedERC20` (plain ERC20 w/ `handleAction` hooks) → `MintableIncentivizedERC20` (`_mint/_burn`) → `ScaledBalanceTokenBase` (`_mintScaled/_burnScaled`) → `AToken` / `VariableDebtToken` (+ `DebtTokenBase` for delegation) → `*Instance` (revision + `initialize`).
 
 ### 4.1 `AToken` (`src/contracts/protocol/tokenization/AToken.sol`)
-- Storage per user: `UserState { uint120 balance; DelegationMode delegationMode; uint128 additionalData }` (`IncentivizedERC20.sol:55-61`). `balance` is the **scaled** balance; `additionalData` is the index at the user's last interaction.
-- Immutables: `POOL`, `REWARDS_CONTROLLER` (3.4), `TREASURY` (3.4) (`IncentivizedERC20.sol:73-78`, `AToken.sol:32`). One implementation is shared by all reserves via `InitializableImmutableAdminUpgradeabilityProxy`; `initialize` sets name/symbol/decimals/underlying (`ATokenInstance.sol:33-50`).
-- `balanceOf(user)` (`AToken.sol:133-138`): `scaled.getATokenBalance(POOL.getReserveNormalizedIncome(underlying))` (floor). `totalSupply` likewise (`:141-143`).
+- Storage per user: `UserState { uint120 balance; DelegationMode delegationMode; uint128 additionalData }` ([`IncentivizedERC20.sol:55-61`](aave-v3-origin/src/contracts/protocol/tokenization/base/IncentivizedERC20.sol#L55-L61)). `balance` is the **scaled** balance; `additionalData` is the index at the user's last interaction.
+- Immutables: `POOL`, `REWARDS_CONTROLLER` (3.4), `TREASURY` (3.4) ([`IncentivizedERC20.sol:73-78`](aave-v3-origin/src/contracts/protocol/tokenization/base/IncentivizedERC20.sol#L73-L78), [`AToken.sol:32`](aave-v3-origin/src/contracts/protocol/tokenization/AToken.sol#L32)). One implementation is shared by all reserves via `InitializableImmutableAdminUpgradeabilityProxy`; `initialize` sets name/symbol/decimals/underlying ([`ATokenInstance.sol:33-50`](aave-v3-origin/src/contracts/instances/ATokenInstance.sol#L33-L50)).
+- `balanceOf(user)` ([`AToken.sol:133-138`](aave-v3-origin/src/contracts/protocol/tokenization/AToken.sol#L133-L138)): `scaled.getATokenBalance(POOL.getReserveNormalizedIncome(underlying))` (floor). `totalSupply` likewise (`:141-143`).
 - `mint` / `burn` / `mintToTreasury` / `transferOnLiquidation` / `transferUnderlyingTo` are all `onlyPool` (`:63-130, 156-158`). `burn` also transfers the underlying out unless `receiverOfUnderlying == address(this)` (repay-with-aTokens, deficit elimination) (`:95-97`).
 - `_transfer(from, to, uint120 amount)` (`:244-267`): compute `scaledAmount = amount.getATokenTransferScaledAmount(index)` (ceil), do the scaled transfer, then **`POOL.finalizeTransfer(...)`** so the Pool can enforce HF on the sender (§3.10). The inner `_transfer(sender, recipient, amount, scaledAmount, index)` (`:278-310`) emits `Mint` events for the interest each side accrued since their last interaction, updates both `additionalData`, then emits `Transfer(amount)` + `BalanceTransfer(scaledAmount, index)`.
 - `transferFrom` (`:187-236`): allowance consumed = the sender's *actual* balance decrease (simulated: `balance(scaled) − balance(scaled − scaledAmount)`), capped at the allowance, and no `Approval` event, no consumption for `uint256.max` (3.5/3.6; `IncentivizedERC20._spendAllowance`, `:235-258`).
@@ -635,18 +635,18 @@ Inheritance: `IncentivizedERC20` (plain ERC20 w/ `handleAction` hooks) → `Mint
 
 ### 4.2 `VariableDebtToken` (`VariableDebtToken.sol`) + `DebtTokenBase`
 - `balanceOf = scaled.getVTokenBalance(POOL.getReserveNormalizedVariableDebt(underlying))` (ceil) (`:69-74`).
-- `mint(user, onBehalfOf, amount, scaledAmount, index)` (`:77-129`): if `user != onBehalfOf`, decrease `_borrowAllowances[onBehalfOf][user]` by the *actual* debt increase (simulated with ceil rounding) — this is **credit delegation**: Alice calls `vUSDC.approveDelegation(Bob, 1000)` (`DebtTokenBase.sol:40-42`, or `delegationWithSig`, `:50-75`), then Bob calls `Pool.borrow(USDC, 1000, 2, 0, onBehalfOf = Alice)`. Alice's collateral backs it, Alice owns the debt, Bob receives the tokens. `borrowAllowance(from, to)` (`:78-83`) is the view; `renounceDelegation` (3.6) zeroes it.
+- `mint(user, onBehalfOf, amount, scaledAmount, index)` (`:77-129`): if `user != onBehalfOf`, decrease `_borrowAllowances[onBehalfOf][user]` by the *actual* debt increase (simulated with ceil rounding) — this is **credit delegation**: Alice calls `vUSDC.approveDelegation(Bob, 1000)` ([`DebtTokenBase.sol:40-42`](aave-v3-origin/src/contracts/protocol/tokenization/base/DebtTokenBase.sol#L40-L42), or `delegationWithSig`, `:50-75`), then Bob calls `Pool.borrow(USDC, 1000, 2, 0, onBehalfOf = Alice)`. Alice's collateral backs it, Alice owns the debt, Bob receives the tokens. `borrowAllowance(from, to)` (`:78-83`) is the view; `renounceDelegation` (3.6) zeroes it.
 - `burn(from, scaledAmount, index)` returns `(noMoreDebt, scaledTotalSupply)` (`:132-147`).
 - All ERC20 transfer/approve functions `revert OperationNotSupported()` (`:164-190`): debt is non-transferable by design.
 
 ### 4.3 `StataTokenV2` — ERC-4626 wrapper (`src/contracts/extensions/stata-token/`)
 Problem: aTokens rebase (balance grows), which breaks many integrations (DEX pools, bridges). `StataTokenV2` is a non-rebasing vault whose *price* grows instead.
-- `_rate() = POOL.getReserveNormalizedIncome(asset)` (`ERC4626StataTokenUpgradeable.sol:308-310`).
+- `_rate() = POOL.getReserveNormalizedIncome(asset)` ([`ERC4626StataTokenUpgradeable.sol:308-310`](aave-v3-origin/src/contracts/extensions/stata-token/ERC4626StataTokenUpgradeable.sol#L308-L310)).
 - `_convertToShares(assets) = assets × RAY / rate`, `_convertToAssets(shares) = shares × rate / RAY` with explicit rounding (`:292-306`).
 - `deposit` (underlying) → `POOL.deposit(asset, ..., address(this))`; `depositATokens` (aToken directly) (`:77-88, 213-242`). `withdraw` → `POOL.withdraw`; `redeemATokens` → transfer aTokens out (`:125-134, 253-280`).
 - `maxDeposit` respects supply cap/frozen; `maxRedeem` respects paused and available `virtualUnderlyingBalance` (`:150-203`).
 - `latestAnswer()` exposes `price(asset) × rate` so it can be used as a Chainlink-style feed (`:206-211`).
-- `ERC20AaveLMUpgradeable` tracks and forwards liquidity-mining rewards to share holders by snapshotting the RewardsController index in `_update` (`ERC20AaveLMUpgradeable.sol:164-198`).
+- `ERC20AaveLMUpgradeable` tracks and forwards liquidity-mining rewards to share holders by snapshotting the RewardsController index in `_update` ([`ERC20AaveLMUpgradeable.sol:164-198`](aave-v3-origin/src/contracts/extensions/stata-token/ERC20AaveLMUpgradeable.sol#L164-L198)).
 
 ### 4.4 `WrappedTokenGatewayV3` (`src/contracts/helpers/WrappedTokenGatewayV3.sol`)
 Native ETH helper: `depositETH` wraps to WETH and `POOL.deposit(WETH, msg.value, onBehalfOf)` (`:45-48`); `withdrawETH` pulls aWETH via `transferFrom`, `POOL.withdraw` to itself, unwraps, sends ETH (`:55-70`); `borrowETH` requires the user to have `approveDelegation`'d the gateway on vWETH, then `POOL.borrow(..., onBehalfOf = msg.sender)` and unwraps (`:103-113`); `repayETH` wraps and repays, refunding dust (`:77-96`). The gateway gives the Pool an infinite WETH approval in its constructor (`:36`).
@@ -655,7 +655,7 @@ Native ETH helper: `depositETH` wraps to WETH and `POOL.deposit(WETH, msg.value,
 
 ## 5. Rewards (liquidity mining)
 
-`RewardsController` (`src/contracts/rewards/RewardsController.sol`) is `RewardsDistributor` + claiming + transfer strategies. Storage (`RewardsDataTypes.sol:24-53`): `_assets[aOrVToken].rewards[rewardToken] = RewardData { uint104 index; uint88 emissionPerSecond; uint32 lastUpdateTimestamp; uint32 distributionEnd; mapping(user => UserData{uint104 index; uint128 accrued}) }`.
+`RewardsController` (`src/contracts/rewards/RewardsController.sol`) is `RewardsDistributor` + claiming + transfer strategies. Storage ([`RewardsDataTypes.sol:24-53`](aave-v3-origin/src/contracts/rewards/libraries/RewardsDataTypes.sol#L24-L53)): `_assets[aOrVToken].rewards[rewardToken] = RewardData { uint104 index; uint88 emissionPerSecond; uint32 lastUpdateTimestamp; uint32 distributionEnd; mapping(user => UserData{uint104 index; uint128 accrued}) }`.
 
 Classic "reward-per-token index" (Synthetix-style) but on **scaled** balances:
 ```
@@ -663,11 +663,11 @@ assetIndex_new = assetIndex_old + emissionPerSecond × Δt × 10^decimals / scal
 userAccrued   += userScaledBalance × (assetIndex_new − userIndex) / 10^decimals              (_getRewards, :469-480; _updateUserData :315-336)
 ```
 Flow:
-1. `EmissionManager` (owner-set per-reward "emission admin") calls `RewardsController.configureAssets([{asset, reward, emissionPerSecond, distributionEnd, transferStrategy, rewardOracle}])` (`EmissionManager.sol:39-44` → `RewardsController.sol:76-90`). It snapshots `scaledTotalSupply`, installs the transfer strategy and requires the reward oracle to return a price (`:331-354`).
-2. On **every** mint/burn/transfer the token calls `handleAction(user, oldTotalSupply, oldUserBalance)` (`RewardsController.sol:109-111` → `_updateData`, `RewardsDistributor.sol:345-384`), which brings the asset index to now and settles the user's accrued rewards **before** their balance changes. Because both arguments are pre-change values, the accounting is exact.
+1. `EmissionManager` (owner-set per-reward "emission admin") calls `RewardsController.configureAssets([{asset, reward, emissionPerSecond, distributionEnd, transferStrategy, rewardOracle}])` ([`EmissionManager.sol:39-44`](aave-v3-origin/src/contracts/rewards/EmissionManager.sol#L39-L44) → [`RewardsController.sol:76-90`](aave-v3-origin/src/contracts/rewards/RewardsController.sol#L76-L90)). It snapshots `scaledTotalSupply`, installs the transfer strategy and requires the reward oracle to return a price (`:331-354`).
+2. On **every** mint/burn/transfer the token calls `handleAction(user, oldTotalSupply, oldUserBalance)` ([`RewardsController.sol:109-111`](aave-v3-origin/src/contracts/rewards/RewardsController.sol#L109-L111) → `_updateData`, [`RewardsDistributor.sol:345-384`](aave-v3-origin/src/contracts/rewards/RewardsDistributor.sol#L345-L384)), which brings the asset index to now and settles the user's accrued rewards **before** their balance changes. Because both arguments are pre-change values, the accounting is exact.
 3. `claimRewards(assets[], amount, to, reward)` / `claimAllRewards` (`:114-176`) first `_updateDataMultiple` with current balances, then zero `accrued` and call `transferStrategy.performTransfer(to, reward, amount)` (`:300-306`).
-4. Transfer strategies: `PullRewardsTransferStrategy` does `safeTransferFrom(REWARDS_VAULT, to, amount)` (`PullRewardsTransferStrategy.sol:30-41`); `StakedTokenTransferStrategy` stakes into stkAAVE for the user (`StakedTokenTransferStrategy.sol:36-48`).
-5. `setClaimer(user, claimer)` lets contracts that cannot claim (e.g. a vault holding aTokens) delegate claiming (`RewardsController.sol:179-182`).
+4. Transfer strategies: `PullRewardsTransferStrategy` does `safeTransferFrom(REWARDS_VAULT, to, amount)` ([`PullRewardsTransferStrategy.sol:30-41`](aave-v3-origin/src/contracts/rewards/transfer-strategies/PullRewardsTransferStrategy.sol#L30-L41)); `StakedTokenTransferStrategy` stakes into stkAAVE for the user ([`StakedTokenTransferStrategy.sol:36-48`](aave-v3-origin/src/contracts/rewards/transfer-strategies/StakedTokenTransferStrategy.sol#L36-L48)).
+5. `setClaimer(user, claimer)` lets contracts that cannot claim (e.g. a vault holding aTokens) delegate claiming ([`RewardsController.sol:179-182`](aave-v3-origin/src/contracts/rewards/RewardsController.sol#L179-L182)).
 
 Rewards can target either aTokens (incentivise supplying) or vTokens (incentivise borrowing) because both expose `getScaledUserBalanceAndSupply`.
 
@@ -675,7 +675,7 @@ Rewards can target either aTokens (incentivise supplying) or vTokens (incentivis
 
 ## 6. Governance / admin
 
-### 6.1 Roles (`ACLManager.sol:15-20`) and who can do what in `PoolConfigurator`
+### 6.1 Roles ([`ACLManager.sol:15-20`](aave-v3-origin/src/contracts/protocol/configuration/ACLManager.sol#L15-L20)) and who can do what in `PoolConfigurator`
 | Role | Typical holder | Can call |
 |---|---|---|
 | `DEFAULT_ADMIN_ROLE` | Governance executor (set from `ACL_ADMIN` in provider) | grant/revoke roles |
@@ -685,17 +685,17 @@ Rewards can target either aTokens (incentivise supplying) or vTokens (incentivis
 | `ASSET_LISTING_ADMIN` | Listing steward | `initReserves` (`:78-93`), `AaveOracle.setAssetSources` |
 | `FLASH_BORROWER` | Whitelisted contracts | premium-free `flashLoan` |
 
-### 6.2 Listing a reserve: `initReserves` → `ConfiguratorLogic.executeInitReserve` (`ConfiguratorLogic.sol:30-90`)
+### 6.2 Listing a reserve: `initReserves` → `ConfiguratorLogic.executeInitReserve` ([`ConfiguratorLogic.sol:30-90`](aave-v3-origin/src/contracts/protocol/libraries/logic/ConfiguratorLogic.sol#L30-L90))
 1. `decimals = IERC20Metadata(asset).decimals()`, require > 5 (3.1: low-decimal assets are inflation-attack prone).
 2. Deploy an `InitializableImmutableAdminUpgradeabilityProxy` (admin = the configurator) for the aToken and one for the vToken, each initialised against the shared implementation (`_initTokenWithProxy`, `:160-171`).
-3. `pool.initReserve(asset, aTokenProxy, vTokenProxy)` → `PoolLogic.executeInitReserve` (`PoolLogic.sol:34-59`): sets both indexes to `RAY`, assigns `id` (reuses a gap if any, else `_reservesCount++`, max 128).
+3. `pool.initReserve(asset, aTokenProxy, vTokenProxy)` → `PoolLogic.executeInitReserve` ([`PoolLogic.sol:34-59`](aave-v3-origin/src/contracts/protocol/libraries/logic/PoolLogic.sol#L34-L59)): sets both indexes to `RAY`, assigns `id` (reuses a gap if any, else `_reservesCount++`, max 128).
 4. Write initial config: decimals, active, not paused, not frozen, virtual accounting bit.
 5. `strategy.setInterestRateParams(asset, rateData)`.
-Everything else (LTV/LT/LB, caps, borrowing, reserve factor) is set by subsequent risk-admin calls. `configureReserveAsCollateral` enforces `ltv ≤ lt`, `lb > 100%`, `lt × lb ≤ 100%` (there is always enough collateral to pay the bonus at the moment of liquidation) (`PoolConfigurator.sol:127-141`).
+Everything else (LTV/LT/LB, caps, borrowing, reserve factor) is set by subsequent risk-admin calls. `configureReserveAsCollateral` enforces `ltv ≤ lt`, `lb > 100%`, `lt × lb ≤ 100%` (there is always enough collateral to pay the bonus at the moment of liquidation) ([`PoolConfigurator.sol:127-141`](aave-v3-origin/src/contracts/protocol/pool/PoolConfigurator.sol#L127-L141)).
 
 ### 6.3 Upgradeability
-- Pool and Configurator are proxies whose admin is the `PoolAddressesProvider`; `setPoolImpl`/`setPoolConfiguratorImpl` (`PoolAddressesProvider.sol:80-96`) call `upgradeToAndCall(impl, initialize(provider))`. `VersionedInitializable` (`src/contracts/misc/aave-upgradeability/VersionedInitializable.sol:39-57`) only lets `initialize` run again when `getRevision()` increases, and the constructor bricks initialisation on the implementation itself (3.4).
-- aToken/vToken proxies are admin'd by the Configurator (`updateAToken`, `ConfiguratorLogic.sol:98-119`).
+- Pool and Configurator are proxies whose admin is the `PoolAddressesProvider`; `setPoolImpl`/`setPoolConfiguratorImpl` ([`PoolAddressesProvider.sol:80-96`](aave-v3-origin/src/contracts/protocol/configuration/PoolAddressesProvider.sol#L80-L96)) call `upgradeToAndCall(impl, initialize(provider))`. `VersionedInitializable` ([`src/contracts/misc/aave-upgradeability/VersionedInitializable.sol:39-57`](aave-v3-origin/src/contracts/misc/aave-upgradeability/VersionedInitializable.sol#L39-L57)) only lets `initialize` run again when `getRevision()` increases, and the constructor bricks initialisation on the implementation itself (3.4).
+- aToken/vToken proxies are admin'd by the Configurator (`updateAToken`, [`ConfiguratorLogic.sol:98-119`](aave-v3-origin/src/contracts/protocol/libraries/logic/ConfiguratorLogic.sol#L98-L119)).
 - The `AaveV3ConfigEngine` (`src/contracts/extensions/v3-config-engine/`) is the payload helper governance uses to batch listings/updates; since 3.7 its sub-engines are inlined libraries, not delegatecalls.
 
 ---
@@ -748,26 +748,26 @@ Alice's debt is now `rayMulCeil(5000e6, 1.0361951e27) = 5180.98 USDC` even thoug
 
 ## 8. Security notes
 
-1. **Oracle dependence.** Every HF, LTV check and liquidation price comes from `AaveOracle.getAssetPrice` → Chainlink `latestAnswer()` with a fallback if ≤ 0 (`AaveOracle.sol:101-117`). There is no staleness check in the oracle contract itself: that is delegated to governance choosing feeds (and, since 3.7, no on-chain sequencer sentinel). A manipulated or stale price is the top systemic risk; caps, LT buffers and eMode design are the mitigations.
-2. **Rounding / "1 wei" attacks.** With half-up rounding an attacker could repeatedly round in their favour (e.g. withdraw slightly more than deposited, or leave 1 wei of un-liquidatable debt). 3.5's `TokenMath` fixes the direction of every conversion so the protocol never loses on rounding, and 3.7 makes liquidation math deterministic with floor/ceil. The `transferFrom` allowance simulation (`AToken.sol:196-233`) exists purely because of this.
+1. **Oracle dependence.** Every HF, LTV check and liquidation price comes from `AaveOracle.getAssetPrice` → Chainlink `latestAnswer()` with a fallback if ≤ 0 ([`AaveOracle.sol:101-117`](aave-v3-origin/src/contracts/misc/AaveOracle.sol#L101-L117)). There is no staleness check in the oracle contract itself: that is delegated to governance choosing feeds (and, since 3.7, no on-chain sequencer sentinel). A manipulated or stale price is the top systemic risk; caps, LT buffers and eMode design are the mitigations.
+2. **Rounding / "1 wei" attacks.** With half-up rounding an attacker could repeatedly round in their favour (e.g. withdraw slightly more than deposited, or leave 1 wei of un-liquidatable debt). 3.5's `TokenMath` fixes the direction of every conversion so the protocol never loses on rounding, and 3.7 makes liquidation math deterministic with floor/ceil. The `transferFrom` allowance simulation ([`AToken.sol:196-233`](aave-v3-origin/src/contracts/protocol/tokenization/AToken.sol#L196-L233)) exists purely because of this.
 3. **Virtual accounting** (3.1) means utilization, rates and withdrawable liquidity depend on `virtualUnderlyingBalance`, not `ERC20.balanceOf(aToken)`. Donating tokens to an aToken cannot move rates; a rebasing/fee-on-transfer underlying is still unsupported. The extra guard `aToken.totalSupply() ≥ amount` on borrow/flash (`ValidationLogic.sol:132-135, 236`) is a soft inflation defence.
 4. **Flash-loan reentrancy** is handled by ordering (validate → callback → accounting), by subtracting from the virtual balance before the callback, and by the per-asset `flashLoanEnabled` flag. There is deliberately no global reentrancy lock, so composability (e.g. flash → supply → borrow in the callback) works.
 5. **Why isolation/siloed were removed (3.7).** The `isolated` eMode flag gives the same risk isolation with a single bit in `getUserReserveLtv`, without per-reserve debt-ceiling accounting on every borrow/repay/liquidation. Less code, less gas, fewer edge cases.
-6. **Bad debt: deficit vs socialisation.** Aave does not socialise losses across suppliers (indexes never go down). Bad debt is written to `reserve.deficit`, stops accruing (vTokens burned), dilutes the *supply* rate via `supplyUsageRatio` (`DefaultReserveInterestRateStrategyV2.sol:142-144`), and is expected to be covered by Umbrella (stakers' slashable aTokens) via `eliminateReserveDeficit`.
+6. **Bad debt: deficit vs socialisation.** Aave does not socialise losses across suppliers (indexes never go down). Bad debt is written to `reserve.deficit`, stops accruing (vTokens burned), dilutes the *supply* rate via `supplyUsageRatio` ([`DefaultReserveInterestRateStrategyV2.sol:142-144`](aave-v3-origin/src/contracts/misc/DefaultReserveInterestRateStrategyV2.sol#L142-L144)), and is expected to be covered by Umbrella (stakers' slashable aTokens) via `eliminateReserveDeficit`.
 7. **Liquidation incentives and dust.** 50% close factor on the *total* position, 100% for small or deeply underwater positions, and the `MIN_LEFTOVER_BASE` rule together ensure positions stay economically liquidatable and cannot be gamed into un-liquidatable dust (3.3).
 8. **Admin keys.** All admin paths go through the `PoolAddressesProvider` owner (governance executor behind a timelock) and ACL roles. Emergency admins can only pause/freeze/ltv0 — actions that reduce risk — and un-pausing comes with a ≤ 4h liquidation grace period. Upgrades of Pool, Configurator and token implementations are governance-only; libraries are relinked by deploying a new Pool implementation.
-9. **Self-liquidation forbidden** (`ValidationLogic.sol:261`) since 3.4 to avoid fee/deficit accounting games.
+9. **Self-liquidation forbidden** ([`ValidationLogic.sol:261`](aave-v3-origin/src/contracts/protocol/libraries/logic/ValidationLogic.sol#L261)) since 3.4 to avoid fee/deficit accounting games.
 10. **aToken receiver not auto-collateralised** (3.6). Integrations receiving aTokens must explicitly enable collateral; otherwise those funds do not back borrows.
 
 ---
 
 ## 9. Exercises to trace yourself
 
-1. **Follow a `supply` end-to-end in the debugger of your head.** Start at `src/contracts/protocol/pool/Pool.sol:118`, go to `SupplyLogic.sol:40`, `ReserveLogic.sol:251` (cache), `:85` (updateState), `ValidationLogic.sol:39`, `ReserveLogic.sol:130`, `AToken.sol:63`, `ScaledBalanceTokenBase.sol:69`, `MintableIncentivizedERC20.sol:36`, `RewardsController.sol:109`. Write down every SSTORE.
-2. **Prove `Σ aToken balances ≤ Σ debt + virtual balance`** stays true across `updateState` by reading `ReserveLogic.sol:211-243` and `:183-204`. Where does the reserve factor go, and why is it stored scaled by `nextLiquidityIndex` rather than in underlying?
-3. **Rounding audit.** For each call site of `rayDivCeil` / `rayDivFloor` / `rayMulCeil` / `rayMulFloor` in `LiquidationLogic.sol:166-460`, state who benefits from the rounding direction and why it cannot create dust. Compare with `docs/3.7/liquidation-rounding.md`.
-4. **Compute the close factor by hand** for a user with $3k GHO, $3k USDC, $3k DAI debt and $9k ETH collateral at HF 0.97: how much USDC can one `liquidationCall` repay? (Read `LiquidationLogic.sol:258-282`; the answer changed in 3.3.)
-5. **Credit delegation.** Trace `Pool.borrow(..., onBehalfOf = alice)` from `BorrowLogic.sol:69-76` into `VariableDebtToken.sol:84-120` and `DebtTokenBase.sol:103-120`. Why is the allowance decreased by the *simulated* debt increase rather than by `amount`?
-6. **eMode entry.** Read `ValidationLogic.sol:448-498` and `:524-549`. Construct a user for whom `setUserEMode(1)` reverts with `InvalidCollateralInEmode` in an `isolated` category but succeeds in a non-isolated one with identical bitmaps.
-7. **Flash loan into debt.** In `FlashLoanLogic.sol:103-154`, `interestRateModes[i] = 2` calls `executeBorrow` with `releaseUnderlying = false`. Which storage differs after the tx compared with a plain `borrow` of the same amount? (Hint: `virtualUnderlyingBalance` was already decremented at `:84`.)
-8. **Rewards exactness.** Using `RewardsDistributor.sol:489-517` and `:315-336`, show that a user who holds 10% of `scaledTotalSupply` for the entire emission period receives exactly 10% of `emissionPerSecond × duration` regardless of how many times `handleAction` fires.
+1. **Follow a `supply` end-to-end in the debugger of your head.** Start at [`src/contracts/protocol/pool/Pool.sol:118`](aave-v3-origin/src/contracts/protocol/pool/Pool.sol#L118), go to [`SupplyLogic.sol:40`](aave-v3-origin/src/contracts/protocol/libraries/logic/SupplyLogic.sol#L40), [`ReserveLogic.sol:251`](aave-v3-origin/src/contracts/protocol/libraries/logic/ReserveLogic.sol#L251) (cache), `:85` (updateState), [`ValidationLogic.sol:39`](aave-v3-origin/src/contracts/protocol/libraries/logic/ValidationLogic.sol#L39), [`ReserveLogic.sol:130`](aave-v3-origin/src/contracts/protocol/libraries/logic/ReserveLogic.sol#L130), [`AToken.sol:63`](aave-v3-origin/src/contracts/protocol/tokenization/AToken.sol#L63), [`ScaledBalanceTokenBase.sol:69`](aave-v3-origin/src/contracts/protocol/tokenization/base/ScaledBalanceTokenBase.sol#L69), [`MintableIncentivizedERC20.sol:36`](aave-v3-origin/src/contracts/protocol/tokenization/base/MintableIncentivizedERC20.sol#L36), [`RewardsController.sol:109`](aave-v3-origin/src/contracts/rewards/RewardsController.sol#L109). Write down every SSTORE.
+2. **Prove `Σ aToken balances ≤ Σ debt + virtual balance`** stays true across `updateState` by reading [`ReserveLogic.sol:211-243`](aave-v3-origin/src/contracts/protocol/libraries/logic/ReserveLogic.sol#L211-L243) and `:183-204`. Where does the reserve factor go, and why is it stored scaled by `nextLiquidityIndex` rather than in underlying?
+3. **Rounding audit.** For each call site of `rayDivCeil` / `rayDivFloor` / `rayMulCeil` / `rayMulFloor` in [`LiquidationLogic.sol:166-460`](aave-v3-origin/src/contracts/protocol/libraries/logic/LiquidationLogic.sol#L166-L460), state who benefits from the rounding direction and why it cannot create dust. Compare with `docs/3.7/liquidation-rounding.md`.
+4. **Compute the close factor by hand** for a user with $3k GHO, $3k USDC, $3k DAI debt and $9k ETH collateral at HF 0.97: how much USDC can one `liquidationCall` repay? (Read [`LiquidationLogic.sol:258-282`](aave-v3-origin/src/contracts/protocol/libraries/logic/LiquidationLogic.sol#L258-L282); the answer changed in 3.3.)
+5. **Credit delegation.** Trace `Pool.borrow(..., onBehalfOf = alice)` from [`BorrowLogic.sol:69-76`](aave-v3-origin/src/contracts/protocol/libraries/logic/BorrowLogic.sol#L69-L76) into [`VariableDebtToken.sol:84-120`](aave-v3-origin/src/contracts/protocol/tokenization/VariableDebtToken.sol#L84-L120) and [`DebtTokenBase.sol:103-120`](aave-v3-origin/src/contracts/protocol/tokenization/base/DebtTokenBase.sol#L103-L120). Why is the allowance decreased by the *simulated* debt increase rather than by `amount`?
+6. **eMode entry.** Read [`ValidationLogic.sol:448-498`](aave-v3-origin/src/contracts/protocol/libraries/logic/ValidationLogic.sol#L448-L498) and `:524-549`. Construct a user for whom `setUserEMode(1)` reverts with `InvalidCollateralInEmode` in an `isolated` category but succeeds in a non-isolated one with identical bitmaps.
+7. **Flash loan into debt.** In [`FlashLoanLogic.sol:103-154`](aave-v3-origin/src/contracts/protocol/libraries/logic/FlashLoanLogic.sol#L103-L154), `interestRateModes[i] = 2` calls `executeBorrow` with `releaseUnderlying = false`. Which storage differs after the tx compared with a plain `borrow` of the same amount? (Hint: `virtualUnderlyingBalance` was already decremented at `:84`.)
+8. **Rewards exactness.** Using [`RewardsDistributor.sol:489-517`](aave-v3-origin/src/contracts/rewards/RewardsDistributor.sol#L489-L517) and `:315-336`, show that a user who holds 10% of `scaledTotalSupply` for the entire emission period receives exactly 10% of `emissionPerSecond × duration` regardless of how many times `handleAction` fires.

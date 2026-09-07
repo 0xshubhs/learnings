@@ -154,7 +154,7 @@ PoolManager
  └── Exttload          (abstract; is IExttload)
 ```
 
-`PoolManager.sol:80`. `Owned` comes from solmate (`lib/solmate`), giving `owner`,
+[`PoolManager.sol:80`](v4-core/src/PoolManager.sol#L80). `Owned` comes from solmate (`lib/solmate`), giving `owner`,
 `transferOwnership(address)` and the `onlyOwner` modifier.
 
 ### 1.3 The unlock lifecycle
@@ -203,19 +203,19 @@ linearisation:
 | Slot | Declared in | Variable |
 |---|---|---|
 | 0 | solmate `Owned` | `address owner` |
-| 1 | `ProtocolFees.sol:21` | `mapping(Currency => uint256) protocolFeesAccrued` |
-| 2 | `ProtocolFees.sol:24` | `address protocolFeeController` |
-| 3 | `ERC6909.sol:15` | `mapping(address => mapping(address => bool)) isOperator` |
-| 4 | `ERC6909.sol:17` | `mapping(address => mapping(uint256 => uint256)) balanceOf` |
-| 5 | `ERC6909.sol:19` | `mapping(address => mapping(address => mapping(uint256 => uint256))) allowance` |
-| 6 | `PoolManager.sol:93` | `mapping(PoolId => Pool.State) _pools` |
+| 1 | [`ProtocolFees.sol:21`](v4-core/src/ProtocolFees.sol#L21) | `mapping(Currency => uint256) protocolFeesAccrued` |
+| 2 | [`ProtocolFees.sol:24`](v4-core/src/ProtocolFees.sol#L24) | `address protocolFeeController` |
+| 3 | [`ERC6909.sol:15`](v4-core/src/ERC6909.sol#L15) | `mapping(address => mapping(address => bool)) isOperator` |
+| 4 | [`ERC6909.sol:17`](v4-core/src/ERC6909.sol#L17) | `mapping(address => mapping(uint256 => uint256)) balanceOf` |
+| 5 | [`ERC6909.sol:19`](v4-core/src/ERC6909.sol#L19) | `mapping(address => mapping(address => mapping(uint256 => uint256))) allowance` |
+| 6 | [`PoolManager.sol:93`](v4-core/src/PoolManager.sol#L93) | `mapping(PoolId => Pool.State) _pools` |
 
 Slot 6 is asserted independently by `StateLibrary.POOLS_SLOT`
-(`StateLibrary.sol:11`), which is what makes external state reads work. If the
+([`StateLibrary.sol:11`](v4-core/src/libraries/StateLibrary.sol#L11)), which is what makes external state reads work. If the
 inheritance order ever changed, that constant would have to change with it.
 
 `NoDelegateCall` contributes `address private immutable original`
-(`NoDelegateCall.sol:14`) — immutables live in bytecode, not storage, so they do
+([`NoDelegateCall.sol:14`](v4-core/src/NoDelegateCall.sol#L14)) — immutables live in bytecode, not storage, so they do
 not consume a slot.
 
 ### 1.5 Transient storage map
@@ -225,14 +225,14 @@ the source exactly:
 
 | Slot | Constant | Holds |
 |---|---|---|
-| `0xc090fc4683624cfc3884e9d8de5eca132f2d0ec062aff75d43c0465d5ceeab23` | `Lock.IS_UNLOCKED_SLOT` (`Lock.sol:8`) | 1 while unlocked |
-| `0x7d4b3164c6e45b97e7d87b7125a44c5828d005af88f9d751cfd78729c5d99a0b` | `NonzeroDeltaCount.NONZERO_DELTA_COUNT_SLOT` (`NonzeroDeltaCount.sol:9`) | count of nonzero deltas |
-| `0x1e0745a7db1623981f0b2a5d4232364c00787266eb75ad546f190e6cebe9bd95` | `CurrencyReserves.RESERVES_OF_SLOT` (`CurrencyReserves.sol:11`) | balance snapshot at `sync` |
-| `0x27e098c505d44ec3574004bca052aabf76bd35004c182099d8c575fb238593b9` | `CurrencyReserves.CURRENCY_SLOT` (`CurrencyReserves.sol:13`) | currently synced currency |
+| `0xc090fc4683624cfc3884e9d8de5eca132f2d0ec062aff75d43c0465d5ceeab23` | `Lock.IS_UNLOCKED_SLOT` ([`Lock.sol:8`](v4-core/src/libraries/Lock.sol#L8)) | 1 while unlocked |
+| `0x7d4b3164c6e45b97e7d87b7125a44c5828d005af88f9d751cfd78729c5d99a0b` | `NonzeroDeltaCount.NONZERO_DELTA_COUNT_SLOT` ([`NonzeroDeltaCount.sol:9`](v4-core/src/libraries/NonzeroDeltaCount.sol#L9)) | count of nonzero deltas |
+| `0x1e0745a7db1623981f0b2a5d4232364c00787266eb75ad546f190e6cebe9bd95` | `CurrencyReserves.RESERVES_OF_SLOT` ([`CurrencyReserves.sol:11`](v4-core/src/libraries/CurrencyReserves.sol#L11)) | balance snapshot at `sync` |
+| `0x27e098c505d44ec3574004bca052aabf76bd35004c182099d8c575fb238593b9` | `CurrencyReserves.CURRENCY_SLOT` ([`CurrencyReserves.sol:13`](v4-core/src/libraries/CurrencyReserves.sol#L13)) | currently synced currency |
 
 Plus one dynamic family: the per-account delta at
 `keccak256(abi.encode(target, currency))`, derived in `CurrencyDelta._computeSlot`
-(`CurrencyDelta.sol:10-16`) by writing `target` to scratch `0x00` and `currency`
+([`CurrencyDelta.sol:10-16`](v4-core/src/libraries/CurrencyDelta.sol#L10-L16)) by writing `target` to scratch `0x00` and `currency`
 to scratch `0x20` and hashing 64 bytes.
 
 Note this uses the EVM scratch space (`0x00`–`0x40`) rather than the free memory
@@ -269,7 +269,7 @@ an ERC-20.
 | `greaterThanOrEqualTo(Currency,Currency)` | `:24` | `>=` | `unwrap(a) >= unwrap(b)` |
 
 All `pure`. Address comparison is what enforces `currency0 < currency1` in
-`PoolManager.initialize` (`PoolManager.sol:121`).
+`PoolManager.initialize` ([`PoolManager.sol:121`](v4-core/src/PoolManager.sol#L121)).
 
 #### `CurrencyLibrary` (`:30-118`)
 
@@ -323,8 +323,8 @@ Same, for an arbitrary owner.
 
 **`isAddressZero(Currency) internal pure returns (bool)`** — `:106-108`
 
-The native-currency test, used at `PoolManager.sol:281`, `:353`,
-`ProtocolFees.sol:49`, `TransientStateLibrary.sol:19`.
+The native-currency test, used at [`PoolManager.sol:281`](v4-core/src/PoolManager.sol#L281), `:353`,
+[`ProtocolFees.sol:49`](v4-core/src/ProtocolFees.sol#L49), [`TransientStateLibrary.sol:19`](v4-core/src/libraries/TransientStateLibrary.sol#L19).
 
 **`toId(Currency) internal pure returns (uint256)`** — `:110-112`
 
@@ -355,7 +355,7 @@ using PoolIdLibrary for PoolKey global;   // :8
 
 Five words. **Pool keys are never stored on chain** — the manager stores state
 under `keccak256(key)` and the caller must re-supply the key on every call. That
-is why `Initialize` (`IPoolManager.sol:60`) emits every field: indexers
+is why `Initialize` ([`IPoolManager.sol:60`](v4-core/src/interfaces/IPoolManager.sol#L60)) emits every field: indexers
 reconstruct keys from logs.
 
 The `hooks` address is *part of the key*. The same token pair, fee and tick
@@ -405,7 +405,7 @@ position and track sub-ownership itself.
 | `sqrtPriceLimitX96` | `uint160` | stop price |
 
 > **Sign trap.** V3's `amountSpecified` was positive for exact-input. V4 inverted
-> it: negative is exact-input. Read `SwapMath.sol:61` (`bool exactIn = amountRemaining < 0`)
+> it: negative is exact-input. Read [`SwapMath.sol:61`](v4-core/src/libraries/SwapMath.sol#L61) (`bool exactIn = amountRemaining < 0`)
 > if you ever doubt it.
 
 ### 2.5 `BalanceDelta` — `types/BalanceDelta.sol`
@@ -434,7 +434,7 @@ bit 127), add or subtract as full `int256`, then repack through
 `toBalanceDelta(res0.toInt128(), res1.toInt128())`.
 
 **That final `toInt128` is the overflow check.** `SafeCast.toInt128`
-(`SafeCast.sol:40-43`) reverts `SafeCastOverflow()` if the value does not fit.
+([`SafeCast.sol:40-43`](v4-core/src/libraries/SafeCast.sol#L40-L43)) reverts `SafeCastOverflow()` if the value does not fit.
 Doing the arithmetic at `int256` width first and narrowing after is what makes
 per-half overflow detectable; a naive `int256` addition of two packed values
 would silently carry from the low half into the high half.
@@ -462,7 +462,7 @@ charges a fee wants to talk about "the token the user named" without caring whic
 side of the pair that is.
 
 Which token is "specified" depends on both direction and exactness. The mapping
-back to token0/token1 happens once, in `Hooks.afterSwap` (`Hooks.sol:307-309`):
+back to token0/token1 happens once, in `Hooks.afterSwap` ([`Hooks.sol:307-309`](v4-core/src/libraries/Hooks.sol#L307-L309)):
 
 ```solidity
 hookDelta = (params.amountSpecified < 0 == params.zeroForOne)
@@ -482,7 +482,7 @@ name token0 as output).
 | `getUnspecifiedDelta(BeforeSwapDelta)` | `:33-37` | `signextend(15, delta)` |
 
 Note `BeforeSwapDeltaLibrary` is **not** attached `global` — callers must
-`using BeforeSwapDeltaLibrary for BeforeSwapDelta` explicitly, as `Hooks.sol:23`
+`using BeforeSwapDeltaLibrary for BeforeSwapDelta` explicitly, as [`Hooks.sol:23`](v4-core/src/libraries/Hooks.sol#L23)
 does.
 
 ### 2.7 `Slot0` — `types/Slot0.sol`
@@ -521,8 +521,8 @@ One word holding four fields. The layout comment is at `:9`:
 | `setLpFee` | `:88-93` | same, at `LP_FEE_OFFSET` |
 
 Each is clear-then-set, so setters compose safely in any order — as at
-`Pool.sol:106` (`setSqrtPriceX96(...).setTick(...).setLpFee(...)`) and
-`Pool.sol:439`.
+[`Pool.sol:106`](v4-core/src/libraries/Pool.sol#L106) (`setSqrtPriceX96(...).setTick(...).setLpFee(...)`) and
+[`Pool.sol:439`](v4-core/src/libraries/Pool.sol#L439).
 
 The top 24 bits are unused. `protocolFee` is read as a 24-bit field and then
 split into two 12-bit halves by `ProtocolFeeLibrary` ([§8.2](#82-protocolfeelibrary--librariesprotocolfeelibrarysol-47-lines)).
@@ -544,10 +544,10 @@ Five files implement the entire settlement system. All of them predate Solidity'
 | `lock()` | `:17-21` | `tstore(slot, false)` |
 | `isUnlocked() → bool` | `:23-27` | `tload(slot)` |
 
-Only `PoolManager.unlock` calls `unlock`/`lock` (`PoolManager.sol:107`, `:113`).
+Only `PoolManager.unlock` calls `unlock`/`lock` ([`PoolManager.sol:107`](v4-core/src/PoolManager.sol#L107), `:113`).
 `isUnlocked` is read by the `onlyWhenUnlocked` modifier (`:97`) and by
 `PoolManager._isUnlocked` (`:392-394`), which `ProtocolFees` declares abstract at
-`ProtocolFees.sol:60`.
+[`ProtocolFees.sol:60`](v4-core/src/ProtocolFees.sol#L60).
 
 Because the flag lives in transient storage it is reset by the EVM at the end of
 the transaction, so a reverted-and-caught inner call can never leave the manager
@@ -603,7 +603,7 @@ Backs the `sync` → transfer → `settle` pattern.
 | `syncCurrencyAndReserves(Currency, uint256)` | `:27-32` | writes both slots together |
 | `getSyncedReserves() → uint256` | `:34-38` | `tload(RESERVES_OF_SLOT)` |
 
-The comment at `PoolManager.sol:357` (in `_settle`) — "Reserves are guaranteed to
+The comment at [`PoolManager.sol:357`](v4-core/src/PoolManager.sol#L357) (in `_settle`) — "Reserves are guaranteed to
 be set because currency and reserves are always set together" — is only true
 because `syncCurrencyAndReserves` writes both in one call and `resetCurrency`
 clears only the currency. A zero currency therefore means "unsynced", and stale
@@ -629,7 +629,7 @@ library function is `internal` and would be inlined into the caller anyway.
 > **Gotcha in `getSyncedReserves`.** It returns 0 when the synced currency is the
 > zero address. But the zero address is also *native ETH*, which is a legitimate
 > thing to sync (`PoolManager.sync` resets rather than snapshots for native, at
-> `PoolManager.sol:283`). So "0" conflates "nothing synced" and "native synced" —
+> [`PoolManager.sol:283`](v4-core/src/PoolManager.sol#L283)). So "0" conflates "nothing synced" and "native synced" —
 > which is fine only because native settlement uses `msg.value` and never reads
 > the reserve.
 
@@ -785,7 +785,7 @@ Exists solely to dodge stack-too-deep (comment at `:205`). It calls
 composed `swapFee`, and returns the delta.
 
 Note the emitted `swapFee` is the **total** (LP + protocol), not the LP fee — see
-`Pool.sol:307`.
+[`Pool.sol:307`](v4-core/src/libraries/Pool.sol#L307).
 
 ---
 
@@ -798,11 +798,11 @@ swap. Order: `checkPoolInitialized` (`:264`) → `beforeDonate` (`:266`) →
 `Pool.donate` (`:268`) → account delta (`:270`) → `emit Donate` (`:273`) →
 `afterDonate` (`:275`).
 
-Reverts `NoLiquidityToReceiveFees()` (`Pool.sol:468`) if `liquidity == 0`.
+Reverts `NoLiquidityToReceiveFees()` ([`Pool.sol:468`](v4-core/src/libraries/Pool.sol#L468)) if `liquidity == 0`.
 
-> **The tick caveat.** `IPoolManager.sol:152-155` warns that donate credits LPs at
+> **The tick caveat.** [`IPoolManager.sol:152-155`](v4-core/src/interfaces/IPoolManager.sol#L152-L155) warns that donate credits LPs at
 > `slot0.tick`, which after a `zeroForOne` swap that lands exactly on a tick
-> boundary is `tickNext - 1` while the price sits at `tickNext` (`Pool.sol:431`,
+> boundary is `tickNext - 1` while the price sits at `tickNext` ([`Pool.sol:431`](v4-core/src/libraries/Pool.sol#L431),
 > and the explanatory comment at `:409-412`). A donor who cares must check both
 > tick and price.
 
@@ -819,7 +819,7 @@ Snapshots the manager's balance so a later `settle` can measure the difference.
   reads `msg.value`, not a balance difference.
 - ERC-20 (`:284-287`): `syncCurrencyAndReserves(currency, currency.balanceOfSelf())`.
 
-**Callable while locked**, and that is deliberate: `IPoolManager.sol:170-171`
+**Callable while locked**, and that is deliberate: [`IPoolManager.sol:170-171`](v4-core/src/interfaces/IPoolManager.sol#L170-L171)
 notes integrators should call `sync` before sending native funds too.
 
 ---
@@ -836,7 +836,7 @@ currency.transfer(to, amount);                               // :295
 ```
 
 Debit first, transfer second. The `unchecked` at `:292` is safe because
-`toInt128(uint256)` (`SafeCast.sol:56-59`) already rejects anything `≥ 2^127`, so
+`toInt128(uint256)` ([`SafeCast.sol:56-59`](v4-core/src/libraries/SafeCast.sol#L56-L59)) already rejects anything `≥ 2^127`, so
 negation cannot overflow.
 
 ---
@@ -917,7 +917,7 @@ Convert between a delta and an ERC-6909 claim token.
 Both round the caller-supplied `id` through `CurrencyLibrary.fromId` (`:324`,
 `:333`), truncating to 160 bits.
 
-`_burnFrom` (`ERC6909Claims.sol:13-22`) enforces operator/allowance if
+`_burnFrom` ([`ERC6909Claims.sol:13-22`](v4-core/src/ERC6909Claims.sol#L13-L22)) enforces operator/allowance if
 `from != msg.sender`.
 
 **Why claims exist:** settling in claim tokens avoids an ERC-20 transfer
@@ -942,7 +942,7 @@ _pools[key.toId()].setLPFee(newDynamicLPFee);                 // :345
 Two conditions, both required: the pool's `fee` field must be exactly
 `0x800000`, and the caller must be the pool's own hook. Reverts
 `LPFeeTooLarge(uint24)` above `1_000_000`, and `PoolNotInitialized()` from
-`Pool.setLPFee` (`Pool.sol:116`) if the pool does not exist.
+`Pool.setLPFee` ([`Pool.sol:116`](v4-core/src/libraries/Pool.sol#L116)) if the pool does not exist.
 
 ---
 
@@ -970,15 +970,15 @@ Splits a `BalanceDelta` and applies both halves.
 
 **`_getPool(PoolId) → Pool.State storage`** — `:387-389` · `internal view override`
 
-Implements the abstract declared at `ProtocolFees.sol:64`, giving the fee logic
+Implements the abstract declared at [`ProtocolFees.sol:64`](v4-core/src/ProtocolFees.sol#L64), giving the fee logic
 access to `_pools`.
 
 **`_isUnlocked() → bool`** — `:392-394` · `internal view override`
 
-Implements `ProtocolFees.sol:60`.
+Implements [`ProtocolFees.sol:60`](v4-core/src/ProtocolFees.sol#L60).
 
 > Note both overrides are `view` while the abstract declarations
-> (`ProtocolFees.sol:60`, `:64`) are non-view. Solidity permits tightening
+> ([`ProtocolFees.sol:60`](v4-core/src/ProtocolFees.sol#L60), `:64`) are non-view. Solidity permits tightening
 > mutability in an override.
 
 ---
@@ -1072,7 +1072,7 @@ fee is left at 0 — the comment at `:105` notes it needs no explicit set.
 
 Both `checkPoolInitialized()` then a single `slot0` setter. `setLPFee`'s natspec
 (`:114`) says only dynamic-fee pools may call it; that restriction is enforced by
-the caller (`PoolManager.sol:340`), not here.
+the caller ([`PoolManager.sol:340`](v4-core/src/PoolManager.sol#L340)), not here.
 
 ### 5.6 `modifyLiquidity(State storage, ModifyLiquidityParams memory) → (BalanceDelta delta, BalanceDelta feeDelta)` — `:146-238`
 
@@ -1117,7 +1117,7 @@ range by crossing from the side where the *other* token is needed.
 the fee update — `delta` stays zero and only `feeDelta` is returned. That is how
 you collect fees without changing your position. `Position.update` reverts
 `CannotUpdateEmptyPosition()` if you poke a position that has no liquidity
-(`Position.sol:86`).
+([`Position.sol:86`](v4-core/src/libraries/Position.sol#L86)).
 
 ### 5.7 `swap(State storage, SwapParams memory) → (BalanceDelta swapDelta, uint256 amountToProtocol, uint24 swapFee, SwapResult memory result)` — `:279-463`
 
@@ -1247,7 +1247,7 @@ safe.
 ### 5.12 `checkPoolInitialized(State storage)` — `:585-587` · `internal view`
 
 `if (slot0.sqrtPriceX96() == 0) revert PoolNotInitialized()`. Called at
-`PoolManager.sol:154`, `:196`, `:264`, and from `Pool.setProtocolFee`/`setLPFee`.
+[`PoolManager.sol:154`](v4-core/src/PoolManager.sol#L154), `:196`, `:264`, and from `Pool.setProtocolFee`/`setLPFee`.
 
 ### 5.13 `clearTick(State storage, int24 tick)` — `:592-594`
 
@@ -1265,7 +1265,7 @@ returns `liquidityNet`. `unchecked` for the same wrap-around reason as
 
 ### 6.1 The permission bits
 
-`libraries/Hooks.sol:27-47`. A hook's **address** encodes its permissions in the
+[`libraries/Hooks.sol:27-47`](v4-core/src/libraries/Hooks.sol#L27-L47). A hook's **address** encodes its permissions in the
 low 14 bits. `ALL_HOOK_MASK = (1 << 14) - 1 = 0x3FFF` (`:27`).
 
 | Bit | Value | Constant | Line |
@@ -1427,7 +1427,7 @@ specified/unspecified into token0/token1 (`:307-309`) and subtracts from
 
 Note the asymmetry: `beforeSwap` may move both the specified and unspecified
 side; `afterSwap` may only move the unspecified side (its return is a single
-`int128`, per `IHooks.sol:121`).
+`int128`, per [`IHooks.sol:121`](v4-core/src/interfaces/IHooks.sol#L121)).
 
 ### 6.9 `hasPermission(IHooks self, uint160 flag) → bool` — `:337-339`
 
@@ -1587,7 +1587,7 @@ One step of the swap loop, entirely `unchecked`.
 remaining output (`:95-98`), `amountIn` rounded **up** (`:100-102`), and
 `feeAmount = mulDivRoundingUp(amountIn, fee, 1e6 - fee)` unconditionally — the
 comment at `:103` notes `feePips` cannot be `MAX_SWAP_FEE` here because
-`Pool.swap` already rejected that combination (`Pool.sol:311-316`).
+`Pool.swap` already rejected that combination ([`Pool.sol:311-316`](v4-core/src/libraries/Pool.sol#L311-L316)).
 
 ### 7.4 `TickBitmap` — `libraries/TickBitmap.sol` (122 lines)
 
@@ -1687,8 +1687,8 @@ at `:8` and `:19` as the caller's problem.
 
 ### 7.10 `FixedPoint96` / `FixedPoint128`
 
-`FixedPoint96.RESOLUTION = 96` and `Q96 = 2^96` (`FixedPoint96.sol:8-9`);
-`FixedPoint128.Q128 = 2^128` (`FixedPoint128.sol:7`). Prices are Q64.96; fee
+`FixedPoint96.RESOLUTION = 96` and `Q96 = 2^96` ([`FixedPoint96.sol:8-9`](v4-core/src/libraries/FixedPoint96.sol#L8-L9));
+`FixedPoint128.Q128 = 2^128` ([`FixedPoint128.sol:7`](v4-core/src/libraries/FixedPoint128.sol#L7)). Prices are Q64.96; fee
 growth is Q128.128.
 
 ---
@@ -1973,7 +1973,7 @@ Reads fields out of hook return data without `abi.decode`'s bounds checks.
 | `parseReturnDelta(bytes) → int256` | `:23-28` | `+0x40` | second word |
 
 Safe only because `Hooks` checks the length first — 32 for a plain selector, 64
-for selector+delta, 96 for selector+delta+fee (`Hooks.sol:152`, `:166`, `:259`).
+for selector+delta, 96 for selector+delta+fee ([`Hooks.sol:152`](v4-core/src/libraries/Hooks.sol#L152), `:166`, `:259`).
 
 ### 11.3 `NoDelegateCall` — `src/NoDelegateCall.sol` (33 lines)
 
@@ -2003,7 +2003,7 @@ applied to `unlock`, `sync`, `take`, `settle`, `mint`, `burn`.
 `UnauthorizedDynamicLPFeeUpdate`, `SwapAmountCannotBeZero`, `NonzeroNativeValue`,
 `MustClearExactPositiveDelta`.
 
-> `PoolNotInitialized` is declared here (`:21`) *and* in `Pool` (`Pool.sol:50`).
+> `PoolNotInitialized` is declared here (`:21`) *and* in `Pool` ([`Pool.sol:50`](v4-core/src/libraries/Pool.sol#L50)).
 > Same name, same selector `0x486aa307`; the one actually thrown comes from
 > `Pool.checkPoolInitialized`.
 
@@ -2035,7 +2035,7 @@ The ten callbacks. Every one returns its own selector as the first value.
 The natspec at `:14` states hooks "should only be callable by the v4
 PoolManager" — that is **advice, not enforcement**. Nothing in core stops anyone
 from calling your hook directly; you must add the check yourself (see
-`FeeTakingHook`'s `onlyPoolManager` modifier, `test/FeeTakingHook.sol:25-28`).
+`FeeTakingHook`'s `onlyPoolManager` modifier, [`test/FeeTakingHook.sol:25-28`](v4-core/src/test/FeeTakingHook.sol#L25-L28)).
 
 The `beforeSwap` fee-override contract is spelled out at `:102`: three conditions
 — dynamic pool, bit `0x400000` set, value `≤ 1e6`.
@@ -2197,15 +2197,15 @@ Selectors recomputed with `cast sig` using fully-resolved types
 
 | Topic0 | Event | Declared |
 |---|---|---|
-| `0x7c67cd8e…4e82` | `Initialize(PoolId,Currency,Currency,uint24,int24,IHooks,uint160,int24)` | `IPoolManager.sol:60` |
-| `0xd97f8255…634c` | `ModifyLiquidity(PoolId,address,int24,int24,int256,bytes32)` | `IPoolManager.sol:78` |
-| `0xe5db5196…f46c` | `Swap(PoolId,address,int128,int128,uint160,uint128,int24,uint24)` | `IPoolManager.sol:91` |
-| `0x49e03fde…f33a` | `Donate(PoolId,address,uint256,uint256)` | `IPoolManager.sol:107` |
-| `0xb4bd8ef5…8acc` | `ProtocolFeeControllerUpdated(address)` | `IProtocolFees.sol:20` |
-| `0x06236e70…c862` | `ProtocolFeeUpdated(PoolId,uint24)` | `IProtocolFees.sol:23` |
-| `0xceb576d9…a267` | `OperatorSet(address,address,bool)` | `IERC6909Claims.sol:10` |
-| `0xb3fd5071…e9a7` | `Approval(address,address,uint256,uint256)` | `IERC6909Claims.sol:12` |
-| `0x1b3d7edb…8859` | `Transfer(address,address,address,uint256,uint256)` | `IERC6909Claims.sol:14` |
+| `0x7c67cd8e…4e82` | `Initialize(PoolId,Currency,Currency,uint24,int24,IHooks,uint160,int24)` | [`IPoolManager.sol:60`](v4-core/src/interfaces/IPoolManager.sol#L60) |
+| `0xd97f8255…634c` | `ModifyLiquidity(PoolId,address,int24,int24,int256,bytes32)` | [`IPoolManager.sol:78`](v4-core/src/interfaces/IPoolManager.sol#L78) |
+| `0xe5db5196…f46c` | `Swap(PoolId,address,int128,int128,uint160,uint128,int24,uint24)` | [`IPoolManager.sol:91`](v4-core/src/interfaces/IPoolManager.sol#L91) |
+| `0x49e03fde…f33a` | `Donate(PoolId,address,uint256,uint256)` | [`IPoolManager.sol:107`](v4-core/src/interfaces/IPoolManager.sol#L107) |
+| `0xb4bd8ef5…8acc` | `ProtocolFeeControllerUpdated(address)` | [`IProtocolFees.sol:20`](v4-core/src/interfaces/IProtocolFees.sol#L20) |
+| `0x06236e70…c862` | `ProtocolFeeUpdated(PoolId,uint24)` | [`IProtocolFees.sol:23`](v4-core/src/interfaces/IProtocolFees.sol#L23) |
+| `0xceb576d9…a267` | `OperatorSet(address,address,bool)` | [`IERC6909Claims.sol:10`](v4-core/src/interfaces/external/IERC6909Claims.sol#L10) |
+| `0xb3fd5071…e9a7` | `Approval(address,address,uint256,uint256)` | [`IERC6909Claims.sol:12`](v4-core/src/interfaces/external/IERC6909Claims.sol#L12) |
+| `0x1b3d7edb…8859` | `Transfer(address,address,address,uint256,uint256)` | [`IERC6909Claims.sol:14`](v4-core/src/interfaces/external/IERC6909Claims.sol#L14) |
 
 `Initialize` is the only place a `PoolKey` is ever published, since keys are not
 stored. Indexers must capture it or they cannot reconstruct pool identities.
@@ -2216,47 +2216,47 @@ All 41 errors in the non-test sources, with verified selectors.
 
 | Selector | Error | Declared in | Thrown when |
 |---|---|---|---|
-| `0x5212cba1` | `CurrencyNotSettled()` | `IPoolManager.sol:18` | deltas nonzero at end of `unlock` |
-| `0x486aa307` | `PoolNotInitialized()` | `IPoolManager.sol:21`, `Pool.sol:50` | pool has no price |
-| `0x5090d6c6` | `AlreadyUnlocked()` | `IPoolManager.sol:24` | nested `unlock` |
-| `0x54e3ca0d` | `ManagerLocked()` | `IPoolManager.sol:27` | value-moving call outside `unlock` |
-| `0xb70024f8` | `TickSpacingTooLarge(int24)` | `IPoolManager.sol:30` | `tickSpacing > 32767` |
-| `0xe9e90588` | `TickSpacingTooSmall(int24)` | `IPoolManager.sol:33` | `tickSpacing < 1` |
-| `0x6e6c9830` | `CurrenciesOutOfOrderOrEqual(address,address)` | `IPoolManager.sol:36` | `currency0 >= currency1` |
-| `0x30d21641` | `UnauthorizedDynamicLPFeeUpdate()` | `IPoolManager.sol:40` | non-dynamic pool, or caller is not the hook |
-| `0xbe8b8507` | `SwapAmountCannotBeZero()` | `IPoolManager.sol:43` | `amountSpecified == 0` |
-| `0xb0ec849e` | `NonzeroNativeValue()` | `IPoolManager.sol:46` | `msg.value > 0` on an ERC-20 settle |
-| `0xbda73abf` | `MustClearExactPositiveDelta()` | `IPoolManager.sol:49` | `clear` amount ≠ exact delta |
-| `0xa7abe2f7` | `ProtocolFeeTooLarge(uint24)` | `IProtocolFees.sol:11` | either half > 1000 |
-| `0x48f5c3ed` | `InvalidCaller()` | `IProtocolFees.sol:14` | not the fee controller |
-| `0xc79e5948` | `ProtocolFeeCurrencySynced()` | `IProtocolFees.sol:17` | collecting a currently synced currency |
-| `0xc4433ed5` | `TicksMisordered(int24,int24)` | `Pool.sol:33` | `tickLower >= tickUpper` |
-| `0xd5e2f7ab` | `TickLowerOutOfBounds(int24)` | `Pool.sol:37` | below `MIN_TICK` |
-| `0x1ad777f8` | `TickUpperOutOfBounds(int24)` | `Pool.sol:41` | above `MAX_TICK` |
-| `0xb8e3c385` | `TickLiquidityOverflow(int24)` | `Pool.sol:44` | tick over `maxLiquidityPerTick` |
-| `0x7983c051` | `PoolAlreadyInitialized()` | `Pool.sol:47` | re-initializing |
-| `0x7c9c6e8f` | `PriceLimitAlreadyExceeded(uint160,uint160)` | `Pool.sol:55` | limit on wrong side of price |
-| `0x9e4d7cc7` | `PriceLimitOutOfBounds(uint160)` | `Pool.sol:59` | limit outside min/max |
-| `0xa74f97ab` | `NoLiquidityToReceiveFees()` | `Pool.sol:62` | `donate` with zero liquidity |
-| `0x96206246` | `InvalidFeeForExactOut()` | `Pool.sol:65` | exact-out at 100% swap fee |
-| `0xe65af6a0` | `HookAddressNotValid(address)` | `Hooks.sol:68` | bad permission bits |
-| `0x1e048e1d` | `InvalidHookResponse()` | `Hooks.sol:71` | wrong selector or return length |
-| `0xa9e35b2f` | `HookCallFailed()` | `Hooks.sol:74` | hook reverted (ERC-7751 context) |
-| `0xfa0b71d6` | `HookDeltaExceedsSwapAmount()` | `Hooks.sol:77` | delta flipped exactIn↔exactOut |
-| `0x14002113` | `LPFeeTooLarge(uint24)` | `LPFeeLibrary.sol:12` | fee > 1e6 |
-| `0xaefeb924` | `CannotUpdateEmptyPosition()` | `Position.sol:16` | poke on zero-liquidity position |
-| `0x93dafdf1` | `SafeCastOverflow()` | `SafeCast.sol:11` | any checked cast fails; also `LiquidityMath.addDelta` |
-| `0x00bfc921` | `InvalidPrice()` | `SqrtPriceMath.sol:16` | zero sqrt price |
-| `0x4f2461b8` | `InvalidPriceOrLiquidity()` | `SqrtPriceMath.sol:15` | zero price or liquidity |
-| `0x4323a555` | `NotEnoughLiquidity()` | `SqrtPriceMath.sol:17` | price would go negative |
-| `0xf5c787f1` | `PriceOverflow()` | `SqrtPriceMath.sol:18` | product overflow |
-| `0xd4d8f3e6` | `TickMisaligned(int24,int24)` | `TickBitmap.sol:13` | tick not a multiple of spacing |
-| `0x8b86327a` | `InvalidTick(int24)` | `TickMath.sol:14` | \|tick\| > `MAX_TICK` |
-| `0x61487524` | `InvalidSqrtPrice(uint160)` | `TickMath.sol:16` | price outside min/max |
-| `0x0d89438e` | `DelegateCallNotAllowed()` | `NoDelegateCall.sol:11` | `delegatecall` into a guarded function |
-| `0xf4b3b1bc` | `NativeTransferFailed()` | `Currency.sol:32` | ETH send failed |
-| `0xf27f64e4` | `ERC20TransferFailed()` | `Currency.sol:35` | ERC-20 transfer failed |
-| `0x90bfb865` | `WrappedError(address,bytes4,bytes,bytes)` | `CustomRevert.sol:11` | ERC-7751 wrapper around the three above |
+| `0x5212cba1` | `CurrencyNotSettled()` | [`IPoolManager.sol:18`](v4-core/src/interfaces/IPoolManager.sol#L18) | deltas nonzero at end of `unlock` |
+| `0x486aa307` | `PoolNotInitialized()` | [`IPoolManager.sol:21`](v4-core/src/interfaces/IPoolManager.sol#L21), [`Pool.sol:50`](v4-core/src/libraries/Pool.sol#L50) | pool has no price |
+| `0x5090d6c6` | `AlreadyUnlocked()` | [`IPoolManager.sol:24`](v4-core/src/interfaces/IPoolManager.sol#L24) | nested `unlock` |
+| `0x54e3ca0d` | `ManagerLocked()` | [`IPoolManager.sol:27`](v4-core/src/interfaces/IPoolManager.sol#L27) | value-moving call outside `unlock` |
+| `0xb70024f8` | `TickSpacingTooLarge(int24)` | [`IPoolManager.sol:30`](v4-core/src/interfaces/IPoolManager.sol#L30) | `tickSpacing > 32767` |
+| `0xe9e90588` | `TickSpacingTooSmall(int24)` | [`IPoolManager.sol:33`](v4-core/src/interfaces/IPoolManager.sol#L33) | `tickSpacing < 1` |
+| `0x6e6c9830` | `CurrenciesOutOfOrderOrEqual(address,address)` | [`IPoolManager.sol:36`](v4-core/src/interfaces/IPoolManager.sol#L36) | `currency0 >= currency1` |
+| `0x30d21641` | `UnauthorizedDynamicLPFeeUpdate()` | [`IPoolManager.sol:40`](v4-core/src/interfaces/IPoolManager.sol#L40) | non-dynamic pool, or caller is not the hook |
+| `0xbe8b8507` | `SwapAmountCannotBeZero()` | [`IPoolManager.sol:43`](v4-core/src/interfaces/IPoolManager.sol#L43) | `amountSpecified == 0` |
+| `0xb0ec849e` | `NonzeroNativeValue()` | [`IPoolManager.sol:46`](v4-core/src/interfaces/IPoolManager.sol#L46) | `msg.value > 0` on an ERC-20 settle |
+| `0xbda73abf` | `MustClearExactPositiveDelta()` | [`IPoolManager.sol:49`](v4-core/src/interfaces/IPoolManager.sol#L49) | `clear` amount ≠ exact delta |
+| `0xa7abe2f7` | `ProtocolFeeTooLarge(uint24)` | [`IProtocolFees.sol:11`](v4-core/src/interfaces/IProtocolFees.sol#L11) | either half > 1000 |
+| `0x48f5c3ed` | `InvalidCaller()` | [`IProtocolFees.sol:14`](v4-core/src/interfaces/IProtocolFees.sol#L14) | not the fee controller |
+| `0xc79e5948` | `ProtocolFeeCurrencySynced()` | [`IProtocolFees.sol:17`](v4-core/src/interfaces/IProtocolFees.sol#L17) | collecting a currently synced currency |
+| `0xc4433ed5` | `TicksMisordered(int24,int24)` | [`Pool.sol:33`](v4-core/src/libraries/Pool.sol#L33) | `tickLower >= tickUpper` |
+| `0xd5e2f7ab` | `TickLowerOutOfBounds(int24)` | [`Pool.sol:37`](v4-core/src/libraries/Pool.sol#L37) | below `MIN_TICK` |
+| `0x1ad777f8` | `TickUpperOutOfBounds(int24)` | [`Pool.sol:41`](v4-core/src/libraries/Pool.sol#L41) | above `MAX_TICK` |
+| `0xb8e3c385` | `TickLiquidityOverflow(int24)` | [`Pool.sol:44`](v4-core/src/libraries/Pool.sol#L44) | tick over `maxLiquidityPerTick` |
+| `0x7983c051` | `PoolAlreadyInitialized()` | [`Pool.sol:47`](v4-core/src/libraries/Pool.sol#L47) | re-initializing |
+| `0x7c9c6e8f` | `PriceLimitAlreadyExceeded(uint160,uint160)` | [`Pool.sol:55`](v4-core/src/libraries/Pool.sol#L55) | limit on wrong side of price |
+| `0x9e4d7cc7` | `PriceLimitOutOfBounds(uint160)` | [`Pool.sol:59`](v4-core/src/libraries/Pool.sol#L59) | limit outside min/max |
+| `0xa74f97ab` | `NoLiquidityToReceiveFees()` | [`Pool.sol:62`](v4-core/src/libraries/Pool.sol#L62) | `donate` with zero liquidity |
+| `0x96206246` | `InvalidFeeForExactOut()` | [`Pool.sol:65`](v4-core/src/libraries/Pool.sol#L65) | exact-out at 100% swap fee |
+| `0xe65af6a0` | `HookAddressNotValid(address)` | [`Hooks.sol:68`](v4-core/src/libraries/Hooks.sol#L68) | bad permission bits |
+| `0x1e048e1d` | `InvalidHookResponse()` | [`Hooks.sol:71`](v4-core/src/libraries/Hooks.sol#L71) | wrong selector or return length |
+| `0xa9e35b2f` | `HookCallFailed()` | [`Hooks.sol:74`](v4-core/src/libraries/Hooks.sol#L74) | hook reverted (ERC-7751 context) |
+| `0xfa0b71d6` | `HookDeltaExceedsSwapAmount()` | [`Hooks.sol:77`](v4-core/src/libraries/Hooks.sol#L77) | delta flipped exactIn↔exactOut |
+| `0x14002113` | `LPFeeTooLarge(uint24)` | [`LPFeeLibrary.sol:12`](v4-core/src/libraries/LPFeeLibrary.sol#L12) | fee > 1e6 |
+| `0xaefeb924` | `CannotUpdateEmptyPosition()` | [`Position.sol:16`](v4-core/src/libraries/Position.sol#L16) | poke on zero-liquidity position |
+| `0x93dafdf1` | `SafeCastOverflow()` | [`SafeCast.sol:11`](v4-core/src/libraries/SafeCast.sol#L11) | any checked cast fails; also `LiquidityMath.addDelta` |
+| `0x00bfc921` | `InvalidPrice()` | [`SqrtPriceMath.sol:16`](v4-core/src/libraries/SqrtPriceMath.sol#L16) | zero sqrt price |
+| `0x4f2461b8` | `InvalidPriceOrLiquidity()` | [`SqrtPriceMath.sol:15`](v4-core/src/libraries/SqrtPriceMath.sol#L15) | zero price or liquidity |
+| `0x4323a555` | `NotEnoughLiquidity()` | [`SqrtPriceMath.sol:17`](v4-core/src/libraries/SqrtPriceMath.sol#L17) | price would go negative |
+| `0xf5c787f1` | `PriceOverflow()` | [`SqrtPriceMath.sol:18`](v4-core/src/libraries/SqrtPriceMath.sol#L18) | product overflow |
+| `0xd4d8f3e6` | `TickMisaligned(int24,int24)` | [`TickBitmap.sol:13`](v4-core/src/libraries/TickBitmap.sol#L13) | tick not a multiple of spacing |
+| `0x8b86327a` | `InvalidTick(int24)` | [`TickMath.sol:14`](v4-core/src/libraries/TickMath.sol#L14) | \|tick\| > `MAX_TICK` |
+| `0x61487524` | `InvalidSqrtPrice(uint160)` | [`TickMath.sol:16`](v4-core/src/libraries/TickMath.sol#L16) | price outside min/max |
+| `0x0d89438e` | `DelegateCallNotAllowed()` | [`NoDelegateCall.sol:11`](v4-core/src/NoDelegateCall.sol#L11) | `delegatecall` into a guarded function |
+| `0xf4b3b1bc` | `NativeTransferFailed()` | [`Currency.sol:32`](v4-core/src/types/Currency.sol#L32) | ETH send failed |
+| `0xf27f64e4` | `ERC20TransferFailed()` | [`Currency.sol:35`](v4-core/src/types/Currency.sol#L35) | ERC-20 transfer failed |
+| `0x90bfb865` | `WrappedError(address,bytes4,bytes,bytes)` | [`CustomRevert.sol:11`](v4-core/src/libraries/CustomRevert.sol#L11) | ERC-7751 wrapper around the three above |
 
 ### 14.4 Storage layout
 
@@ -2288,7 +2288,7 @@ All 41 errors in the non-test sources, with verified selectors.
 - `tickBitmap[wordPos]` → `keccak256(int256(wordPos) ‖ (base+5))`, 1 word
 - `positions[key]` → `keccak256(key ‖ (base+6))`, 3 words, where
   `key = keccak256(abi.encodePacked(owner, tickLower, tickUpper, salt))`
-  (`Position.calculatePositionKey`, `Position.sol:48-67`, hashing 58 bytes)
+  (`Position.calculatePositionKey`, [`Position.sol:48-67`](v4-core/src/libraries/Position.sol#L48-L67), hashing 58 bytes)
 
 **Transient**
 
@@ -2393,7 +2393,7 @@ This is V4's headline gas win over V3's per-pool callbacks.
 `modifyLiquidity` with `liquidityDelta = 0`. Returns `feesAccrued`; `delta` is
 zero for principal. Reverts `CannotUpdateEmptyPosition()` if the position has no
 liquidity. **Note this fires the `beforeRemoveLiquidity`/`afterRemoveLiquidity`
-hooks**, not the add ones (`Hooks.sol:203`).
+hooks**, not the add ones ([`Hooks.sol:203`](v4-core/src/libraries/Hooks.sol#L203)).
 
 ### 15.7 Donate to in-range LPs
 
@@ -2407,7 +2407,7 @@ Requires nonzero in-range liquidity.
 3. From your hook, either:
    - call `manager.updateDynamicLPFee(key, newFee)` at any time (`:339`), or
    - return `newFee | LPFeeLibrary.OVERRIDE_FEE_FLAG` from `beforeSwap` to set it
-     for that swap only (`Hooks.sol:263`, `Pool.sol:303`).
+     for that swap only ([`Hooks.sol:263`](v4-core/src/libraries/Hooks.sol#L263), [`Pool.sol:303`](v4-core/src/libraries/Pool.sol#L303)).
 
 ### 15.9 Read pool state from another contract
 
@@ -2473,7 +2473,7 @@ callback, so you physically cannot forget one.
 
 The permissions above need bits 6 (`AFTER_SWAP_FLAG`) and 2
 (`AFTER_SWAP_RETURNS_DELTA_FLAG`): mask `0x0044`. Mine a CREATE2 salt until your
-address ends in those bits. `isValidHookAddress` (`Hooks.sol:109`) will reject the
+address ends in those bits. `isValidHookAddress` ([`Hooks.sol:109`](v4-core/src/libraries/Hooks.sol#L109)) will reject the
 pool at `initialize` if the RETURNS_DELTA bit is set without its action bit.
 
 ### 16.3 The callback
@@ -2503,12 +2503,12 @@ Three non-negotiable rules:
 1. **Return your own selector.** `Hooks.callHook` (`:152`) checks it; anything
    else is `InvalidHookResponse()`.
 2. **Settle your own delta.** The returned `int128` becomes a delta charged to
-   *your* address (`PoolManager.sol:224`). You must clear it with `take`, `mint`,
+   *your* address ([`PoolManager.sol:224`](v4-core/src/PoolManager.sol#L224)). You must clear it with `take`, `mint`,
    `settle` or `clear` before `unlock` returns, or the whole transaction reverts
    `CurrencyNotSettled()`. Here `mint` does it.
 3. **Return-length discipline.** `afterSwap` must return exactly
    `(bytes4, int128)` → 64 bytes. `beforeSwap` must return exactly
-   `(bytes4, BeforeSwapDelta, uint24)` → 96 bytes (`Hooks.sol:259`).
+   `(bytes4, BeforeSwapDelta, uint24)` → 96 bytes ([`Hooks.sol:259`](v4-core/src/libraries/Hooks.sol#L259)).
 
 ### 16.4 What a hook can and cannot do
 
@@ -2561,7 +2561,7 @@ Porting checklist:
 individual operations — `Lock` prevents *nested `unlock` calls*, nothing else.
 Hooks, token transfers and native sends all hand control to untrusted code while
 the manager is unlocked. Safety comes entirely from
-`NonzeroDeltaCount.read() != 0 → revert` (`PoolManager.sol:112`).
+`NonzeroDeltaCount.read() != 0 → revert` ([`PoolManager.sol:112`](v4-core/src/PoolManager.sol#L112)).
 
 **`settle` without `sync` silently becomes a native settle.** `_settle` reads the
 synced currency, finds zero, and takes the `msg.value` branch (`:353-354`). Your
@@ -2581,7 +2581,7 @@ with hook A and with hook B are different pools with different risk. A hook can
 revert every swap, take 100% via return deltas, set a 100% dynamic fee, or be an
 upgradeable proxy. **Always resolve the full key, never just the token pair.**
 
-**`isValidHookAddress` permits `address(0)`** for static-fee pools (`Hooks.sol:124`).
+**`isValidHookAddress` permits `address(0)`** for static-fee pools ([`Hooks.sol:124`](v4-core/src/libraries/Hooks.sol#L124)).
 Absence of a hook is the only genuinely trustless configuration.
 
 **Rounding always favours the pool.** `SqrtPriceMath`'s signed helpers round
@@ -2590,35 +2590,35 @@ liquidity additions up and removals down (`:267-269`, `:284-286`);
 re-implement any of this off-chain, copy the rounding exactly or you will produce
 quotes that revert.
 
-**Protocol-fee rounding favours LPs** (`Pool.sol:390-393`), the opposite
+**Protocol-fee rounding favours LPs** ([`Pool.sol:390-393`](v4-core/src/libraries/Pool.sol#L390-L393)), the opposite
 direction from user-facing rounding. Deliberate.
 
 **`feeGrowthGlobal` is manipulable.** A single-position pool can `donate` to
-itself and inflate it arbitrarily (`Pool.sol:80-82`, repeated at
-`StateLibrary.sol:153-155`). Never compare it across pools or use it as a volume
+itself and inflate it arbitrarily ([`Pool.sol:80-82`](v4-core/src/libraries/Pool.sol#L80-L82), repeated at
+[`StateLibrary.sol:153-155`](v4-core/src/libraries/StateLibrary.sol#L153-L155)). Never compare it across pools or use it as a volume
 proxy.
 
 **The tick can lag the price by one.** After a `zeroForOne` swap that lands on a
 boundary, `slot0.tick == tickNext - 1` while the price sits at `tickNext`
-(`Pool.sol:431`, comment at `:409-412`). `donate` credits by tick, so a donor may
+([`Pool.sol:431`](v4-core/src/libraries/Pool.sol#L431), comment at `:409-412`). `donate` credits by tick, so a donor may
 pay the wrong LPs. Check both.
 
 **`CurrencyLibrary.fromId` truncates.** Upper 12 bytes are dropped
-(`Currency.sol:114-115`), so distinct `id`s collapse onto one currency in `mint`
+([`Currency.sol:114-115`](v4-core/src/types/Currency.sol#L114-L115)), so distinct `id`s collapse onto one currency in `mint`
 and `burn`.
 
 **`clear` is irreversible.** It destroys a positive delta with no compensation
-(`PoolManager.sol:310-319`), and demands the exact amount. Only for dust.
+([`PoolManager.sol:310-319`](v4-core/src/PoolManager.sol#L310-L319)), and demands the exact amount. Only for dust.
 
 **ERC-7751 bubbling can be a revert bomb.** `bubbleUpAndRevertWith` copies all of
-a hook's revert data (`CustomRevert.sol:109`); the natspec warns about it at
+a hook's revert data ([`CustomRevert.sol:109`](v4-core/src/libraries/CustomRevert.sol#L109)); the natspec warns about it at
 `:82`. A malicious hook can force enormous gas consumption on failure.
 
 **Native transfers forward all gas.** `Currency.transfer`'s native branch
-(`Currency.sol:48`) uses `call` with no stipend, so recipients can run arbitrary
+([`Currency.sol:48`](v4-core/src/types/Currency.sol#L48)) uses `call` with no stipend, so recipients can run arbitrary
 code inside `take`.
 
-**`collectProtocolFees` refuses a synced currency** (`ProtocolFees.sol:49-52`) to
+**`collectProtocolFees` refuses a synced currency** ([`ProtocolFees.sol:49-52`](v4-core/src/ProtocolFees.sol#L49-L52)) to
 avoid corrupting a pending balance-difference settle. If it reverts unexpectedly,
 something earlier in your transaction synced that currency.
 
@@ -2627,12 +2627,12 @@ transaction with a flash loan. V4 core ships **no** oracle — that was a
 deliberate removal. Build one as a hook, and TWAP it.
 
 **`Extsload`'s range overload reads at least one slot** even with `nSlots = 0`,
-because the loops are do-while shaped (`Extsload.sol:31-36`).
+because the loops are do-while shaped ([`Extsload.sol:31-36`](v4-core/src/Extsload.sol#L31-L36)).
 
 **Poking fires the remove-liquidity hooks.** `liquidityDelta == 0` takes the
-`<= 0` branch (`Hooks.sol:203`).
+`<= 0` branch ([`Hooks.sol:203`](v4-core/src/libraries/Hooks.sol#L203)).
 
-**A hook is not called on its own actions.** `noSelfCall` (`Hooks.sol:171-175`)
+**A hook is not called on its own actions.** `noSelfCall` ([`Hooks.sol:171-175`](v4-core/src/libraries/Hooks.sol#L171-L175))
 skips the callback when `msg.sender == address(hook)`. If your hook's security
 depends on its own callback firing, that assumption breaks whenever the hook
 itself initiates the action.

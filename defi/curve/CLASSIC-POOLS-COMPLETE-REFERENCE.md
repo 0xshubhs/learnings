@@ -67,7 +67,7 @@ PRECISION_MUL: constant(uint256[N_COINS]) = ___PRECISION_MUL___
 RATES: constant(uint256[N_COINS]) = ___RATES___
 ```
 
-(`pool-templates/base/SwapTemplateBase.vy:81-83`)
+([`pool-templates/base/SwapTemplateBase.vy:81-83`](curve-contract/contracts/pool-templates/base/SwapTemplateBase.vy#L81-L83))
 
 Those triple-underscore tokens are replaced by the deployment scripts using the
 values in each pool's `pooldata.json`. That is why `N_COINS` can appear inside an
@@ -241,7 +241,7 @@ the others. Both are solved by Newton iteration.
 
 ### 2.2 `_get_D`
 
-`pool-templates/base/SwapTemplateBase.vy:206-243`, `@pure @internal`.
+[`pool-templates/base/SwapTemplateBase.vy:206-243`](curve-contract/contracts/pool-templates/base/SwapTemplateBase.vy#L206-L243), `@pure @internal`.
 
 Signature: `_get_D(_xp: uint256[N_COINS], _amp: uint256) -> uint256`
 
@@ -298,7 +298,7 @@ slightly low `D` favours the pool.
 
 ### 2.3 `_get_y`
 
-`pool-templates/base/SwapTemplateBase.vy:379-430`, `@view @internal`.
+[`pool-templates/base/SwapTemplateBase.vy:379-430`](curve-contract/contracts/pool-templates/base/SwapTemplateBase.vy#L379-L430), `@view @internal`.
 
 Signature: `_get_y(i: int128, j: int128, x: uint256, _xp: uint256[N_COINS]) -> uint256`
 
@@ -350,7 +350,7 @@ errors"*.
 
 ### 2.4 `_get_y_D`
 
-`pool-templates/base/SwapTemplateBase.vy:614-656`, `@pure @internal`.
+[`pool-templates/base/SwapTemplateBase.vy:614-656`](curve-contract/contracts/pool-templates/base/SwapTemplateBase.vy#L614-L656), `@pure @internal`.
 
 Signature: `_get_y_D(A: uint256, i: int128, _xp: uint256[N_COINS], D: uint256) -> uint256`
 
@@ -395,7 +395,7 @@ In the lending templates `RATES` is not constant; see §4.1 and §5.1.
 
 ### 2.6 `_A` — the amplification ramp
 
-`pool-templates/base/SwapTemplateBase.vy:154-171`, `@view @internal`.
+[`pool-templates/base/SwapTemplateBase.vy:154-171`](curve-contract/contracts/pool-templates/base/SwapTemplateBase.vy#L154-L171), `@view @internal`.
 
 ```python
 t1: uint256 = self.future_A_time
@@ -431,7 +431,7 @@ arbitrage cost of moving the pool.
 
 ### 2.7 `get_virtual_price`
 
-`pool-templates/base/SwapTemplateBase.vy:252-263`, `@view @external`.
+[`pool-templates/base/SwapTemplateBase.vy:252-263`](curve-contract/contracts/pool-templates/base/SwapTemplateBase.vy#L252-L263), `@view @external`.
 
 ```python
 D: uint256 = self._get_D(self._xp(), self._A())
@@ -492,7 +492,7 @@ is precisely how `get_virtual_price` rises.
 
 ### 2.9 `_calc_withdraw_one_coin`
 
-`pool-templates/base/SwapTemplateBase.vy:661-687`, `@view @internal`.
+[`pool-templates/base/SwapTemplateBase.vy:661-687`](curve-contract/contracts/pool-templates/base/SwapTemplateBase.vy#L661-L687), `@view @internal`.
 Returns `(dy, dy_fee, total_supply)`.
 
 Single-sided withdrawal is the most intricate calculation in the contract, and it
@@ -1230,7 +1230,7 @@ Rate handling splits the group in two:
 | Mixed lending | `pax` | `_rates()` with a `USE_LENDING` flag array |
 | BTC, partial lending | `ren`, `sbtc` | `_rates()` with `USE_LENDING`, `exchangeRateCurrent` |
 
-The `USE_LENDING` pattern in `pools/ren/StableSwapRen.vy:166-172` is the
+The `USE_LENDING` pattern in [`pools/ren/StableSwapRen.vy:166-172`](curve-contract/contracts/pools/ren/StableSwapRen.vy#L166-L172) is the
 interesting one, because it lets a single pool mix wrapped and unwrapped coins:
 
 ```python
@@ -1253,7 +1253,7 @@ ren/StableSwapRen.vy:55    USE_LENDING = [True, False]               # renBTC, w
 ```
 
 renBTC being flagged `True` is not an oversight. The file header explains it
-(`pools/ren/StableSwapRen.vy:3`): *"Pools for renBTC/wBTC. Ren can potentially
+([`pools/ren/StableSwapRen.vy:3`](curve-contract/contracts/pools/ren/StableSwapRen.vy#L3)): *"Pools for renBTC/wBTC. Ren can potentially
 change amount of underlying bitcoins."* renBTC was designed to be able to
 re-denominate, so the pool queries it for a rate exactly as it would a cToken.
 The test mock `testing/renERC20.vy` carries an `exchangeRateStored` field
@@ -1269,7 +1269,7 @@ The test mock `testing/renERC20.vy` carries an `exchangeRateStored` field
 Closest to `SwapTemplateBase`, with three notable deltas:
 
 - **`3pool` and `hbtc` still name the solvers `get_D` / `get_y`** (public), and
-  still carry `get_dy_underlying` (`pools/3pool/StableSwap3Pool.vy:416-425`).
+  still carry `get_dy_underlying` ([`pools/3pool/StableSwap3Pool.vy:416-425`](curve-contract/contracts/pools/3pool/StableSwap3Pool.vy#L416-L425)).
   For a plain pool with no wrapped coins, `get_dy_underlying` differs from
   `get_dy` only in that it scales by `PRECISION_MUL` rather than `RATES` — the
   same number by a different route. It is a leftover from the lending pools.
@@ -1280,7 +1280,7 @@ Closest to `SwapTemplateBase`, with three notable deltas:
   rounding losses of "one wei" in normalised space are invisible at the token
   level — the opposite of the usual worry.
 - **`link` adds a flash-loan tripwire.** It carries two extra storage slots
-  (`pools/link/StableSwapLINK.vy:99-100`):
+  ([`pools/link/StableSwapLINK.vy:99-100`](curve-contract/contracts/pools/link/StableSwapLINK.vy#L99-L100)):
 
   ```python
   previous_balances: public(uint256[N_COINS])
@@ -1342,7 +1342,7 @@ product and charges nearly four times as much per trade.
 use `CurveTokenV2`. `usdp` is also the one pool in this family that declares no
 `PRECISION_MUL` at all — both its coins are 18 decimals, so it hard-codes
 `RATES: constant(uint256[N_COINS]) = [10**18, 10**18]`
-(`pools/usdp/StableSwapUSDP.vy:103`) and skips the multiplier array entirely.
+([`pools/usdp/StableSwapUSDP.vy:103`](curve-contract/contracts/pools/usdp/StableSwapUSDP.vy#L103)) and skips the multiplier array entirely.
 
 ### 8.5 Lending pools (0.2.8)
 
@@ -1356,7 +1356,7 @@ rebasing aToken balances read live, `offpeg_fee_multiplier`, `aave_referral`.
 `ib` (1006 lines) is the most interesting rate implementation in the repository.
 Its coins are Iron Bank cyTokens, and rather than reading a stored exchange rate
 it **extrapolates the rate forward** to the current block
-(`pools/ib/StableSwapIB.vy:226-234`):
+([`pools/ib/StableSwapIB.vy:226-234`](curve-contract/contracts/pools/ib/StableSwapIB.vy#L226-L234)):
 
 ```python
 def _stored_rates() -> uint256[N_COINS]:
@@ -1386,7 +1386,7 @@ All four are `SwapTemplateEth` instances holding native ETH as coin 0.
 - **`seth`** (883 lines) is the plain case: ETH + sETH, both 18 decimals, no rate.
 - **`steth`** (839 lines) adds `arate` handling because stETH **rebases**. Like
   the Aave template it derives balances live rather than storing them
-  (`pools/steth/StableSwapSTETH.vy:190-194`):
+  ([`pools/steth/StableSwapSTETH.vy:190-194`](curve-contract/contracts/pools/steth/StableSwapSTETH.vy#L190-L194)):
 
   ```python
   def _balances(_value: uint256 = 0) -> uint256[N_COINS]:
@@ -1614,7 +1614,7 @@ consecutive slots for a fixed array of `n` scalars. No packing.
 
 | Pool | Added storage | Lines |
 |---|---|---|
-| `link`, `ib` | `previous_balances: uint256[N]`, `block_timestamp_last: uint256` | `pools/link/StableSwapLINK.vy:99-100` |
+| `link`, `ib` | `previous_balances: uint256[N]`, `block_timestamp_last: uint256` | [`pools/link/StableSwapLINK.vy:99-100`](curve-contract/contracts/pools/link/StableSwapLINK.vy#L99-L100) |
 | `steth` | `admin_balances: uint256[N]` (rebasing) | — |
 
 ---
@@ -1622,7 +1622,7 @@ consecutive slots for a fixed array of `n` scalars. No packing.
 ## 14. Events reference
 
 All seven events are declared identically in every template
-(`pool-templates/base/SwapTemplateBase.vy:20-78`).
+([`pool-templates/base/SwapTemplateBase.vy:20-78`](curve-contract/contracts/pool-templates/base/SwapTemplateBase.vy#L20-L78)).
 
 | Event | Line | Fields | Emitted by |
 |---|---|---|---|
@@ -1758,11 +1758,11 @@ DAI/USDC/USDT and `MAX_COIN = 1`).
 ### 16.4 Deposit via zap
 
 Metapool: `Deposit*.add_liquidity(_amounts[N_ALL_COINS], _min_mint_amount)` →
-`pool-templates/meta/DepositTemplateMeta.vy:101`. Adds to the base pool first,
+[`pool-templates/meta/DepositTemplateMeta.vy:101`](curve-contract/contracts/pool-templates/meta/DepositTemplateMeta.vy#L101). Adds to the base pool first,
 then the metapool. Two imbalance fees.
 
 Lending: `Deposit*.add_liquidity(_underlying_amounts, _min_mint_amount)` →
-`pool-templates/y/DepositTemplateY.vy:99`. Wraps each coin, then deposits.
+[`pool-templates/y/DepositTemplateY.vy:99`](curve-contract/contracts/pool-templates/y/DepositTemplateY.vy#L99). Wraps each coin, then deposits.
 
 ### 16.5 Withdraw in one coin
 

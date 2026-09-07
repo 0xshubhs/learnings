@@ -304,7 +304,7 @@ Two structural facts define v1 and both were reversed in v2:
 
 1. **`LendingPoolCore` custodies every asset.** `transferToReserve` pulls
    underlying into the Core; `transferToUser` pays out of it
-   (`aave/v1-aave-protocol/contracts/lendingpool/LendingPoolCore.sol:397`,
+   ([`aave/v1-aave-protocol/contracts/lendingpool/LendingPoolCore.sol:397`](v1-aave-protocol/contracts/lendingpool/LendingPoolCore.sol#L397),
    `:472`). aTokens hold nothing.
 2. **`LendingPool` is a thin validator.** It reads via
    `LendingPoolDataProvider`, mutates via `LendingPoolCore.updateStateOn*`, and
@@ -313,7 +313,7 @@ Two structural facts define v1 and both were reversed in v2:
 ### Why the `delegatecall` into `LendingPoolLiquidationManager` is safe
 
 `LendingPool.liquidationCall`
-(`aave/v1-aave-protocol/contracts/lendingpool/LendingPool.sol:805`) does not
+([`aave/v1-aave-protocol/contracts/lendingpool/LendingPool.sol:805`](v1-aave-protocol/contracts/lendingpool/LendingPool.sol#L805)) does not
 call the manager — it `delegatecall`s it, so the manager executes against
 `LendingPool`'s storage. That only works because the two contracts declare an
 identical storage prefix, with identical inheritance order:
@@ -348,12 +348,12 @@ exists to be delegated into.
 
 `aave/v1-aave-protocol/contracts/libraries/CoreLibrary.sol` — 439 lines. Defines
 the two state structs and every piece of index/rate math. `using CoreLibrary for
-CoreLibrary.ReserveData` is applied in `LendingPoolCore.sol:29-30`.
+CoreLibrary.ReserveData` is applied in [`LendingPoolCore.sol:29-30`](v1-aave-protocol/contracts/lendingpool/LendingPoolCore.sol#L29-L30).
 
 ### `enum InterestRateMode` — `:15`
 
 `{NONE, STABLE, VARIABLE}` — so `1` means stable and `2` means variable. Callers
-pass a raw `uint256` and it is cast at `LendingPool.sol:410`.
+pass a raw `uint256` and it is cast at [`LendingPool.sol:410`](v1-aave-protocol/contracts/lendingpool/LendingPool.sol#L410).
 
 ### `struct UserReserveData` — `:19-31`
 
@@ -369,7 +369,7 @@ pass a raw `uint256` and it is cast at `LendingPool.sol:410`.
 The v1 signature is that **debt is per-user principal plus a per-user index or
 rate**, not a scaled balance. `stableBorrowRate > 0` is the discriminator for
 which mode a user is in (`getUserCurrentBorrowRateMode`,
-`LendingPoolCore.sol:926`).
+[`LendingPoolCore.sol:926`](v1-aave-protocol/contracts/lendingpool/LendingPoolCore.sol#L926)).
 
 ### `struct ReserveData` — `:33-79`
 
@@ -436,7 +436,7 @@ the protocol as a rounding-level surplus. v2 keeps exactly this asymmetry
 - **Purpose.** Distribute a one-off income (the flash-loan fee) to all suppliers at once.
 - **Math.** `index *= (1 + amount/totalLiquidity)`.
 - **Callers.** `LendingPoolCore.updateStateOnFlashLoan` (`:150`).
-- **Gotcha.** `_totalLiquidity` must be the pre-fee total, which is why `LendingPool.flashLoan` snapshots `availableLiquidityBefore` and passes it down (`LendingPool.sol:851`, `LendingPoolCore.sol:161`).
+- **Gotcha.** `_totalLiquidity` must be the pre-fee total, which is why `LendingPool.flashLoan` snapshots `availableLiquidityBefore` and passes it down ([`LendingPool.sol:851`](v1-aave-protocol/contracts/lendingpool/LendingPool.sol#L851), [`LendingPoolCore.sol:161`](v1-aave-protocol/contracts/lendingpool/LendingPoolCore.sol#L161)).
 
 ### `init(ReserveData storage, address _aTokenAddress, uint256 _decimals, address _interestRateStrategyAddress) external` — `:163`
 
@@ -488,7 +488,7 @@ Weighted average update:
 
 - **Checks.** `require(_reserve.totalBorrowsStable >= _amount, "Invalid amount to decrease")`, then `require(weightedPreviousTotalBorrows >= weightedLastBorrow, "The amounts to subtract don't match")`.
 - **Edge case.** If `totalBorrowsStable` reaches zero the average rate is zeroed and the function returns early.
-- **Gotcha.** The second `require` is a real failure mode: accumulated rounding can make the removed weight exceed the stored aggregate. v2 replaced the revert with a silent clamp to zero (`StableDebtToken.sol:220-222`).
+- **Gotcha.** The second `require` is a real failure mode: accumulated rounding can make the removed weight exceed the stored aggregate. v2 replaced the revert with a silent clamp to zero ([`StableDebtToken.sol:220-222`](v2-protocol/contracts/protocol/tokenization/StableDebtToken.sol#L220-L222)).
 
 ### `increaseTotalBorrowsVariable` — `:370` / `decreaseTotalBorrowsVariable` — `:379`
 
@@ -508,7 +508,7 @@ return ratePerSecond.add(WadRayMath.ray()).rayPow(timeDifference);
 ```
 
 **True exponentiation** via `rayPow` — an O(log n) square-and-multiply
-(`WadRayMath.sol:72`). This is exact but expensive, and it is exactly what v2
+([`WadRayMath.sol:72`](v2-protocol/contracts/protocol/libraries/math/WadRayMath.sol#L72)). This is exact but expensive, and it is exactly what v2
 replaced with a three-term binomial approximation to save gas
 ([2.3](#23-math-libraries)).
 
@@ -632,7 +632,7 @@ Modifiers: `nonReentrant`, `onlyActiveReserve`, `onlyAmountGreaterThanZero`. Use
 8. `emit Repay(...)` (`:102`).
 
 - **Gotcha.** Fees are paid **before** principal. A partial repayment always clears the origination fee first.
-- **Gotcha.** In the ETH path, `msg.value.sub(vars.originationFee)` is forwarded and `transferToReserve` refunds the excess (`LendingPoolCore.sol:486`).
+- **Gotcha.** In the ETH path, `msg.value.sub(vars.originationFee)` is forwarded and `transferToReserve` refunds the excess ([`LendingPoolCore.sol:486`](v1-aave-protocol/contracts/lendingpool/LendingPoolCore.sol#L486)).
 
 ### `swapBorrowRateMode(address _reserve) external` — `:648`
 Modifiers: `nonReentrant`, `onlyActiveReserve`, `onlyUnfreezedReserve`.
@@ -975,7 +975,7 @@ Then:
 5. `core.updateStateOnLiquidation(...)` with all nine arguments.
 6. Either `collateralAtoken.transferOnLiquidation` (aToken path) or `burnOnLiquidation` + `core.transferToUser` (underlying path).
 7. `core.transferToReserve.value(msg.value)` pulls the repayment from the liquidator.
-8. Fee seizure, if any, burns more aTokens and calls `core.liquidateFee`, emitting `OriginationFeeLiquidated` (`:44` in `LendingPool.sol:194`).
+8. Fee seizure, if any, burns more aTokens and calls `core.liquidateFee`, emitting `OriginationFeeLiquidated` (`:44` in [`LendingPool.sol:194`](v1-aave-protocol/contracts/lendingpool/LendingPool.sol#L194)).
 9. `emit LiquidationCall(...)`.
 
 - **Gotcha.** The fee seizure is a *second* collateral grab on top of the 50% close factor, so a liquidation can take more collateral than the headline bonus suggests. v2 dropped origination fees entirely and this whole branch with them.
@@ -1203,7 +1203,7 @@ Minimal `bytes32 => address` and `bytes32 => uint256` stores with
 `getLoanOriginationFeePercentage()` at `:46`. `FEE_PROVIDER_REVISION = 0x1` (`:20`).
 
 > **Documentation bug, preserved in the source.** The NatSpec at
-> `aave/v1-aave-protocol/contracts/fees/FeeProvider.sol:30` says *"origination
+> [`aave/v1-aave-protocol/contracts/fees/FeeProvider.sol:30`](v1-aave-protocol/contracts/fees/FeeProvider.sol#L30) says *"origination
 > fee is set as default as 25 basis points of the loan amount (0.0025%)"*. 25
 > basis points is **0.25%**, and `0.0025 * 1e18` is indeed 0.25%. The code is
 > right; the parenthetical is wrong by a factor of 100.
@@ -1291,91 +1291,91 @@ the file and line where it is raised.
 
 | Message | Where |
 |---|---|
-| `"The caller must be a lending pool contract"` | `LendingPoolCore.sol:59` |
-| `"The caller must be a lending pool configurator contract"` | `LendingPoolCore.sol:67` |
-| `"Only contracts can send ether to the Lending pool core"` | `LendingPoolCore.sol:387` |
-| `"Transfer of ETH failed"` | `LendingPoolCore.sol:405`, `:436`, `:461`, `:492` |
-| `"User is sending ETH along with the ERC20 transfer. Check the value attribute of the transaction"` | `LendingPoolCore.sol:427` |
-| `"The amount and the value sent to deposit do not match"` | `LendingPoolCore.sol:433`, `:481` |
-| `"Fee liquidation does not require any transfer of value"` | `LendingPoolCore.sol:453` |
-| `"User is sending ETH along with the ERC20 transfer."` | `LendingPoolCore.sol:478` |
-| `"Invalid borrow rate mode"` | `LendingPoolCore.sol:1338` |
-| `"The caller of this function can only be the aToken contract of this reserve"` | `LendingPool.sol:235` |
-| `"Action requires an active reserve"` | `LendingPool.sol:991` |
-| `"Action requires an unfreezed reserve"` | `LendingPool.sol:998` |
-| `"Amount must be greater than 0"` | `LendingPool.sol:1005` |
-| `"There is not enough liquidity available to redeem"` | `LendingPool.sol:346` |
-| `"Reserve is not enabled for borrowing"` | `LendingPool.sol:404` |
-| `"Invalid interest rate mode selected"` | `LendingPool.sol:409` |
-| `"There is not enough liquidity available in the reserve"` | `LendingPool.sol:420` |
-| `"The collateral balance is 0"` | `LendingPool.sol:434` |
-| `"The borrower can already be liquidated so he cannot borrow more"` | `LendingPool.sol:438` |
-| `"The amount to borrow is too small"` | `LendingPool.sol:444` |
-| `"There is not enough collateral to cover a new borrow"` | `LendingPool.sol:457` |
-| `"User cannot borrow the selected amount with a stable rate"` | `LendingPool.sol:473` |
-| `"User is trying to borrow too much liquidity at a stable rate"` | `LendingPool.sol:483` |
-| `"The user does not have any borrow pending"` | `LendingPool.sol:552` |
-| `"To repay on behalf of an user an explicit amount to repay is needed."` | `LendingPool.sol:556` |
-| `"Invalid msg.value sent for the repayment"` | `LendingPool.sol:568` |
-| `"User does not have a borrow in progress on this reserve"` | `LendingPool.sol:659` |
-| `"User cannot borrow the selected amount at stable"` | `LendingPool.sol:677` |
-| `"User does not have any borrow for this reserve"` | `LendingPool.sol:720` |
-| `"The user borrow is variable and cannot be rebalanced"` | `LendingPool.sol:725` |
-| `"Interest rate rebalance conditions were not met"` | `LendingPool.sol:764` |
-| `"User does not have any liquidity deposited"` | `LendingPool.sol:780` |
-| `"User deposit is already being used as collateral"` | `LendingPool.sol:784` |
-| `"Liquidation call failed"` | `LendingPool.sol:825` |
-| `"Liquidation failed: " + message` | `LendingPool.sol:831` |
-| `"There is not enough liquidity available to borrow"` | `LendingPool.sol:857` |
-| `"The requested amount is too small for a flashLoan."` | `LendingPool.sol:869` |
-| `"The actual balance of the protocol is inconsistent"` | `LendingPool.sol:890` |
-| `"Reserve has already been initialized"` | `CoreLibrary.sol:170` |
-| `"Reserve is already enabled"` | `CoreLibrary.sol:195` |
-| `"Reserve is already enabled as collateral"` | `CoreLibrary.sol:223` |
-| `"Invalid amount to decrease"` | `CoreLibrary.sol:336` |
-| `"The amounts to subtract don't match"` | `CoreLibrary.sol:357` |
-| `"The amount that is being subtracted from the variable total borrows is incorrect"` | `CoreLibrary.sol:381` |
-| `"The caller of this function must be a lending pool"` | `AToken.sol:138` |
-| `"Transfer cannot be allowed."` | `AToken.sol:145` |
-| `"Interest stream can only be redirected to a different address"` | `AToken.sol:611` |
-| `"Interest stream can only be redirected if there is a valid balance"` | `AToken.sol:617` |
-| `"Caller is not allowed to redirect the interest of the user"` | `AToken.sol:196` |
-| `"Amount to redeem needs to be > 0"` | `AToken.sol:228` |
-| `"User cannot redeem more than the available balance"` | `AToken.sol:238` |
-| `"Transfer cannot be allowed."` | `AToken.sol:241` |
-| `"The caller must be a lending pool manager"` | `LendingPoolConfigurator.sol:152` |
+| `"The caller must be a lending pool contract"` | [`LendingPoolCore.sol:59`](v1-aave-protocol/contracts/lendingpool/LendingPoolCore.sol#L59) |
+| `"The caller must be a lending pool configurator contract"` | [`LendingPoolCore.sol:67`](v1-aave-protocol/contracts/lendingpool/LendingPoolCore.sol#L67) |
+| `"Only contracts can send ether to the Lending pool core"` | [`LendingPoolCore.sol:387`](v1-aave-protocol/contracts/lendingpool/LendingPoolCore.sol#L387) |
+| `"Transfer of ETH failed"` | [`LendingPoolCore.sol:405`](v1-aave-protocol/contracts/lendingpool/LendingPoolCore.sol#L405), `:436`, `:461`, `:492` |
+| `"User is sending ETH along with the ERC20 transfer. Check the value attribute of the transaction"` | [`LendingPoolCore.sol:427`](v1-aave-protocol/contracts/lendingpool/LendingPoolCore.sol#L427) |
+| `"The amount and the value sent to deposit do not match"` | [`LendingPoolCore.sol:433`](v1-aave-protocol/contracts/lendingpool/LendingPoolCore.sol#L433), `:481` |
+| `"Fee liquidation does not require any transfer of value"` | [`LendingPoolCore.sol:453`](v1-aave-protocol/contracts/lendingpool/LendingPoolCore.sol#L453) |
+| `"User is sending ETH along with the ERC20 transfer."` | [`LendingPoolCore.sol:478`](v1-aave-protocol/contracts/lendingpool/LendingPoolCore.sol#L478) |
+| `"Invalid borrow rate mode"` | [`LendingPoolCore.sol:1338`](v1-aave-protocol/contracts/lendingpool/LendingPoolCore.sol#L1338) |
+| `"The caller of this function can only be the aToken contract of this reserve"` | [`LendingPool.sol:235`](v1-aave-protocol/contracts/lendingpool/LendingPool.sol#L235) |
+| `"Action requires an active reserve"` | [`LendingPool.sol:991`](v1-aave-protocol/contracts/lendingpool/LendingPool.sol#L991) |
+| `"Action requires an unfreezed reserve"` | [`LendingPool.sol:998`](v1-aave-protocol/contracts/lendingpool/LendingPool.sol#L998) |
+| `"Amount must be greater than 0"` | [`LendingPool.sol:1005`](v1-aave-protocol/contracts/lendingpool/LendingPool.sol#L1005) |
+| `"There is not enough liquidity available to redeem"` | [`LendingPool.sol:346`](v1-aave-protocol/contracts/lendingpool/LendingPool.sol#L346) |
+| `"Reserve is not enabled for borrowing"` | [`LendingPool.sol:404`](v1-aave-protocol/contracts/lendingpool/LendingPool.sol#L404) |
+| `"Invalid interest rate mode selected"` | [`LendingPool.sol:409`](v1-aave-protocol/contracts/lendingpool/LendingPool.sol#L409) |
+| `"There is not enough liquidity available in the reserve"` | [`LendingPool.sol:420`](v1-aave-protocol/contracts/lendingpool/LendingPool.sol#L420) |
+| `"The collateral balance is 0"` | [`LendingPool.sol:434`](v1-aave-protocol/contracts/lendingpool/LendingPool.sol#L434) |
+| `"The borrower can already be liquidated so he cannot borrow more"` | [`LendingPool.sol:438`](v1-aave-protocol/contracts/lendingpool/LendingPool.sol#L438) |
+| `"The amount to borrow is too small"` | [`LendingPool.sol:444`](v1-aave-protocol/contracts/lendingpool/LendingPool.sol#L444) |
+| `"There is not enough collateral to cover a new borrow"` | [`LendingPool.sol:457`](v1-aave-protocol/contracts/lendingpool/LendingPool.sol#L457) |
+| `"User cannot borrow the selected amount with a stable rate"` | [`LendingPool.sol:473`](v1-aave-protocol/contracts/lendingpool/LendingPool.sol#L473) |
+| `"User is trying to borrow too much liquidity at a stable rate"` | [`LendingPool.sol:483`](v1-aave-protocol/contracts/lendingpool/LendingPool.sol#L483) |
+| `"The user does not have any borrow pending"` | [`LendingPool.sol:552`](v1-aave-protocol/contracts/lendingpool/LendingPool.sol#L552) |
+| `"To repay on behalf of an user an explicit amount to repay is needed."` | [`LendingPool.sol:556`](v1-aave-protocol/contracts/lendingpool/LendingPool.sol#L556) |
+| `"Invalid msg.value sent for the repayment"` | [`LendingPool.sol:568`](v1-aave-protocol/contracts/lendingpool/LendingPool.sol#L568) |
+| `"User does not have a borrow in progress on this reserve"` | [`LendingPool.sol:659`](v1-aave-protocol/contracts/lendingpool/LendingPool.sol#L659) |
+| `"User cannot borrow the selected amount at stable"` | [`LendingPool.sol:677`](v1-aave-protocol/contracts/lendingpool/LendingPool.sol#L677) |
+| `"User does not have any borrow for this reserve"` | [`LendingPool.sol:720`](v1-aave-protocol/contracts/lendingpool/LendingPool.sol#L720) |
+| `"The user borrow is variable and cannot be rebalanced"` | [`LendingPool.sol:725`](v1-aave-protocol/contracts/lendingpool/LendingPool.sol#L725) |
+| `"Interest rate rebalance conditions were not met"` | [`LendingPool.sol:764`](v1-aave-protocol/contracts/lendingpool/LendingPool.sol#L764) |
+| `"User does not have any liquidity deposited"` | [`LendingPool.sol:780`](v1-aave-protocol/contracts/lendingpool/LendingPool.sol#L780) |
+| `"User deposit is already being used as collateral"` | [`LendingPool.sol:784`](v1-aave-protocol/contracts/lendingpool/LendingPool.sol#L784) |
+| `"Liquidation call failed"` | [`LendingPool.sol:825`](v1-aave-protocol/contracts/lendingpool/LendingPool.sol#L825) |
+| `"Liquidation failed: " + message` | [`LendingPool.sol:831`](v1-aave-protocol/contracts/lendingpool/LendingPool.sol#L831) |
+| `"There is not enough liquidity available to borrow"` | [`LendingPool.sol:857`](v1-aave-protocol/contracts/lendingpool/LendingPool.sol#L857) |
+| `"The requested amount is too small for a flashLoan."` | [`LendingPool.sol:869`](v1-aave-protocol/contracts/lendingpool/LendingPool.sol#L869) |
+| `"The actual balance of the protocol is inconsistent"` | [`LendingPool.sol:890`](v1-aave-protocol/contracts/lendingpool/LendingPool.sol#L890) |
+| `"Reserve has already been initialized"` | [`CoreLibrary.sol:170`](v1-aave-protocol/contracts/libraries/CoreLibrary.sol#L170) |
+| `"Reserve is already enabled"` | [`CoreLibrary.sol:195`](v1-aave-protocol/contracts/libraries/CoreLibrary.sol#L195) |
+| `"Reserve is already enabled as collateral"` | [`CoreLibrary.sol:223`](v1-aave-protocol/contracts/libraries/CoreLibrary.sol#L223) |
+| `"Invalid amount to decrease"` | [`CoreLibrary.sol:336`](v1-aave-protocol/contracts/libraries/CoreLibrary.sol#L336) |
+| `"The amounts to subtract don't match"` | [`CoreLibrary.sol:357`](v1-aave-protocol/contracts/libraries/CoreLibrary.sol#L357) |
+| `"The amount that is being subtracted from the variable total borrows is incorrect"` | [`CoreLibrary.sol:381`](v1-aave-protocol/contracts/libraries/CoreLibrary.sol#L381) |
+| `"The caller of this function must be a lending pool"` | [`AToken.sol:138`](v1-aave-protocol/contracts/tokenization/AToken.sol#L138) |
+| `"Transfer cannot be allowed."` | [`AToken.sol:145`](v1-aave-protocol/contracts/tokenization/AToken.sol#L145) |
+| `"Interest stream can only be redirected to a different address"` | [`AToken.sol:611`](v1-aave-protocol/contracts/tokenization/AToken.sol#L611) |
+| `"Interest stream can only be redirected if there is a valid balance"` | [`AToken.sol:617`](v1-aave-protocol/contracts/tokenization/AToken.sol#L617) |
+| `"Caller is not allowed to redirect the interest of the user"` | [`AToken.sol:196`](v1-aave-protocol/contracts/tokenization/AToken.sol#L196) |
+| `"Amount to redeem needs to be > 0"` | [`AToken.sol:228`](v1-aave-protocol/contracts/tokenization/AToken.sol#L228) |
+| `"User cannot redeem more than the available balance"` | [`AToken.sol:238`](v1-aave-protocol/contracts/tokenization/AToken.sol#L238) |
+| `"Transfer cannot be allowed."` | [`AToken.sol:241`](v1-aave-protocol/contracts/tokenization/AToken.sol#L241) |
+| `"The caller must be a lending pool manager"` | [`LendingPoolConfigurator.sol:152`](v1-aave-protocol/contracts/lendingpool/LendingPoolConfigurator.sol#L152) |
 
 Liquidation failures are **return codes**, not reverts — see the
-`LiquidationErrors` enum at `LendingPoolLiquidationManager.sol:79` and the
+`LiquidationErrors` enum at [`LendingPoolLiquidationManager.sol:79`](v1-aave-protocol/contracts/lendingpool/LendingPoolLiquidationManager.sol#L79) and the
 message strings paired with them at `:137`, `:146`, `:158`, `:171`, `:221`.
 
 ## 1.13 v1 events reference
 
 | Event | Declared | Emitted when |
 |---|---|---|
-| `Deposit(reserve, user, amount, referral, timestamp)` | `LendingPool.sol:46` | `deposit` succeeds |
-| `RedeemUnderlying(reserve, user, amount, timestamp)` | `LendingPool.sol:61` | `redeemUnderlying` succeeds |
-| `Borrow(reserve, user, amount, borrowRateMode, borrowRate, originationFee, borrowBalanceIncrease, referral, timestamp)` | `LendingPool.sol:80` | `borrow` succeeds |
-| `Repay(reserve, user, repayer, amountMinusFees, fees, borrowBalanceIncrease, timestamp)` | `LendingPool.sol:102` | `repay`, both branches |
-| `Swap(reserve, user, newRateMode, newRate, borrowBalanceIncrease, timestamp)` | `LendingPool.sol:121` | `swapBorrowRateMode` |
-| `ReserveUsedAsCollateralEnabled(reserve, user)` | `LendingPool.sol:135` | Collateral flag on |
-| `ReserveUsedAsCollateralDisabled(reserve, user)` | `LendingPool.sol:142` | Collateral flag off |
-| `RebalanceStableBorrowRate(reserve, user, newStableRate, borrowBalanceIncrease, timestamp)` | `LendingPool.sol:152` | `rebalanceStableBorrowRate` |
-| `FlashLoan(target, reserve, amount, totalFee, protocolFee, timestamp)` | `LendingPool.sol:169` | `flashLoan` |
-| `OriginationFeeLiquidated(collateral, reserve, user, feeLiquidated, liquidatedCollateralForFee, timestamp)` | `LendingPool.sol:194` | Liquidation that also seizes fees |
-| `LiquidationCall(collateral, reserve, user, purchaseAmount, liquidatedCollateralAmount, accruedBorrowInterest, liquidator, receiveAToken, timestamp)` | `LendingPool.sol:215` | Liquidation |
-| `ReserveUpdated(reserve, liquidityRate, stableBorrowRate, variableBorrowRate, liquidityIndex, variableBorrowIndex)` | `LendingPoolCore.sol:43` | Every rate/timestamp refresh |
-| `Redeem(from, value, fromBalanceIncrease, fromIndex)` | `AToken.sol:30` | `AToken.redeem` |
-| `MintOnDeposit(from, value, fromBalanceIncrease, fromIndex)` | `AToken.sol:44` | `mintOnDeposit` |
-| `BurnOnLiquidation(from, value, fromBalanceIncrease, fromIndex)` | `AToken.sol:59` | `burnOnLiquidation` |
-| `BalanceTransfer(from, to, value, fromBalanceIncrease, toBalanceIncrease, fromIndex, toIndex)` | `AToken.sol:76` | aToken transfer |
-| `InterestStreamRedirected(from, to, redirectedBalance, fromBalanceIncrease, fromIndex)` | `AToken.sol:94` | Redirection set or reset |
-| `RedirectedBalanceUpdated(targetAddress, targetBalanceIncrease, targetIndex, redirectedBalanceAdded, redirectedBalanceRemoved)` | `AToken.sol:110` | Redirected notional changes |
-| `InterestRedirectionAllowanceChanged(from, to)` | `AToken.sol:118` | `allowInterestRedirectionTo` |
-| `DistributionUpdated(receivers, percentages)` | `TokenDistributor.sol:24` | Distribution reconfigured |
-| `Distributed(receiver, percentage, amount)` | `TokenDistributor.sol:25` | Per-receiver payout |
-| `AssetSourceUpdated(asset, source)` | `ChainlinkProxyPriceProvider.sol:18` | Oracle source set |
-| `FallbackOracleUpdated(fallbackOracle)` | `ChainlinkProxyPriceProvider.sol:19` | Fallback set |
+| `Deposit(reserve, user, amount, referral, timestamp)` | [`LendingPool.sol:46`](v1-aave-protocol/contracts/lendingpool/LendingPool.sol#L46) | `deposit` succeeds |
+| `RedeemUnderlying(reserve, user, amount, timestamp)` | [`LendingPool.sol:61`](v1-aave-protocol/contracts/lendingpool/LendingPool.sol#L61) | `redeemUnderlying` succeeds |
+| `Borrow(reserve, user, amount, borrowRateMode, borrowRate, originationFee, borrowBalanceIncrease, referral, timestamp)` | [`LendingPool.sol:80`](v1-aave-protocol/contracts/lendingpool/LendingPool.sol#L80) | `borrow` succeeds |
+| `Repay(reserve, user, repayer, amountMinusFees, fees, borrowBalanceIncrease, timestamp)` | [`LendingPool.sol:102`](v1-aave-protocol/contracts/lendingpool/LendingPool.sol#L102) | `repay`, both branches |
+| `Swap(reserve, user, newRateMode, newRate, borrowBalanceIncrease, timestamp)` | [`LendingPool.sol:121`](v1-aave-protocol/contracts/lendingpool/LendingPool.sol#L121) | `swapBorrowRateMode` |
+| `ReserveUsedAsCollateralEnabled(reserve, user)` | [`LendingPool.sol:135`](v1-aave-protocol/contracts/lendingpool/LendingPool.sol#L135) | Collateral flag on |
+| `ReserveUsedAsCollateralDisabled(reserve, user)` | [`LendingPool.sol:142`](v1-aave-protocol/contracts/lendingpool/LendingPool.sol#L142) | Collateral flag off |
+| `RebalanceStableBorrowRate(reserve, user, newStableRate, borrowBalanceIncrease, timestamp)` | [`LendingPool.sol:152`](v1-aave-protocol/contracts/lendingpool/LendingPool.sol#L152) | `rebalanceStableBorrowRate` |
+| `FlashLoan(target, reserve, amount, totalFee, protocolFee, timestamp)` | [`LendingPool.sol:169`](v1-aave-protocol/contracts/lendingpool/LendingPool.sol#L169) | `flashLoan` |
+| `OriginationFeeLiquidated(collateral, reserve, user, feeLiquidated, liquidatedCollateralForFee, timestamp)` | [`LendingPool.sol:194`](v1-aave-protocol/contracts/lendingpool/LendingPool.sol#L194) | Liquidation that also seizes fees |
+| `LiquidationCall(collateral, reserve, user, purchaseAmount, liquidatedCollateralAmount, accruedBorrowInterest, liquidator, receiveAToken, timestamp)` | [`LendingPool.sol:215`](v1-aave-protocol/contracts/lendingpool/LendingPool.sol#L215) | Liquidation |
+| `ReserveUpdated(reserve, liquidityRate, stableBorrowRate, variableBorrowRate, liquidityIndex, variableBorrowIndex)` | [`LendingPoolCore.sol:43`](v1-aave-protocol/contracts/lendingpool/LendingPoolCore.sol#L43) | Every rate/timestamp refresh |
+| `Redeem(from, value, fromBalanceIncrease, fromIndex)` | [`AToken.sol:30`](v1-aave-protocol/contracts/tokenization/AToken.sol#L30) | `AToken.redeem` |
+| `MintOnDeposit(from, value, fromBalanceIncrease, fromIndex)` | [`AToken.sol:44`](v1-aave-protocol/contracts/tokenization/AToken.sol#L44) | `mintOnDeposit` |
+| `BurnOnLiquidation(from, value, fromBalanceIncrease, fromIndex)` | [`AToken.sol:59`](v1-aave-protocol/contracts/tokenization/AToken.sol#L59) | `burnOnLiquidation` |
+| `BalanceTransfer(from, to, value, fromBalanceIncrease, toBalanceIncrease, fromIndex, toIndex)` | [`AToken.sol:76`](v1-aave-protocol/contracts/tokenization/AToken.sol#L76) | aToken transfer |
+| `InterestStreamRedirected(from, to, redirectedBalance, fromBalanceIncrease, fromIndex)` | [`AToken.sol:94`](v1-aave-protocol/contracts/tokenization/AToken.sol#L94) | Redirection set or reset |
+| `RedirectedBalanceUpdated(targetAddress, targetBalanceIncrease, targetIndex, redirectedBalanceAdded, redirectedBalanceRemoved)` | [`AToken.sol:110`](v1-aave-protocol/contracts/tokenization/AToken.sol#L110) | Redirected notional changes |
+| `InterestRedirectionAllowanceChanged(from, to)` | [`AToken.sol:118`](v1-aave-protocol/contracts/tokenization/AToken.sol#L118) | `allowInterestRedirectionTo` |
+| `DistributionUpdated(receivers, percentages)` | [`TokenDistributor.sol:24`](v1-aave-protocol/contracts/fees/TokenDistributor.sol#L24) | Distribution reconfigured |
+| `Distributed(receiver, percentage, amount)` | [`TokenDistributor.sol:25`](v1-aave-protocol/contracts/fees/TokenDistributor.sol#L25) | Per-receiver payout |
+| `AssetSourceUpdated(asset, source)` | [`ChainlinkProxyPriceProvider.sol:18`](v1-aave-protocol/contracts/misc/ChainlinkProxyPriceProvider.sol#L18) | Oracle source set |
+| `FallbackOracleUpdated(fallbackOracle)` | [`ChainlinkProxyPriceProvider.sol:19`](v1-aave-protocol/contracts/misc/ChainlinkProxyPriceProvider.sol#L19) | Fallback set |
 
 Plus the 19 configurator events listed in [1.10](#110-lendingpoolconfigurator-v1).
 
@@ -1390,11 +1390,11 @@ Plus the 19 configurator events listed in [1.10](#110-lendingpoolconfigurator-v1
 |---:|---|---|---|
 | 0 | `ReentrancyGuard` | `uint256` | `_guardCounter` |
 | 1 | `VersionedInitializable` | `uint256` | `lastInitializedRevision` |
-| 2 | `LendingPool.sol:32` | `address` | `addressesProvider` |
-| 3 | `LendingPool.sol:33` | `address` | `core` |
-| 4 | `LendingPool.sol:34` | `address` | `dataProvider` |
-| 5 | `LendingPool.sol:35` | `address` | `parametersProvider` |
-| 6 | `LendingPool.sol:36` | `address` | `feeProvider` |
+| 2 | [`LendingPool.sol:32`](v1-aave-protocol/contracts/lendingpool/LendingPool.sol#L32) | `address` | `addressesProvider` |
+| 3 | [`LendingPool.sol:33`](v1-aave-protocol/contracts/lendingpool/LendingPool.sol#L33) | `address` | `core` |
+| 4 | [`LendingPool.sol:34`](v1-aave-protocol/contracts/lendingpool/LendingPool.sol#L34) | `address` | `dataProvider` |
+| 5 | [`LendingPool.sol:35`](v1-aave-protocol/contracts/lendingpool/LendingPool.sol#L35) | `address` | `parametersProvider` |
+| 6 | [`LendingPool.sol:36`](v1-aave-protocol/contracts/lendingpool/LendingPool.sol#L36) | `address` | `feeProvider` |
 
 `LendingPoolLiquidationManager` reproduces slots 0–6 exactly and adds
 `ethereumAddress` at slot 7 — the invariant that makes the `delegatecall` sound.
@@ -1404,11 +1404,11 @@ Plus the 19 configurator events listed in [1.10](#110-lendingpoolconfigurator-v1
 | Slot | Source | Type | Name |
 |---:|---|---|---|
 | 0 | `VersionedInitializable` | `uint256` | `lastInitializedRevision` |
-| 1 | `LendingPoolCore.sol:52` | `address` | `lendingPoolAddress` |
+| 1 | [`LendingPoolCore.sol:52`](v1-aave-protocol/contracts/lendingpool/LendingPoolCore.sol#L52) | `address` | `lendingPoolAddress` |
 | 2 | inherited field | `address` | `addressesProvider` |
-| 3 | `LendingPoolCore.sol:75` | mapping | `reserves` |
-| 4 | `LendingPoolCore.sol:76` | mapping | `usersReserveData` |
-| 5 | `LendingPoolCore.sol:78` | `address[]` | `reservesList` |
+| 3 | [`LendingPoolCore.sol:75`](v1-aave-protocol/contracts/lendingpool/LendingPoolCore.sol#L75) | mapping | `reserves` |
+| 4 | [`LendingPoolCore.sol:76`](v1-aave-protocol/contracts/lendingpool/LendingPoolCore.sol#L76) | mapping | `usersReserveData` |
+| 5 | [`LendingPoolCore.sol:78`](v1-aave-protocol/contracts/lendingpool/LendingPoolCore.sol#L78) | `address[]` | `reservesList` |
 
 Each `ReserveData` occupies roughly 20 slots; each `UserReserveData` roughly 6.
 
@@ -1417,7 +1417,7 @@ Each `ReserveData` occupies roughly 20 slots; each `UserReserveData` roughly 6.
 Slots 0–4 come from OpenZeppelin `ERC20` and `ERC20Detailed` (balances,
 allowances, total supply, name, symbol, decimals), followed by
 `addressesProvider`, `core`, `pool`, `dataProvider`, `underlyingAssetAddress`,
-then the four redirection mappings at `AToken.sol:125-128`.
+then the four redirection mappings at [`AToken.sol:125-128`](v1-aave-protocol/contracts/tokenization/AToken.sol#L125-L128).
 
 - **Gotcha.** v1 aTokens are **not** proxied — `AToken` has no
   `VersionedInitializable`. Upgrading one means deploying a new token and
@@ -1553,7 +1553,7 @@ in v1.
 
 ## 2.2 `DataTypes` and `LendingPoolStorage`
 
-### `DataTypes.ReserveData` (`aave/v2-protocol/contracts/protocol/libraries/types/DataTypes.sol:6-28`)
+### `DataTypes.ReserveData` ([`aave/v2-protocol/contracts/protocol/libraries/types/DataTypes.sol:6-28`](v2-protocol/contracts/protocol/libraries/types/DataTypes.sol#L6-L28))
 
 | Field | Type | Unit | Meaning |
 |---|---|---|---|
@@ -1594,7 +1594,7 @@ other is expected.
 public ABI: `borrow(asset, amount, 2, ...)` means variable, and the same
 convention carried into v3.
 
-### `LendingPoolStorage` (`aave/v2-protocol/contracts/protocol/lendingpool/LendingPoolStorage.sol:10-32`)
+### `LendingPoolStorage` ([`aave/v2-protocol/contracts/protocol/lendingpool/LendingPoolStorage.sol:10-32`](v2-protocol/contracts/protocol/lendingpool/LendingPoolStorage.sol#L10-L32))
 
 | Slot | Type | Name | Purpose |
 |---:|---|---|---|
@@ -1899,7 +1899,7 @@ circuit at `:93-96`.
   i.e. `index *= (1 + amount/totalLiquidity)`.
 - **State writes.** `reserve.liquidityIndex`.
 - **Called by.** `LendingPool.flashLoan`
-  (`aave/v2-protocol/contracts/protocol/lendingpool/LendingPool.sol:523`) to
+  ([`aave/v2-protocol/contracts/protocol/lendingpool/LendingPool.sol:523`](v2-protocol/contracts/protocol/lendingpool/LendingPool.sol#L523)) to
   spread the flash-loan premium, and nothing else.
 - **Gotcha.** Every existing holder is diluted *upward* proportionally. Someone
   who deposits one block later gets none of it. This is also the only place in
@@ -3265,7 +3265,7 @@ manager.
 | 80 | `SDT_BURN_EXCEEDS_BALANCE` | `:105` | |
 
 All 80 codes are declared as `string public constant` in
-`aave/v2-protocol/contracts/protocol/libraries/helpers/Errors.sol:24-105`. Note
+[`aave/v2-protocol/contracts/protocol/libraries/helpers/Errors.sol:24-105`](v2-protocol/contracts/protocol/libraries/helpers/Errors.sol#L24-L105). Note
 that the numbering is **not** in declaration order: `CALLER_NOT_POOL_ADMIN` is
 code 33 but declared first, and `LPC_INVALID_CONFIGURATION` (75) and
 `LPC_CALLER_NOT_EMERGENCY_ADMIN` (76) sit between codes 40 and 41 in the file.
@@ -3454,32 +3454,32 @@ For each v1 external function, what became of it.
 
 | v1 function | v1 location | v2 equivalent | Notes |
 |---|---|---|---|
-| `deposit(reserve, amount, referralCode)` | `LendingPool.sol:299` | `deposit(asset, amount, onBehalfOf, referralCode)` | Gained `onBehalfOf`. ETH is no longer a pseudo-asset; use `WETHGateway` |
-| `redeemUnderlying(reserve, user, amount, aTokenBalanceAfterRedeem)` | `LendingPool.sol:355` | `withdraw(asset, amount, to)` | **Inverted.** In v1 the *aToken* called the pool; in v2 the *pool* calls the aToken. `AToken.redeem` is gone |
-| `borrow(reserve, amount, interestRateMode, referralCode)` | `LendingPool.sol:409` | `borrow(asset, amount, interestRateMode, referralCode, onBehalfOf)` | Gained credit delegation. The origination fee is gone |
-| `repay(reserve, amount, onBehalfOf)` | `LendingPool.sol:521` | `repay(asset, amount, rateMode, onBehalfOf)` | Gained an explicit `rateMode`, because debt is now two separate tokens |
-| `swapBorrowRateMode(reserve)` | `LendingPool.sol:604` | `swapBorrowRateMode(asset, rateMode)` | Gained the target mode as an argument |
-| `rebalanceStableBorrowRate(reserve, user)` | `LendingPool.sol:667` | `rebalanceStableBorrowRate(asset, user)` | Same semantics, thresholds moved into `ValidationLogic` |
-| `setUserUseReserveAsCollateral(reserve, useAsCollateral)` | `LendingPool.sol:723` | `setUserUseReserveAsCollateral(asset, useAsCollateral)` | Unchanged |
-| `liquidationCall(collateral, reserve, user, purchaseAmount, receiveAToken)` | `LendingPool.sol:764` | `liquidationCall(collateralAsset, debtAsset, user, debtToCover, receiveAToken)` | Still a `delegatecall`, now to `LendingPoolCollateralManager`. Origination-fee seizure removed |
-| `flashLoan(receiver, reserve, amount, params)` | `LendingPool.sol:806` | `flashLoan(receiver, assets[], amounts[], modes[], onBehalfOf, params, referralCode)` | Multi-asset, and can end as debt instead of repayment |
-| `getReserveConfigurationData(reserve)` | `LendingPool.sol:874` | `AaveProtocolDataProvider.getReserveConfigurationData(asset)` | Moved out of the pool |
-| `getReserveData(reserve)` | `LendingPool.sol:906` | `LendingPool.getReserveData(asset)` + the data provider | Pool now returns the raw struct |
-| `getUserAccountData(user)` | `LendingPool.sol:947` | `getUserAccountData(user)` | Same six fields, no origination-fee field |
-| `getUserReserveData(reserve, user)` | `LendingPool.sol:987` | `AaveProtocolDataProvider.getUserReserveData(asset, user)` | Moved |
-| `getReserves()` | `LendingPool.sol:1000` | `getReservesList()` | Renamed |
-| `AToken.redeem(amount)` | `AToken.sol:222` | **Removed** | Replaced by `LendingPool.withdraw` |
-| `AToken.redirectInterestStream(to)` | `AToken.sol:167` | **Removed** | Interest redirection did not survive. Its use cases moved to holding aTokens directly |
-| `AToken.redirectInterestStreamOf(from, to)` | `AToken.sol:190` | **Removed** | |
-| `AToken.allowInterestRedirectionTo(to)` | `AToken.sol:205` | **Removed** | |
-| `AToken.mintOnDeposit(account, amount)` | `AToken.sol:262` | `AToken.mint(user, amount, index)` | Now takes the index and returns `isFirstDeposit` |
-| `AToken.burnOnLiquidation(account, value)` | `AToken.sol:279` | `AToken.burn(user, receiver, amount, index)` | Unified with withdrawal |
-| `AToken.transferOnLiquidation(from, to, value)` | `AToken.sol:296` | `AToken.transferOnLiquidation(from, to, value)` | Kept |
-| `AToken.principalBalanceOf(user)` | `AToken.sol:436` | `AToken.scaledBalanceOf(user)` | Renamed and re-based on the scaled model |
-| `AToken.getUserIndex(user)` | `AToken.sol:497` | **Removed** | There is no per-user index in v2; one global index suffices |
+| `deposit(reserve, amount, referralCode)` | [`LendingPool.sol:299`](v2-protocol/contracts/protocol/lendingpool/LendingPool.sol#L299) | `deposit(asset, amount, onBehalfOf, referralCode)` | Gained `onBehalfOf`. ETH is no longer a pseudo-asset; use `WETHGateway` |
+| `redeemUnderlying(reserve, user, amount, aTokenBalanceAfterRedeem)` | [`LendingPool.sol:355`](v2-protocol/contracts/protocol/lendingpool/LendingPool.sol#L355) | `withdraw(asset, amount, to)` | **Inverted.** In v1 the *aToken* called the pool; in v2 the *pool* calls the aToken. `AToken.redeem` is gone |
+| `borrow(reserve, amount, interestRateMode, referralCode)` | [`LendingPool.sol:409`](v2-protocol/contracts/protocol/lendingpool/LendingPool.sol#L409) | `borrow(asset, amount, interestRateMode, referralCode, onBehalfOf)` | Gained credit delegation. The origination fee is gone |
+| `repay(reserve, amount, onBehalfOf)` | [`LendingPool.sol:521`](v2-protocol/contracts/protocol/lendingpool/LendingPool.sol#L521) | `repay(asset, amount, rateMode, onBehalfOf)` | Gained an explicit `rateMode`, because debt is now two separate tokens |
+| `swapBorrowRateMode(reserve)` | [`LendingPool.sol:604`](v2-protocol/contracts/protocol/lendingpool/LendingPool.sol#L604) | `swapBorrowRateMode(asset, rateMode)` | Gained the target mode as an argument |
+| `rebalanceStableBorrowRate(reserve, user)` | [`LendingPool.sol:667`](v2-protocol/contracts/protocol/lendingpool/LendingPool.sol#L667) | `rebalanceStableBorrowRate(asset, user)` | Same semantics, thresholds moved into `ValidationLogic` |
+| `setUserUseReserveAsCollateral(reserve, useAsCollateral)` | [`LendingPool.sol:723`](v2-protocol/contracts/protocol/lendingpool/LendingPool.sol#L723) | `setUserUseReserveAsCollateral(asset, useAsCollateral)` | Unchanged |
+| `liquidationCall(collateral, reserve, user, purchaseAmount, receiveAToken)` | [`LendingPool.sol:764`](v2-protocol/contracts/protocol/lendingpool/LendingPool.sol#L764) | `liquidationCall(collateralAsset, debtAsset, user, debtToCover, receiveAToken)` | Still a `delegatecall`, now to `LendingPoolCollateralManager`. Origination-fee seizure removed |
+| `flashLoan(receiver, reserve, amount, params)` | [`LendingPool.sol:806`](v2-protocol/contracts/protocol/lendingpool/LendingPool.sol#L806) | `flashLoan(receiver, assets[], amounts[], modes[], onBehalfOf, params, referralCode)` | Multi-asset, and can end as debt instead of repayment |
+| `getReserveConfigurationData(reserve)` | [`LendingPool.sol:874`](v2-protocol/contracts/protocol/lendingpool/LendingPool.sol#L874) | `AaveProtocolDataProvider.getReserveConfigurationData(asset)` | Moved out of the pool |
+| `getReserveData(reserve)` | [`LendingPool.sol:906`](v2-protocol/contracts/protocol/lendingpool/LendingPool.sol#L906) | `LendingPool.getReserveData(asset)` + the data provider | Pool now returns the raw struct |
+| `getUserAccountData(user)` | [`LendingPool.sol:947`](v1-aave-protocol/contracts/lendingpool/LendingPool.sol#L947) | `getUserAccountData(user)` | Same six fields, no origination-fee field |
+| `getUserReserveData(reserve, user)` | [`LendingPool.sol:987`](v1-aave-protocol/contracts/lendingpool/LendingPool.sol#L987) | `AaveProtocolDataProvider.getUserReserveData(asset, user)` | Moved |
+| `getReserves()` | [`LendingPool.sol:1000`](v1-aave-protocol/contracts/lendingpool/LendingPool.sol#L1000) | `getReservesList()` | Renamed |
+| `AToken.redeem(amount)` | [`AToken.sol:222`](v1-aave-protocol/contracts/tokenization/AToken.sol#L222) | **Removed** | Replaced by `LendingPool.withdraw` |
+| `AToken.redirectInterestStream(to)` | [`AToken.sol:167`](v1-aave-protocol/contracts/tokenization/AToken.sol#L167) | **Removed** | Interest redirection did not survive. Its use cases moved to holding aTokens directly |
+| `AToken.redirectInterestStreamOf(from, to)` | [`AToken.sol:190`](v1-aave-protocol/contracts/tokenization/AToken.sol#L190) | **Removed** | |
+| `AToken.allowInterestRedirectionTo(to)` | [`AToken.sol:205`](v1-aave-protocol/contracts/tokenization/AToken.sol#L205) | **Removed** | |
+| `AToken.mintOnDeposit(account, amount)` | [`AToken.sol:262`](v1-aave-protocol/contracts/tokenization/AToken.sol#L262) | `AToken.mint(user, amount, index)` | Now takes the index and returns `isFirstDeposit` |
+| `AToken.burnOnLiquidation(account, value)` | [`AToken.sol:279`](v1-aave-protocol/contracts/tokenization/AToken.sol#L279) | `AToken.burn(user, receiver, amount, index)` | Unified with withdrawal |
+| `AToken.transferOnLiquidation(from, to, value)` | [`AToken.sol:296`](v1-aave-protocol/contracts/tokenization/AToken.sol#L296) | `AToken.transferOnLiquidation(from, to, value)` | Kept |
+| `AToken.principalBalanceOf(user)` | [`AToken.sol:436`](v1-aave-protocol/contracts/tokenization/AToken.sol#L436) | `AToken.scaledBalanceOf(user)` | Renamed and re-based on the scaled model |
+| `AToken.getUserIndex(user)` | [`AToken.sol:497`](v1-aave-protocol/contracts/tokenization/AToken.sol#L497) | **Removed** | There is no per-user index in v2; one global index suffices |
 | `LendingPoolCore.*` (all ~60) | `LendingPoolCore.sol` | Split | State → `LendingPoolStorage._reserves` and the debt tokens. Funds → the aTokens. Mutators → `ReserveLogic`. Getters → `AaveProtocolDataProvider` |
-| `LendingPoolDataProvider.calculateUserGlobalData` | `LendingPoolDataProvider.sol:87` | `GenericLogic.calculateUserAccountData` | Same job, now a linked library |
-| `LendingPoolDataProvider.balanceDecreaseAllowed` | `LendingPoolDataProvider.sol:174` | `GenericLogic.balanceDecreaseAllowed` | Moved |
+| `LendingPoolDataProvider.calculateUserGlobalData` | [`LendingPoolDataProvider.sol:87`](v1-aave-protocol/contracts/lendingpool/LendingPoolDataProvider.sol#L87) | `GenericLogic.calculateUserAccountData` | Same job, now a linked library |
+| `LendingPoolDataProvider.balanceDecreaseAllowed` | [`LendingPoolDataProvider.sol:174`](v1-aave-protocol/contracts/lendingpool/LendingPoolDataProvider.sol#L174) | `GenericLogic.balanceDecreaseAllowed` | Moved |
 | `FeeProvider.calculateLoanOriginationFee` | `FeeProvider.sol` | **Removed** | v2 charges no origination fee; revenue comes from the reserve factor instead |
 | `TokenDistributor` | `fees/TokenDistributor.sol` | **Removed** | Replaced by the treasury address on each aToken |
 | `LendingPoolParametersProvider` | `configuration/` | **Removed** | Its constants became `LendingPool` state (`_maxStableRateBorrowSizePercent`, `_maxNumberOfReserves`) |

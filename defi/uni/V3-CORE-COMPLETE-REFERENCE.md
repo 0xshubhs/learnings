@@ -183,9 +183,9 @@ would differ per pool and the address could not be computed off-chain from
 slot that the pool reads back during its own construction, `initCode` is a
 constant, its hash is the fixed `0xe34f…8b54`, and any integrator can derive a
 pool address with pure arithmetic and no external call. `delete parameters`
-(`UniswapV3PoolDeployer.sol:36`) then refunds most of the gas.
+([`UniswapV3PoolDeployer.sol:36`](v3-core/contracts/UniswapV3PoolDeployer.sol#L36)) then refunds most of the gas.
 
-**The three-layer split of the pool interface.** `IUniswapV3Pool.sol:15-22`
+**The three-layer split of the pool interface.** [`IUniswapV3Pool.sol:15-22`](v3-core/contracts/interfaces/IUniswapV3Pool.sol#L15-L22)
 inherits six interfaces sorted by mutability — immutables, state, derived state,
 actions, owner actions, events. This is not decoration: integrators typically
 import only `IUniswapV3PoolState` or only the events, which keeps their own
@@ -204,7 +204,7 @@ code and cannot afford anything larger.
 <a name="2-uniswapv3factory"></a>
 ## 2. `UniswapV3Factory`
 
-`UniswapV3Factory.sol:13` — `contract UniswapV3Factory is IUniswapV3Factory, UniswapV3PoolDeployer, NoDelegateCall`
+[`UniswapV3Factory.sol:13`](v3-core/contracts/UniswapV3Factory.sol#L13) — `contract UniswapV3Factory is IUniswapV3Factory, UniswapV3PoolDeployer, NoDelegateCall`
 
 The registry and the only privileged contract in core. It owns nothing and
 custodies nothing: its powers are (a) creating pools, (b) enabling new fee tiers,
@@ -215,14 +215,14 @@ and is gated by `onlyFactoryOwner`, so the factory owner reaches it indirectly.
 
 | Name | Type | Slot | Line | Notes |
 |---|---|---|---|---|
-| `parameters` | `Parameters` | 0–2 | inherited from `UniswapV3PoolDeployer.sol:18` | transient; non-zero only during `createPool` |
+| `parameters` | `Parameters` | 0–2 | inherited from [`UniswapV3PoolDeployer.sol:18`](v3-core/contracts/UniswapV3PoolDeployer.sol#L18) | transient; non-zero only during `createPool` |
 | `owner` | `address` | 3 | `:15` | can enable fee tiers and set pool protocol fees |
 | `feeAmountTickSpacing` | `mapping(uint24 => int24)` | 4 | `:18` | fee (hundredths of a bip) → tick spacing; `0` means "not enabled" |
 | `getPool` | `mapping(address => mapping(address => mapping(uint24 => address)))` | 5 | `:20` | populated in **both** token orders |
 
 ### `constructor()`
 
-`UniswapV3Factory.sol:22-32` · non-payable
+[`UniswapV3Factory.sol:22-32`](v3-core/contracts/UniswapV3Factory.sol#L22-L32) · non-payable
 
 1. **State writes.** `owner = msg.sender` (`:23`); seeds three fee tiers:
    `500 → 10`, `3000 → 60`, `10000 → 200` (`:26-31`).
@@ -240,7 +240,7 @@ pairs where a 2% granularity is irrelevant.
 
 ### `createPool(address tokenA, address tokenB, uint24 fee) → address pool`
 
-`UniswapV3Factory.sol:35-51` · `external override noDelegateCall`
+[`UniswapV3Factory.sol:35-51`](v3-core/contracts/UniswapV3Factory.sol#L35-L51) · `external override noDelegateCall`
 
 Deploys a pool. Permissionless — anyone may create any pool on any enabled tier.
 
@@ -282,7 +282,7 @@ caller rather than the canonical factory.
 
 ### `setOwner(address _owner)`
 
-`UniswapV3Factory.sol:54-58` · `external override`
+[`UniswapV3Factory.sol:54-58`](v3-core/contracts/UniswapV3Factory.sol#L54-L58) · `external override`
 
 - **Access control.** `require(msg.sender == owner)` (`:55`).
 - **State write.** `owner = _owner` (`:57`).
@@ -294,17 +294,17 @@ caller rather than the canonical factory.
 
 ### `enableFeeAmount(uint24 fee, int24 tickSpacing)`
 
-`UniswapV3Factory.sol:61-72` · `public override`
+[`UniswapV3Factory.sol:61-72`](v3-core/contracts/UniswapV3Factory.sol#L61-L72) · `public override`
 
 | Line | Check | Why |
 |---|---|---|
 | `:62` | `msg.sender == owner` | governance only |
-| `:63` | `fee < 1000000` | a fee is a fraction of `1e6`; 100% would make `1e6 - feePips == 0` and divide by zero in `SwapMath.sol:95` |
+| `:63` | `fee < 1000000` | a fee is a fraction of `1e6`; 100% would make `1e6 - feePips == 0` and divide by zero in [`SwapMath.sol:95`](v3-core/contracts/libraries/SwapMath.sol#L95) |
 | `:67` | `tickSpacing > 0 && tickSpacing < 16384` | see below |
 | `:68` | `feeAmountTickSpacing[fee] == 0` | tiers are **append-only**; an existing tier can never be changed |
 
 **The 16384 bound** (comment at `:64-66`) is the subtle one. In
-`TickBitmap.nextInitializedTickWithinOneWord` (`TickBitmap.sol:60-75`) the result
+`TickBitmap.nextInitializedTickWithinOneWord` ([`TickBitmap.sol:60-75`](v3-core/contracts/libraries/TickBitmap.sol#L60-L75)) the result
 is `compressed_something * tickSpacing`, computed in `int24`. A word spans 256
 compressed ticks, so the multiplication can reach roughly `256 × tickSpacing`
 beyond the current tick. With `tickSpacing ≥ 16384` that product can exceed
@@ -320,7 +320,7 @@ would strand every existing position on now-unusable ticks).
 <a name="3-uniswapv3pooldeployer"></a>
 ## 3. `UniswapV3PoolDeployer`
 
-`UniswapV3PoolDeployer.sol:8` — `contract UniswapV3PoolDeployer is IUniswapV3PoolDeployer`
+[`UniswapV3PoolDeployer.sol:8`](v3-core/contracts/UniswapV3PoolDeployer.sol#L8) — `contract UniswapV3PoolDeployer is IUniswapV3PoolDeployer`
 
 ### `struct Parameters` (`:9-15`) and storage
 
@@ -340,7 +340,7 @@ Three slots, not five: `token1`, `fee` and `tickSpacing` share slot 2 (20 + 3 + 
 
 ### `deploy(address factory, address token0, address token1, uint24 fee, int24 tickSpacing) → address pool`
 
-`UniswapV3PoolDeployer.sol:27-37` · `internal`
+[`UniswapV3PoolDeployer.sol:27-37`](v3-core/contracts/UniswapV3PoolDeployer.sol#L27-L37) · `internal`
 
 ```solidity
 parameters = Parameters({factory: factory, token0: token0, token1: token1, fee: fee, tickSpacing: tickSpacing});
@@ -380,7 +380,7 @@ external call in `deploy` other than the `CREATE2` itself close this off.
 <a name="4-nodelegatecall"></a>
 ## 4. `NoDelegateCall`
 
-`NoDelegateCall.sol:6` — `abstract contract NoDelegateCall`
+[`NoDelegateCall.sol:6`](v3-core/contracts/NoDelegateCall.sol#L6) — `abstract contract NoDelegateCall`
 
 ### `address private immutable original` (`:8`)
 
@@ -422,7 +422,7 @@ only move already-accounted balances and are additionally `lock`ed.
 <a name="5-uniswapv3pool"></a>
 ## 5. `UniswapV3Pool`
 
-`UniswapV3Pool.sol:30` — `contract UniswapV3Pool is IUniswapV3Pool, NoDelegateCall`
+[`UniswapV3Pool.sol:30`](v3-core/contracts/UniswapV3Pool.sol#L30) — `contract UniswapV3Pool is IUniswapV3Pool, NoDelegateCall`
 
 869 lines that hold every token, price, position and fee. The only mutable
 contract in a deployed V3 system; it is not upgradeable and has no admin beyond
@@ -544,14 +544,14 @@ fixes the init-code hash. `tickSpacing` is copied through a local because
 | `:129` | `tickUpper <= TickMath.MAX_TICK` | `'TUM'` — Tick Upper Maximum |
 
 Note it does **not** check `tick % tickSpacing == 0`. That is enforced later and
-indirectly, by `TickBitmap.flipTick` (`TickBitmap.sol:28`).
+indirectly, by `TickBitmap.flipTick` ([`TickBitmap.sol:28`](v3-core/contracts/libraries/TickBitmap.sol#L28)).
 
 #### `_blockTimestamp() internal view virtual → uint32` — `:133-135`
 
 `uint32(block.timestamp)`; the comment says "truncation is desired". `virtual`
-purely so `MockTimeUniswapV3Pool` can override it (`test/MockTimeUniswapV3Pool.sol:23`).
+purely so `MockTimeUniswapV3Pool` can override it ([`test/MockTimeUniswapV3Pool.sol:23`](v3-core/contracts/test/MockTimeUniswapV3Pool.sol#L23)).
 Truncation wraps in February 2106; the oracle's `lte` comparator
-(`Oracle.sol:128-140`) is explicitly written to survive one wrap.
+([`Oracle.sol:128-140`](v3-core/contracts/libraries/Oracle.sol#L128-L140)) is explicitly written to survive one wrap.
 
 #### `balance0()` / `balance1() private view → uint256` — `:140-145`, `:150-155`
 
@@ -573,7 +573,7 @@ fails. Saves ~100 gas on a call made up to four times per swap.
 <a name="54-initialize"></a>
 ### 5.4 `initialize(uint160 sqrtPriceX96)`
 
-`UniswapV3Pool.sol:271-289` · `external override` · **no `lock`** (comment `:270`:
+[`UniswapV3Pool.sol:271-289`](v3-core/contracts/UniswapV3Pool.sol#L271-L289) · `external override` · **no `lock`** (comment `:270`:
 "not locked because it initializes unlocked")
 
 Sets the starting price. Permissionless — whoever calls first picks the price.
@@ -601,7 +601,7 @@ Every liquidity change — `mint` and `burn` — funnels through these two.
 
 #### `_modifyPosition(ModifyPositionParams params) private noDelegateCall → (Position.Info storage position, int256 amount0, int256 amount1)`
 
-`UniswapV3Pool.sol:306-372`
+[`UniswapV3Pool.sol:306-372`](v3-core/contracts/UniswapV3Pool.sol#L306-L372)
 
 `struct ModifyPositionParams` (`:291-299`): `owner`, `tickLower`, `tickUpper`,
 `liquidityDelta` (signed).
@@ -644,7 +644,7 @@ the position sells token0 for token1. `amount0 = getAmount0Delta(√P(lower), �
 
 #### `_updatePosition(address owner, int24 tickLower, int24 tickUpper, int128 liquidityDelta, int24 tick) private → Position.Info storage`
 
-`UniswapV3Pool.sol:379-453`
+[`UniswapV3Pool.sol:379-453`](v3-core/contracts/UniswapV3Pool.sol#L379-L453)
 
 1. `positions.get(owner, tickLower, tickUpper)` (`:386`) — hashes the triple.
 2. Cache both `feeGrowthGlobal` values (`:388-389`).
@@ -663,14 +663,14 @@ the position sells token0 for token1. `amount0 = getAmount0Delta(√P(lower), �
 
 **Ordering gotcha.** The ticks are updated *before* `getFeeGrowthInside` is read.
 A freshly initialized tick has its `feeGrowthOutside` seeded inside
-`Tick.update` (`Tick.sol:132-142`) by the convention "all growth before
+`Tick.update` ([`Tick.sol:132-142`](v3-core/contracts/libraries/Tick.sol#L132-L142)) by the convention "all growth before
 initialization happened below the tick", and `getFeeGrowthInside` depends on that
 seeding already being in place.
 
 <a name="56-mint"></a>
 ### 5.6 `mint(address recipient, int24 tickLower, int24 tickUpper, uint128 amount, bytes data)`
 
-`UniswapV3Pool.sol:457-487` · `external override lock` · returns `(uint256 amount0, uint256 amount1)`
+[`UniswapV3Pool.sol:457-487`](v3-core/contracts/UniswapV3Pool.sol#L457-L487) · `external override lock` · returns `(uint256 amount0, uint256 amount1)`
 
 Adds `amount` of liquidity to `recipient`'s position and pulls payment from
 `msg.sender` via callback.
@@ -724,7 +724,7 @@ mint
 <a name="57-burn"></a>
 ### 5.7 `burn(int24 tickLower, int24 tickUpper, uint128 amount)`
 
-`UniswapV3Pool.sol:517-543` · `external override lock` · returns `(uint256 amount0, uint256 amount1)`
+[`UniswapV3Pool.sol:517-543`](v3-core/contracts/UniswapV3Pool.sol#L517-L543) · `external override lock` · returns `(uint256 amount0, uint256 amount1)`
 
 Removes liquidity from **`msg.sender`'s own** position. There is no `owner`
 parameter, so a position can only ever be burned by its owner.
@@ -745,16 +745,16 @@ fees and withdrawn principal go out through one code path.
 runs `_updatePosition` → `Position.update`, which credits fees earned since the
 last touch into `tokensOwed`. This is the canonical way to realise fees without
 withdrawing. `Position.update` explicitly permits it only for non-empty positions
-(`Position.sol:54`, `'NP'`).
+([`Position.sol:54`](v3-core/contracts/libraries/Position.sol#L54), `'NP'`).
 
-**Rounding.** Removal uses `roundUp = false` (`SqrtPriceMath.sol:208`, `:224`), so
+**Rounding.** Removal uses `roundUp = false` ([`SqrtPriceMath.sol:208`](v3-core/contracts/libraries/SqrtPriceMath.sol#L208), `:224`), so
 the LP receives the floor. Mint rounds up, burn rounds down — every rounding
 error accrues to the pool.
 
 <a name="58-collect"></a>
 ### 5.8 `collect(address recipient, int24 tickLower, int24 tickUpper, uint128 amount0Requested, uint128 amount1Requested)`
 
-`UniswapV3Pool.sol:490-513` · `external override lock` · returns `(uint128 amount0, uint128 amount1)`
+[`UniswapV3Pool.sol:490-513`](v3-core/contracts/UniswapV3Pool.sol#L490-L513) · `external override lock` · returns `(uint128 amount0, uint128 amount1)`
 
 Transfers previously-accrued `tokensOwed` to `recipient`. The only pool function
 that pays out without a callback.
@@ -779,7 +779,7 @@ everything".
 <a name="59-swap"></a>
 ### 5.9 `swap(address recipient, bool zeroForOne, int256 amountSpecified, uint160 sqrtPriceLimitX96, bytes data)`
 
-`UniswapV3Pool.sol:596-788` · `external override noDelegateCall` · returns `(int256 amount0, int256 amount1)`
+[`UniswapV3Pool.sol:596-788`](v3-core/contracts/UniswapV3Pool.sol#L596-L788) · `external override noDelegateCall` · returns `(int256 amount0, int256 amount1)`
 
 The heart of the protocol.
 
@@ -882,7 +882,7 @@ Code that recomputes the tick from the price and compares to `slot0.tick` will s
 an off-by-one. This is correct, not a bug, and V4 carries the same comment.
 
 **Why cross before flipping the sign.** `Tick.cross` returns `liquidityNet`, the
-amount added when crossing **left to right** (`Tick.sol:167`). Going right to
+amount added when crossing **left to right** ([`Tick.sol:167`](v3-core/contracts/libraries/Tick.sol#L167)). Going right to
 left, the same boundary removes what it would have added, hence the negation at
 `:720`. The comment notes it is safe because `liquidityNet` can never be
 `type(int128).min` — `Tick.update` builds it through `SafeCast.toInt128`.
@@ -939,7 +939,7 @@ exploited V3 integration mistake.
 <a name="510-flash"></a>
 ### 5.10 `flash(address recipient, uint256 amount0, uint256 amount1, bytes data)`
 
-`UniswapV3Pool.sol:791-834` · `external override lock noDelegateCall`
+[`UniswapV3Pool.sol:791-834`](v3-core/contracts/UniswapV3Pool.sol#L791-L834) · `external override lock noDelegateCall`
 
 Lends both tokens with no collateral, requiring repayment plus the pool's fee tier
 before the call returns.
@@ -961,7 +961,7 @@ received. Overpayment is distributed to LPs rather than stranded — which makes
 `flash(0, 0, …)` with a voluntary payment a clean way to donate fees to a pool.
 
 **No `mulDiv` overflow guard needed on the fee** because `fee < 1e6` is enforced
-at `UniswapV3Factory.sol:63`.
+at [`UniswapV3Factory.sol:63`](v3-core/contracts/UniswapV3Factory.sol#L63).
 
 **Protocol split (`:820-831`)** mirrors the swap path but reads
 `slot0.feeProtocol` fresh from storage rather than from a cache.
@@ -982,7 +982,7 @@ request: the arithmetic-mean tick over the last hour is
 `(tickCumulatives[1] - tickCumulatives[0]) / 3600`, which corresponds to the
 **geometric** mean price because ticks are logarithmic.
 
-Reverts `'OLD'` (from `Oracle.sol:226`) if the window predates the oldest stored
+Reverts `'OLD'` (from [`Oracle.sol:226`](v3-core/contracts/libraries/Oracle.sol#L226)) if the window predates the oldest stored
 observation.
 
 #### `snapshotCumulativesInside(int24 tickLower, int24 tickUpper)` — `:158-233`
@@ -1018,7 +1018,7 @@ Pays now for oracle capacity later.
 | Store | `:264` | `slot0.observationCardinalityNext = new` |
 | Event | `:265-266` | only if the value actually changed |
 
-The pre-writing in `Oracle.grow` (`Oracle.sol:118`) is the whole point: it turns
+The pre-writing in `Oracle.grow` ([`Oracle.sol:118`](v3-core/contracts/libraries/Oracle.sol#L118)) is the whole point: it turns
 each future observation write from a 20,000-gas cold `SSTORE` into a ~2,900-gas
 warm one, moving the cost from swappers to whoever wants the deeper oracle.
 Cardinality can only ever rise; `grow` is a no-op if `next <= current`.
@@ -1155,7 +1155,7 @@ could place the result fractionally below the true boundary, landing in tick
 
 **Precision.** Twenty truncating shifts, each losing at most 1 ulp at Q128.128,
 bound the relative error near `2^-128` — far below the Q64.96 output resolution.
-`TickMathEchidnaTest.sol:8-15` fuzzes exactly the monotonicity and round-trip
+[`TickMathEchidnaTest.sol:8-15`](v3-core/contracts/test/TickMathEchidnaTest.sol#L8-L15) fuzzes exactly the monotonicity and round-trip
 properties.
 
 #### `getTickAtSqrtRatio(uint160 sqrtPriceX96) internal pure → int24 tick`
@@ -1311,7 +1311,7 @@ multiplying by the inverse mod `2^256` *is* the quotient.
 remainder) requires `result < type(uint256).max` and increments. Overflow-safe
 ceiling division.
 
-`FullMathEchidnaTest.sol:7-66` fuzzes the invariants: the rounded-up result minus
+[`FullMathEchidnaTest.sol:7-66`](v3-core/contracts/test/FullMathEchidnaTest.sol#L7-L66) fuzzes the invariants: the rounded-up result minus
 the rounded-down result is 0 or 1, and `mulDiv` inverts multiplication.
 
 <a name="63-sqrtpricemath"></a>
@@ -1504,7 +1504,7 @@ Two genuinely different formulas:
   the amount that reached the curve, with the excess over exactly 0.30% coming
   from the ceiling. Rounding up always favours LPs.
 
-`SwapMathEchidnaTest.sol:7-51` fuzzes the invariants, including that
+[`SwapMathEchidnaTest.sol:7-51`](v3-core/contracts/test/SwapMathEchidnaTest.sol#L7-L51) fuzzes the invariants, including that
 `amountIn + feeAmount <= amountRemaining` on exact input.
 
 <a name="65-tickbitmap"></a>
@@ -1583,7 +1583,7 @@ The swap loop handles this by simply iterating again from there (`:641`), so a
 long empty stretch costs one loop iteration per 256 usable ticks rather than one
 per tick.
 
-`TickBitmapEchidnaTest.sol:23-46` fuzzes that the returned tick is within one word
+[`TickBitmapEchidnaTest.sol:23-46`](v3-core/contracts/test/TickBitmapEchidnaTest.sol#L23-L46) fuzzes that the returned tick is within one word
 and that no initialized tick was skipped.
 
 <a name="66-bitmath"></a>
@@ -1604,7 +1604,7 @@ if so the answer is in that half so `r` decreases, otherwise `x` is shifted down
 The inverted structure avoids needing to isolate the lowest bit first.
 
 Both are straight-line and branch-predictable, ~100 gas. Fuzzed by
-`BitMathEchidnaTest.sol:7-17`.
+[`BitMathEchidnaTest.sol:7-17`](v3-core/contracts/test/BitMathEchidnaTest.sol#L7-L17).
 
 <a name="67-tick"></a>
 ### 6.7 `Tick` — `libraries/Tick.sol` (185 lines)
@@ -1734,7 +1734,7 @@ liquidityNet = info.liquidityNet;
 `x ← global − x` is an involution with respect to the moving `global`: applying it
 on the way out and again on the way back restores the correct relative meaning.
 All five wrap deliberately. `cross` does **not** apply the sign flip for leftward
-movement — the caller does (`UniswapV3Pool.sol:720`).
+movement — the caller does ([`UniswapV3Pool.sol:720`](v3-core/contracts/UniswapV3Pool.sol#L720)).
 
 `TickOverflowSafetyEchidnaTest.sol` fuzzes that these deliberate overflows never
 corrupt the `inside` computation.
@@ -1908,7 +1908,7 @@ The `self[0]` fallback at `:223` handles a buffer that has not yet wrapped.
 over the array (`:313-323`). Any element out of range reverts the whole call with
 `'OLD'`.
 
-`OracleEchidnaTest.sol:73-116` asserts the structural invariants: index always
+[`OracleEchidnaTest.sol:73-116`](v3-core/contracts/test/OracleEchidnaTest.sol#L73-L116) asserts the structural invariants: index always
 below cardinality, cardinality never above `cardinalityNext`, observation 0 always
 readable once initialized, and time-weighted averages always in range.
 
@@ -1927,7 +1927,7 @@ Checks the result rather than the operands — cheaper, and exact in wrapping
 arithmetic. Note `< x` (strict) in the subtraction branch: `y < 0` guarantees a
 strict decrease, so equality would itself indicate a wrap.
 
-Used at `UniswapV3Pool.sol:361` and `:722`, and in `Tick.update` (`Tick.sol:126`).
+Used at [`UniswapV3Pool.sol:361`](v3-core/contracts/UniswapV3Pool.sol#L361) and `:722`, and in `Tick.update` ([`Tick.sol:126`](v3-core/contracts/libraries/Tick.sol#L126)).
 
 <a name="611-safecast"></a>
 ### 6.11 `SafeCast` — `libraries/SafeCast.sol` (28 lines)
@@ -1970,7 +1970,7 @@ assembly { z := add(div(x, y), gt(mod(x, y), 0)) }
 ```
 Branchless ceiling division. "Unsafe" because division by zero is not checked —
 the doc comment (`:8`) states it "must be checked externally". Every call site
-does: `SqrtPriceMath.sol:164` requires `sqrtRatioAX96 > 0` before `:168`, and
+does: [`SqrtPriceMath.sol:164`](v3-core/contracts/libraries/SqrtPriceMath.sol#L164) requires `sqrtRatioAX96 > 0` before `:168`, and
 `:47` and `:89` divide by `liquidity` after `getNextSqrtPriceFrom*` required it
 non-zero.
 
@@ -1999,8 +1999,8 @@ funds. That asymmetry is the core's entire payment design.
 <a name="615-fixedpoint"></a>
 ### 6.15 `FixedPoint96` and `FixedPoint128`
 
-`FixedPoint96.sol:7-10`: `RESOLUTION = 96`, `Q96 = 0x1000000000000000000000000` (`2^96`).
-`FixedPoint128.sol:6-8`: `Q128 = 0x100000000000000000000000000000000` (`2^128`).
+[`FixedPoint96.sol:7-10`](v3-core/contracts/libraries/FixedPoint96.sol#L7-L10): `RESOLUTION = 96`, `Q96 = 0x1000000000000000000000000` (`2^96`).
+[`FixedPoint128.sol:6-8`](v3-core/contracts/libraries/FixedPoint128.sol#L6-L8): `Q128 = 0x100000000000000000000000000000000` (`2^128`).
 
 Two conventions coexist deliberately. **Prices** are Q64.96 (`sqrtPriceX96`):
 96 fractional bits leave 64 integer bits, and `√price` fits `uint160`, which packs
@@ -2016,7 +2016,7 @@ occupies a full `uint256` slot anyway, so there is no packing pressure.
 Thirteen files. The pool's is split six ways so integrators import only what they
 need.
 
-### `IUniswapV3Pool` — `interfaces/IUniswapV3Pool.sol:15-22`
+### `IUniswapV3Pool` — [`interfaces/IUniswapV3Pool.sol:15-22`](v3-core/contracts/interfaces/IUniswapV3Pool.sol#L15-L22)
 
 Inherits, in order: `IUniswapV3PoolImmutables`, `IUniswapV3PoolState`,
 `IUniswapV3PoolDerivedState`, `IUniswapV3PoolActions`,
@@ -2102,9 +2102,9 @@ actually calls only `balanceOf` (via `staticcall`) and `transfer` (via
 
 | Interface | Function | Line | Called from |
 |---|---|---|---|
-| `IUniswapV3MintCallback` | `uniswapV3MintCallback(uint256 amount0Owed, uint256 amount1Owed, bytes data)` | `:13` | `UniswapV3Pool.sol:482` |
-| `IUniswapV3SwapCallback` | `uniswapV3SwapCallback(int256 amount0Delta, int256 amount1Delta, bytes data)` | `:16` | `UniswapV3Pool.sol:776`, `:782` |
-| `IUniswapV3FlashCallback` | `uniswapV3FlashCallback(uint256 fee0, uint256 fee1, bytes data)` | `:13` | `UniswapV3Pool.sol:808` |
+| `IUniswapV3MintCallback` | `uniswapV3MintCallback(uint256 amount0Owed, uint256 amount1Owed, bytes data)` | `:13` | [`UniswapV3Pool.sol:482`](v3-core/contracts/UniswapV3Pool.sol#L482) |
+| `IUniswapV3SwapCallback` | `uniswapV3SwapCallback(int256 amount0Delta, int256 amount1Delta, bytes data)` | `:16` | [`UniswapV3Pool.sol:776`](v3-core/contracts/UniswapV3Pool.sol#L776), `:782` |
+| `IUniswapV3FlashCallback` | `uniswapV3FlashCallback(uint256 fee0, uint256 fee1, bytes data)` | `:13` | [`UniswapV3Pool.sol:808`](v3-core/contracts/UniswapV3Pool.sol#L808) |
 
 Mint and flash callbacks receive **unsigned** amounts owed. The swap callback
 receives **signed deltas**: positive means the caller owes the pool, negative
@@ -2125,15 +2125,15 @@ helpers that measure a call by differencing `gasleft()`.
 
 | Contract | File | Exposes |
 |---|---|---|
-| `BitMathTest` | `test/BitMathTest.sol:6` | `mostSignificantBit` `:7`, `leastSignificantBit` `:17`, + gas helpers |
-| `FullMathTest` | `test/FullMathTest.sol:6` | `mulDiv` `:7`, `mulDivRoundingUp` `:15` |
-| `LiquidityMathTest` | `test/LiquidityMathTest.sol:6` | `addDelta` `:7` |
-| `SqrtPriceMathTest` | `test/SqrtPriceMathTest.sol:6` | all four `getNextSqrtPriceFrom*` / `getAmount*Delta` `:7-76` |
-| `SwapMathTest` | `test/SwapMathTest.sol:6` | `computeSwapStep` `:7` |
-| `TickTest` | `test/TickTest.sol:7` | `tickSpacingToMaxLiquidityPerTick` `:12`, `setTick` `:16`, `getFeeGrowthInside` `:20`, `update` `:30`, `clear` `:57`, `cross` `:61` |
-| `TickBitmapTest` | `test/TickBitmapTest.sol:6` | `flipTick` `:11`, `nextInitializedTickWithinOneWord` `:21`, `isInitialized` `:36` |
-| `TickMathTest` | `test/TickMathTest.sol:6` | `getSqrtRatioAtTick` `:7`, `getTickAtSqrtRatio` `:17`, the two ratio constants `:27`, `:31` |
-| `OracleTest` | `test/OracleTest.sol:7` | `initialize` `:25`, `advanceTime` `:33`, `update` `:44`, `batchUpdate` `:51`, `grow` `:82`, `observe` `:86` |
+| `BitMathTest` | [`test/BitMathTest.sol:6`](v3-core/contracts/test/BitMathTest.sol#L6) | `mostSignificantBit` `:7`, `leastSignificantBit` `:17`, + gas helpers |
+| `FullMathTest` | [`test/FullMathTest.sol:6`](v3-core/contracts/test/FullMathTest.sol#L6) | `mulDiv` `:7`, `mulDivRoundingUp` `:15` |
+| `LiquidityMathTest` | [`test/LiquidityMathTest.sol:6`](v3-core/contracts/test/LiquidityMathTest.sol#L6) | `addDelta` `:7` |
+| `SqrtPriceMathTest` | [`test/SqrtPriceMathTest.sol:6`](v3-core/contracts/test/SqrtPriceMathTest.sol#L6) | all four `getNextSqrtPriceFrom*` / `getAmount*Delta` `:7-76` |
+| `SwapMathTest` | [`test/SwapMathTest.sol:6`](v3-core/contracts/test/SwapMathTest.sol#L6) | `computeSwapStep` `:7` |
+| `TickTest` | [`test/TickTest.sol:7`](v3-core/contracts/test/TickTest.sol#L7) | `tickSpacingToMaxLiquidityPerTick` `:12`, `setTick` `:16`, `getFeeGrowthInside` `:20`, `update` `:30`, `clear` `:57`, `cross` `:61` |
+| `TickBitmapTest` | [`test/TickBitmapTest.sol:6`](v3-core/contracts/test/TickBitmapTest.sol#L6) | `flipTick` `:11`, `nextInitializedTickWithinOneWord` `:21`, `isInitialized` `:36` |
+| `TickMathTest` | [`test/TickMathTest.sol:6`](v3-core/contracts/test/TickMathTest.sol#L6) | `getSqrtRatioAtTick` `:7`, `getTickAtSqrtRatio` `:17`, the two ratio constants `:27`, `:31` |
+| `OracleTest` | [`test/OracleTest.sol:7`](v3-core/contracts/test/OracleTest.sol#L7) | `initialize` `:25`, `advanceTime` `:33`, `update` `:44`, `batchUpdate` `:51`, `grow` `:82`, `observe` `:86` |
 
 ### Echidna invariant suites
 
@@ -2153,7 +2153,7 @@ helpers that measure a call by differencing `gasleft()`.
 
 ### Mocks and callers
 
-**`MockTimeUniswapV3Pool`** — `test/MockTimeUniswapV3Pool.sol:7`, extends the real
+**`MockTimeUniswapV3Pool`** — [`test/MockTimeUniswapV3Pool.sol:7`](v3-core/contracts/test/MockTimeUniswapV3Pool.sol#L7), extends the real
 pool. Holds `time` seeded to `1601906400` (`:9`), overrides `_blockTimestamp()`
 (`:23`) and adds `advanceTime` (`:19`) plus direct setters for both
 `feeGrowthGlobal` values (`:11`, `:15`). This is the only reason
@@ -2255,8 +2255,8 @@ Computed with `cast sig`.
 
 | Selector | Signature | Used at |
 |---|---|---|
-| `0x70a08231` | `balanceOf(address)` | `UniswapV3Pool.sol:142`, `:152` |
-| `0xa9059cbb` | `transfer(address,uint256)` | `TransferHelper.sol:20` |
+| `0x70a08231` | `balanceOf(address)` | [`UniswapV3Pool.sol:142`](v3-core/contracts/UniswapV3Pool.sol#L142), `:152` |
+| `0xa9059cbb` | `transfer(address,uint256)` | [`TransferHelper.sol:20`](v3-core/contracts/libraries/TransferHelper.sol#L20) |
 | `0xdd62ed3e` | `allowance(address,address)` | not used by core |
 | `0x095ea7b3` | `approve(address,uint256)` | not used by core |
 | `0x23b872dd` | `transferFrom(address,address,uint256)` | **never** — the pool does not pull |
@@ -2367,7 +2367,7 @@ occupying slots 0–2 (96 bytes). `owner` lands at slot 3.
 
 | Event | Line | Signature | Emitted at |
 |---|---|---|---|
-| `Initialize` | `:11` | `(uint160 sqrtPriceX96, int24 tick)` | `UniswapV3Pool.sol:288` |
+| `Initialize` | `:11` | `(uint160 sqrtPriceX96, int24 tick)` | [`UniswapV3Pool.sol:288`](v3-core/contracts/UniswapV3Pool.sol#L288) |
 | `Mint` | `:21` | `(address sender, address indexed owner, int24 indexed tickLower, int24 indexed tickUpper, uint128 amount, uint256 amount0, uint256 amount1)` | `:486` |
 | `Collect` | `:38` | `(address indexed owner, address recipient, int24 indexed tickLower, int24 indexed tickUpper, uint128 amount0, uint128 amount1)` | `:512` |
 | `Burn` | `:55` | `(address indexed owner, int24 indexed tickLower, int24 indexed tickUpper, uint128 amount, uint256 amount0, uint256 amount1)` | `:542` |
@@ -2387,7 +2387,7 @@ always the sender.
 
 | Event | Line | Signature | Emitted at |
 |---|---|---|---|
-| `OwnerChanged` | `:10` | `(address indexed oldOwner, address indexed newOwner)` | `UniswapV3Factory.sol:24`, `:56` |
+| `OwnerChanged` | `:10` | `(address indexed oldOwner, address indexed newOwner)` | [`UniswapV3Factory.sol:24`](v3-core/contracts/UniswapV3Factory.sol#L24), `:56` |
 | `PoolCreated` | `:18` | `(address indexed token0, address indexed token1, uint24 indexed fee, int24 tickSpacing, address pool)` | `:50` |
 | `FeeAmountEnabled` | `:29` | `(uint24 indexed fee, int24 indexed tickSpacing)` | `:27`, `:29`, `:31`, `:71` |
 
@@ -2403,7 +2403,7 @@ V3 uses short strings to save bytecode. The complete table:
 
 | String | Meaning | Raised at | Cause |
 |---|---|---|---|
-| `LOK` | **Lok**ed | `UniswapV3Pool.sol:105`, `:607` | Reentrancy, **or** the pool was never initialized |
+| `LOK` | **Lok**ed | [`UniswapV3Pool.sol:105`](v3-core/contracts/UniswapV3Pool.sol#L105), `:607` | Reentrancy, **or** the pool was never initialized |
 | `AI` | **A**lready **I**nitialized | `:272` | `initialize` called twice |
 | `TLU` | **T**ick **L**ower > **U**pper | `:127` | `tickLower >= tickUpper` |
 | `TLM` | **T**ick **L**ower **M**in | `:128` | `tickLower < MIN_TICK` |
@@ -2416,25 +2416,25 @@ V3 uses short strings to save bytecode. The complete table:
 | `L` | **L**iquidity | `:798` | `flash` on a pool with zero liquidity |
 | `F0` | **F**lash **0** | `:813` | Flash callback did not repay token0 + fee |
 | `F1` | **F**lash **1** | `:814` | Flash callback did not repay token1 + fee |
-| `LO` | **L**iquidity **O**verflow | `Tick.sol:128` | Tick would exceed `maxLiquidityPerTick` |
-| `LS` | **L**iquidity **S**ub | `LiquidityMath.sol:12` | Removing more liquidity than exists |
-| `LA` | **L**iquidity **A**dd | `LiquidityMath.sol:14` | Liquidity addition overflows `uint128` |
-| `NP` | **N**o **P**osition | `Position.sol:54` | Poked a zero-liquidity position |
-| `T` | **T**ick | `TickMath.sol:25` | `\|tick\| > MAX_TICK` |
-| `R` | **R**atio | `TickMath.sol:63` | `sqrtPriceX96` outside `[MIN_SQRT_RATIO, MAX_SQRT_RATIO)` |
-| `OLD` | **OLD** | `Oracle.sol:226` | TWAP window predates the oldest observation |
-| `I` | **I**nitialized | `Oracle.sol:113`, `:309` | Oracle used before initialization |
-| `TF` | **T**ransfer **F**ailed | `TransferHelper.sol:21` | ERC-20 `transfer` returned false or reverted |
+| `LO` | **L**iquidity **O**verflow | [`Tick.sol:128`](v3-core/contracts/libraries/Tick.sol#L128) | Tick would exceed `maxLiquidityPerTick` |
+| `LS` | **L**iquidity **S**ub | [`LiquidityMath.sol:12`](v3-core/contracts/libraries/LiquidityMath.sol#L12) | Removing more liquidity than exists |
+| `LA` | **L**iquidity **A**dd | [`LiquidityMath.sol:14`](v3-core/contracts/libraries/LiquidityMath.sol#L14) | Liquidity addition overflows `uint128` |
+| `NP` | **N**o **P**osition | [`Position.sol:54`](v3-core/contracts/libraries/Position.sol#L54) | Poked a zero-liquidity position |
+| `T` | **T**ick | [`TickMath.sol:25`](v3-core/contracts/libraries/TickMath.sol#L25) | `\|tick\| > MAX_TICK` |
+| `R` | **R**atio | [`TickMath.sol:63`](v3-core/contracts/libraries/TickMath.sol#L63) | `sqrtPriceX96` outside `[MIN_SQRT_RATIO, MAX_SQRT_RATIO)` |
+| `OLD` | **OLD** | [`Oracle.sol:226`](v3-core/contracts/libraries/Oracle.sol#L226) | TWAP window predates the oldest observation |
+| `I` | **I**nitialized | [`Oracle.sol:113`](v3-core/contracts/libraries/Oracle.sol#L113), `:309` | Oracle used before initialization |
+| `TF` | **T**ransfer **F**ailed | [`TransferHelper.sol:21`](v3-core/contracts/libraries/TransferHelper.sol#L21) | ERC-20 `transfer` returned false or reverted |
 
 **Reverts with no message** (bare `require`, saving the string entirely):
-`UniswapV3Factory.sol:40`, `:42`, `:44`, `:45` (createPool validation), `:55`,
-`:62`, `:63`, `:67`, `:68` (owner actions); `UniswapV3Pool.sol:113`
+[`UniswapV3Factory.sol:40`](v3-core/contracts/UniswapV3Factory.sol#L40), `:42`, `:44`, `:45` (createPool validation), `:55`,
+`:62`, `:63`, `:67`, `:68` (owner actions); [`UniswapV3Pool.sol:113`](v3-core/contracts/UniswapV3Pool.sol#L113)
 (`onlyFactoryOwner`), `:143`, `:153` (balance calls), `:188`, `:197`
 (uninitialized ticks in `snapshotCumulativesInside`), `:464` (`amount > 0`),
-`:838` (fee protocol range); `NoDelegateCall.sol:19`; `SafeCast.sol:11`, `:18`,
-`:25`; `LowGasSafeMath.sol` throughout; `FullMath.sol:34`, `:43`, `:120`;
-`SqrtPriceMath.sol:52`, `:93`, `:112-113`, `:135-136`, `:164`;
-`TickBitmap.sol:28`; `BitMath.sol:14`, `:54`.
+`:838` (fee protocol range); [`NoDelegateCall.sol:19`](v3-core/contracts/NoDelegateCall.sol#L19); [`SafeCast.sol:11`](v3-core/contracts/libraries/SafeCast.sol#L11), `:18`,
+`:25`; `LowGasSafeMath.sol` throughout; [`FullMath.sol:34`](v3-core/contracts/libraries/FullMath.sol#L34), `:43`, `:120`;
+[`SqrtPriceMath.sol:52`](v3-core/contracts/libraries/SqrtPriceMath.sol#L52), `:93`, `:112-113`, `:135-136`, `:164`;
+[`TickBitmap.sol:28`](v3-core/contracts/libraries/TickBitmap.sol#L28); [`BitMath.sol:14`](v3-core/contracts/libraries/BitMath.sol#L14), `:54`.
 
 The two most-seen in production are `LOK` (usually "this pool was never
 initialized", not reentrancy) and `IIA` (a router's callback failed to pay).

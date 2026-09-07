@@ -141,7 +141,7 @@ token_to_exchange: address[address]
 exchange_to_token: address[address]
 id_to_token: address[uint256]
 ```
-`uni/v1-contracts/contracts/uniswap_factory.vy:4-10`
+[`uni/v1-contracts/contracts/uniswap_factory.vy:4-10`](v1-contracts/contracts/uniswap_factory.vy#L4-L10)
 
 | Field | Purpose |
 |---|---|
@@ -155,7 +155,7 @@ Note `token_to_exchange`, `exchange_to_token` and `id_to_token` are private stor
 getters (`getExchange`, `getToken`, `getTokenWithId`). That is a deliberate ABI choice — the
 getter names are part of the interface other contracts compile against.
 
-### `initializeFactory(template)` — `contracts/uniswap_factory.vy:13`
+### `initializeFactory(template)` — [`contracts/uniswap_factory.vy:13`](v1-contracts/contracts/uniswap_factory.vy#L13)
 
 ```vyper
 @public
@@ -179,7 +179,7 @@ deployer called it in the same transaction bundle as deployment. The `assert sel
 This is the V1 equivalent of a constructor, needed because the factory itself was deployed with a
 plain constructor-less flow. V2 sets the equivalent (`feeToSetter`) in a real constructor.
 
-### `createExchange(token) -> address` — `contracts/uniswap_factory.vy:19`
+### `createExchange(token) -> address` — [`contracts/uniswap_factory.vy:19`](v1-contracts/contracts/uniswap_factory.vy#L19)
 
 ```vyper
 @public
@@ -223,12 +223,12 @@ The catch is written directly in the source comment:
 # @dev This function acts as a contract constructor which is not currently supported in contracts deployed
 #      using create_with_code_of(). It is called once by the factory during contract creation.
 ```
-`contracts/uniswap_exchange.vy:29-30`
+[`contracts/uniswap_exchange.vy:29-30`](v1-contracts/contracts/uniswap_exchange.vy#L29-L30)
 
 A proxy runs the template's *runtime* code, so the template's *constructor* never executes in the
 clone's context. Initialization has to be a normal function, called immediately after deployment.
 `setup` is that function, and it guards itself against being called twice
-(`contracts/uniswap_exchange.vy:33`).
+([`contracts/uniswap_exchange.vy:33`](v1-contracts/contracts/uniswap_exchange.vy#L33)).
 
 **Compared to V2's CREATE2.** V1 uses plain `CREATE`, so an exchange's address depends on the
 factory's nonce and is **not predictable**. To find the HAY market you must call
@@ -246,9 +246,9 @@ latency win for routers, and the reason V2 routers can chain hops cheaply.
 def getExchange(token: address) -> address:
     return self.token_to_exchange[token]
 ```
-`contracts/uniswap_factory.vy:35-36` — token → exchange. Returns zero if the token has no market.
+[`contracts/uniswap_factory.vy:35-36`](v1-contracts/contracts/uniswap_factory.vy#L35-L36) — token → exchange. Returns zero if the token has no market.
 This is the lookup used inside the exchange itself for token→token routing
-(`contracts/uniswap_exchange.vy:293`).
+([`contracts/uniswap_exchange.vy:293`](v1-contracts/contracts/uniswap_exchange.vy#L293)).
 
 ```vyper
 def getToken(exchange: address) -> address:      # contracts/uniswap_factory.vy:40-41
@@ -258,7 +258,7 @@ def getTokenWithId(token_id: uint256) -> address # contracts/uniswap_factory.vy:
 `getToken` is the reverse lookup — its real use is letting a third-party contract verify that some
 address really is a factory-blessed exchange before trusting it. `getTokenWithId` exists purely for
 enumeration (ids run 1..`tokenCount`; id 0 is never assigned, since `token_id` starts at
-`tokenCount + 1` on `contracts/uniswap_factory.vy:27`).
+`tokenCount + 1` on [`contracts/uniswap_factory.vy:27`](v1-contracts/contracts/uniswap_factory.vy#L27)).
 
 **Missing:** there is no `getExchangeWithId`, so enumerating markets takes two calls per entry
 (`getTokenWithId` then `getExchange`). V2's factory exposes `allPairs(uint)` directly.
@@ -282,7 +282,7 @@ allowances: (uint256[address])[address]           # UNI allowance of one address
 token: address(ERC20)                             # address of the ERC20 token traded on this contract
 factory: Factory                                  # interface for the factory that created this contract
 ```
-`contracts/uniswap_exchange.vy:20-27`
+[`contracts/uniswap_exchange.vy:20-27`](v1-contracts/contracts/uniswap_exchange.vy#L20-L27)
 
 Two things to notice immediately.
 
@@ -303,7 +303,7 @@ so they are stored as raw padded bytes and set as hex literals in `setup`. Every
 existence is called "Uniswap V1" / "UNI-V1" — they are indistinguishable in a wallet. V2 gives each
 pair the same problem (`Uniswap V2`/`UNI-V2`) but at least uses real `string` types.
 
-**Events** (`contracts/uniswap_exchange.vy:13-18`):
+**Events** ([`contracts/uniswap_exchange.vy:13-18`](v1-contracts/contracts/uniswap_exchange.vy#L13-L18)):
 
 | Event | Emitted by | Meaning |
 |---|---|---|
@@ -324,7 +324,7 @@ Note there is **no `Swap` event**: an ETH→token trade emits `TokenPurchase`, a
 `TokenPurchase` on the second. Reconstructing a token→token trade from logs requires stitching two
 events from two contracts.
 
-#### `setup(token_addr)` — `contracts/uniswap_exchange.vy:32`
+#### `setup(token_addr)` — [`contracts/uniswap_exchange.vy:32`](v1-contracts/contracts/uniswap_exchange.vy#L32)
 
 ```vyper
 @public
@@ -349,16 +349,16 @@ Those two hex literals decode to `Uniswap V1` and `UNI-V1` (right-padded with ze
 
 **`setup` is `@public` and has no caller restriction.** Anyone may call it on a fresh clone — the
 only protection is the one-shot assert. Since the factory calls `setup` in the same transaction as
-`create_with_code_of` (`contracts/uniswap_factory.vy:23-24`), there is no window to front-run it.
+`create_with_code_of` ([`contracts/uniswap_factory.vy:23-24`](v1-contracts/contracts/uniswap_factory.vy#L23-L24)), there is no window to front-run it.
 But it does mean you can deploy your *own* clone of the template outside the factory and set it up
 yourself. Such an exchange would work mechanically, but note the guard on
-`contracts/uniswap_exchange.vy:66` (discussed next) which stops it from ever bootstrapping
+[`contracts/uniswap_exchange.vy:66`](v1-contracts/contracts/uniswap_exchange.vy#L66) (discussed next) which stops it from ever bootstrapping
 liquidity via `addLiquidity`, and `getToken` on the real factory would return zero for it. The
 factory test at `test_factory.py:25` confirms `setup` reverts on an already-initialized exchange.
 
 ### 2.2 The LP token, built in
 
-The exchange **is** its own LP token — `contracts/uniswap_exchange.vy:469-496`. There is no
+The exchange **is** its own LP token — [`contracts/uniswap_exchange.vy:469-496`](v1-contracts/contracts/uniswap_exchange.vy#L469-L496). There is no
 separate contract, no `UniswapV1ERC20.vy`. Supply changes only ever happen inside `addLiquidity`
 and `removeLiquidity`; there is no external `mint` or `burn`.
 
@@ -417,7 +417,7 @@ Contrast with V2, where the LP token lives in `UniswapV2ERC20.sol` as a proper i
 with `permit`. Splitting it out is mostly hygiene, but it also let V2 reuse the token logic and
 keep `UniswapV2Pair.sol` focused on pool mechanics.
 
-### 2.3 `addLiquidity` — `contracts/uniswap_exchange.vy:48`
+### 2.3 `addLiquidity` — [`contracts/uniswap_exchange.vy:48`](v1-contracts/contracts/uniswap_exchange.vy#L48)
 
 Signature: `addLiquidity(min_liquidity, max_tokens, deadline) -> uint256`, `@payable`.
 
@@ -443,10 +443,10 @@ def addLiquidity(min_liquidity: uint256, max_tokens: uint256, deadline: timestam
         log.Transfer(ZERO_ADDRESS, msg.sender, liquidity_minted)
         return liquidity_minted
 ```
-`contracts/uniswap_exchange.vy:48-63`
+[`contracts/uniswap_exchange.vy:48-63`](v1-contracts/contracts/uniswap_exchange.vy#L48-L63)
 
 **Shared checks (line 49):** `deadline > block.timestamp` — note this is **strict**, unlike the
-swap functions which use `>=` (e.g. `contracts/uniswap_exchange.vy:128`). Passing
+swap functions which use `>=` (e.g. [`contracts/uniswap_exchange.vy:128`](v1-contracts/contracts/uniswap_exchange.vy#L128)). Passing
 `deadline = block.timestamp` succeeds on a swap and reverts on `addLiquidity`. Also `max_tokens > 0`
 and `msg.value > 0`, so you can never add one-sided liquidity.
 
@@ -486,7 +486,7 @@ and `msg.value > 0`, so you can never add one-sided liquidity.
         log.Transfer(ZERO_ADDRESS, msg.sender, initial_liquidity)
         return initial_liquidity
 ```
-`contracts/uniswap_exchange.vy:64-74`
+[`contracts/uniswap_exchange.vy:64-74`](v1-contracts/contracts/uniswap_exchange.vy#L64-L74)
 
 - **`min_liquidity` is ignored here** — the doc comment on line 41 says so explicitly. There is no
   prior ratio to slip against.
@@ -510,7 +510,7 @@ and `msg.value > 0`, so you can never add one-sided liquidity.
 - Note `self.totalSupply` and `self.balances[msg.sender]` are **assigned**, not incremented — safe
   only because this branch requires `total_liquidity == 0`.
 
-### 2.4 `removeLiquidity` — `contracts/uniswap_exchange.vy:83`
+### 2.4 `removeLiquidity` — [`contracts/uniswap_exchange.vy:83`](v1-contracts/contracts/uniswap_exchange.vy#L83)
 
 ```vyper
 @public
@@ -530,7 +530,7 @@ def removeLiquidity(amount: uint256, min_eth: uint256(wei), min_tokens: uint256,
     log.Transfer(msg.sender, ZERO_ADDRESS, amount)
     return eth_amount, token_amount
 ```
-`contracts/uniswap_exchange.vy:83-97`
+[`contracts/uniswap_exchange.vy:83-97`](v1-contracts/contracts/uniswap_exchange.vy#L83-L97)
 
 - **Inputs:** LP tokens to burn, minimum ETH and minimum tokens to accept, deadline.
 - **Checks:** all four of `amount > 0`, `deadline > block.timestamp` (strict again),
@@ -559,7 +559,7 @@ prevents a side from hitting zero through trading.
 Both are `@private @constant`. They are pure arithmetic — no storage, no reserves passed implicitly.
 Every swap in the contract bottoms out in one of these two.
 
-#### `getInputPrice` — exact input — `contracts/uniswap_exchange.vy:106`
+#### `getInputPrice` — exact input — [`contracts/uniswap_exchange.vy:106`](v1-contracts/contracts/uniswap_exchange.vy#L106)
 
 ```vyper
 @private
@@ -600,7 +600,7 @@ i.e. around `1.16e74`. Real reserves are nowhere near that, and Vyper reverts on
 than wrapping, so the failure mode is a revert rather than a wrong price. V3 needed `FullMath`'s
 512-bit `mulDiv` because its Q64.96 fixed-point numbers genuinely approach those magnitudes.
 
-#### `getOutputPrice` — exact output — `contracts/uniswap_exchange.vy:120`
+#### `getOutputPrice` — exact output — [`contracts/uniswap_exchange.vy:120`](v1-contracts/contracts/uniswap_exchange.vy#L120)
 
 ```vyper
 @private
@@ -714,12 +714,12 @@ The `Transfer` wrappers add a recipient check. Note the inconsistency:
 
 For the token→token paths that is still safe, because the second leg ultimately lands in the
 target exchange's `ethToTokenTransferInput`/`Output`, which does perform the zero-address check
-(`contracts/uniswap_exchange.vy:163`, `:198`). The `recipient != self` check exists because sending
+([`contracts/uniswap_exchange.vy:163`](v1-contracts/contracts/uniswap_exchange.vy#L163), `:198`). The `recipient != self` check exists because sending
 output back into the pool would corrupt the live-balance accounting.
 
 ### 2.7 The six private swap engines
 
-#### `ethToTokenInput` — `contracts/uniswap_exchange.vy:127`
+#### `ethToTokenInput` — [`contracts/uniswap_exchange.vy:127`](v1-contracts/contracts/uniswap_exchange.vy#L127)
 
 ```vyper
 @private
@@ -747,7 +747,7 @@ The key line is `self.balance - eth_sold`: `msg.value` is already in the balance
 ETH reserve is recovered by subtracting it. Get this wrong and you would price the trade against a
 reserve that already includes the trade.
 
-#### `__default__` — `contracts/uniswap_exchange.vy:141`
+#### `__default__` — [`contracts/uniswap_exchange.vy:141`](v1-contracts/contracts/uniswap_exchange.vy#L141)
 
 ```vyper
 @public
@@ -771,7 +771,7 @@ Plain-sending ETH to a V1 exchange **executes a market buy**. The doc comment ab
 Convenient for a 2018 wallet with no dapp support. A liability today. V2 has no such fallback;
 `UniswapV2Pair` cannot even receive plain ETH, since it deals in WETH.
 
-#### `ethToTokenOutput` — `contracts/uniswap_exchange.vy:167`
+#### `ethToTokenOutput` — [`contracts/uniswap_exchange.vy:167`](v1-contracts/contracts/uniswap_exchange.vy#L167)
 
 ```vyper
 @private
@@ -798,7 +798,7 @@ moved against you. Elegant, and free.
 **The refund goes to `buyer`, not `recipient`.** Correct — the person who paid gets the change,
 while the goods go to the recipient. This matters in the token→token flow below.
 
-#### `tokenToEthInput` — `contracts/uniswap_exchange.vy:202`
+#### `tokenToEthInput` — [`contracts/uniswap_exchange.vy:202`](v1-contracts/contracts/uniswap_exchange.vy#L202)
 
 ```vyper
 @private
@@ -822,7 +822,7 @@ used the correct pre-trade reserves, so the arithmetic is right, but for a momen
 out without being paid. Two things make this safe in practice: `send` forwards only the 2300 gas
 stipend (see §5), and `transferFrom` reverts the whole transaction if the buyer cannot pay.
 
-#### `tokenToEthOutput` — `contracts/uniswap_exchange.vy:237`
+#### `tokenToEthOutput` — [`contracts/uniswap_exchange.vy:237`](v1-contracts/contracts/uniswap_exchange.vy#L237)
 
 ```vyper
 @private
@@ -843,7 +843,7 @@ so there is no subtraction to underflow. The comment on line 241 notes `tokens_s
 positive thanks to the `+1` in `getOutputPrice`. No refund logic is needed: the exact ETH requested
 is sent and exactly the computed token amount is pulled.
 
-#### `tokenToTokenInput` — `contracts/uniswap_exchange.vy:271`
+#### `tokenToTokenInput` — [`contracts/uniswap_exchange.vy:271`](v1-contracts/contracts/uniswap_exchange.vy#L271)
 
 This is where two pools get chained.
 
@@ -864,7 +864,7 @@ def tokenToTokenInput(tokens_sold: uint256, min_tokens_bought: uint256, min_eth_
 
 - **Two slippage guards**, one per leg: `min_eth_bought` protects the intermediate ETH amount and
   `min_tokens_bought` is forwarded to the second exchange, which enforces it at
-  `contracts/uniswap_exchange.vy:131`.
+  [`contracts/uniswap_exchange.vy:131`](v1-contracts/contracts/uniswap_exchange.vy#L131).
 - **`assert exchange_addr != self and exchange_addr != ZERO_ADDRESS`** (line 273) is doing a lot of
   work. When called through `tokenToTokenSwapInput`, `exchange_addr` came from
   `factory.getExchange(token_addr)`. If you pass the *same* token, that returns this very exchange
@@ -880,7 +880,7 @@ def tokenToTokenInput(tokens_sold: uint256, min_tokens_bought: uint256, min_eth_
 - **Logging is split across contracts**: this exchange emits `EthPurchase`; the other emits
   `TokenPurchase`.
 
-#### `tokenToTokenOutput` — `contracts/uniswap_exchange.vy:312`
+#### `tokenToTokenOutput` — [`contracts/uniswap_exchange.vy:312`](v1-contracts/contracts/uniswap_exchange.vy#L312)
 
 ```vyper
 @private
@@ -922,7 +922,7 @@ holding within one transaction.
 def tokenToExchangeSwapInput(tokens_sold: uint256, min_tokens_bought: uint256, min_eth_bought: uint256(wei), deadline: timestamp, exchange_addr: address) -> uint256:
     return self.tokenToTokenInput(tokens_sold, min_tokens_bought, min_eth_bought, deadline, msg.sender, msg.sender, exchange_addr)
 ```
-`contracts/uniswap_exchange.vy:353-364`
+[`contracts/uniswap_exchange.vy:353-364`](v1-contracts/contracts/uniswap_exchange.vy#L353-L364)
 
 These skip the factory lookup and let the caller name any target address
 (lines 363, 378, 392, 407). The stated purpose is interoperability with exchanges from other
@@ -1113,7 +1113,7 @@ E.ethToTokenSwapInput(1, DEADLINE) {value: 1e18}        contracts/uniswap_exchan
   tokens left.
 
 Sending 1 ETH to `E` with no calldata produces the identical result via `__default__`
-(`contracts/uniswap_exchange.vy:141`) — but with `min_tokens = 1`, so with no protection against a
+([`contracts/uniswap_exchange.vy:141`](v1-contracts/contracts/uniswap_exchange.vy#L141)) — but with `min_tokens = 1`, so with no protection against a
 sandwich attacker moving the price first.
 
 ### 3.3 `tokenToTokenSwapInput` — 2 HAY to DEN across two pools
@@ -1175,7 +1175,7 @@ side in full.
 | **Reserves** | Not stored. Read live from `self.balance` and `token.balanceOf(self)` on every call. | Cached in `reserve0`/`reserve1`, packed with `blockTimestampLast` into one slot. | Live reads cost an external call per swap and make a price oracle impossible. Caching enables both, at the cost of needing `sync()`/`skim()` to handle donations. |
 | **Price oracle** | None. Only instantaneous spot getters (§2.9), manipulable within one transaction. | `price0CumulativeLast`/`price1CumulativeLast` accumulate `price × seconds`, letting anyone compute a TWAP over any window. | Spot AMM prices are trivially flash-loan manipulable. The TWAP made Uniswap usable as an oracle by other protocols, which V1 never safely was. |
 | **Flash swaps** | Impossible. Output is transferred only after input has been received. | `swap()` transfers output **first**, optionally calls `uniswapV2Call` on the recipient, then checks the k-invariant. | Enables arbitrage and liquidations with no capital, and collateral swaps in one transaction. |
-| **LP token** | Baked into the exchange contract (`contracts/uniswap_exchange.vy:469-496`), no `permit`, no zero-address guard. | Separate `UniswapV2ERC20` base with EIP-2612 `permit`. | Separation of concerns, and `permit` removes the extra approval transaction when removing liquidity through the router. |
+| **LP token** | Baked into the exchange contract ([`contracts/uniswap_exchange.vy:469-496`](v1-contracts/contracts/uniswap_exchange.vy#L469-L496)), no `permit`, no zero-address guard. | Separate `UniswapV2ERC20` base with EIP-2612 `permit`. | Separation of concerns, and `permit` removes the extra approval transaction when removing liquidity through the router. |
 | **First deposit** | `initial_liquidity = self.balance` (§2.3); force-fed ETH inflates it. | Mints `sqrt(amount0 × amount1)` and permanently burns `MINIMUM_LIQUIDITY = 1000` to address zero. | The geometric mean is symmetric in both tokens (V1's ETH-only rule cannot be), and the burned floor stops share-price inflation attacks. |
 | **Deployment** | `create_with_code_of` (delegatecall proxy) + plain `CREATE`, so addresses are unpredictable and `setup` replaces the constructor. | `CREATE2` with `keccak256(token0, token1)` as salt. | Pair addresses become a pure function of the token pair, so `UniswapV2Library.pairFor` computes them locally — no storage read, no RPC call. Essential for cheap multi-hop routing. |
 | **Protocol fee** | None. All 0.3% to LPs, no switch, no governance. | `feeTo`/`feeToSetter`; when enabled, 1/6 of fee growth is minted to `feeTo` via `_mintFee` and the `kLast` bookkeeping. | Gives the protocol an optional revenue lever without changing the trader-facing 0.3%. |
@@ -1212,7 +1212,7 @@ as a genuine hazard of the design rather than a proven exploit path.
 
 ## 5. Security notes
 
-**1. The fallback is a blind market order.** `__default__` (`contracts/uniswap_exchange.vy:141`)
+**1. The fallback is a blind market order.** `__default__` ([`contracts/uniswap_exchange.vy:141`](v1-contracts/contracts/uniswap_exchange.vy#L141))
 passes `min_tokens = 1`. Any plain ETH transfer to a V1 exchange executes a swap that will accept
 literally one wei of token. A searcher watching the mempool can sandwich it for nearly the whole
 value. Never send ETH to a V1 exchange without calldata.
@@ -1284,7 +1284,7 @@ be `send` into this contract's `__default__` with 2300 gas and revert the whole 
 
 ## 6. Exercises: trace these yourself
 
-1. **Follow the `+1`.** Open `contracts/uniswap_exchange.vy:55` and `:124`. Both add 1 to a
+1. **Follow the `+1`.** Open [`contracts/uniswap_exchange.vy:55`](v1-contracts/contracts/uniswap_exchange.vy#L55) and `:124`. Both add 1 to a
    division result but for different reasons. Write down, for each, who loses the wei and why that
    direction is the safe one. Then check `tests/exchange/test_liquidity_pool.py:52` and explain why
    the expected token balance is `HAY_RESERVE + HAY_ADDED + 1` rather than `+ 0`.

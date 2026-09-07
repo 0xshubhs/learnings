@@ -48,17 +48,17 @@ the line that settles each.
 **Claim 1 — supply uses ERC-4626-style shares against `totalAddedAssets()` with a
 1e6 virtual offset; debt uses a ray `drawnIndex`; there is no `liquidityIndex`.**
 
-Confirmed. `SharesMath.sol:13-14` declares the offsets:
+Confirmed. [`SharesMath.sol:13-14`](v4-aave/src/hub/libraries/SharesMath.sol#L13-L14) declares the offsets:
 
 ```solidity
 uint256 internal constant VIRTUAL_ASSETS = 1e6;
 uint256 internal constant VIRTUAL_SHARES = 1e6;
 ```
 
-and every supply-side conversion routes through them (`SharesMath.sol:17-62`).
-The supply denominator is `AssetLogic.totalAddedAssets` (`AssetLogic.sol:79-97`),
+and every supply-side conversion routes through them ([`SharesMath.sol:17-62`](v4-aave/src/hub/libraries/SharesMath.sol#L17-L62)).
+The supply denominator is `AssetLogic.totalAddedAssets` ([`AssetLogic.sol:79-97`](v4-aave/src/hub/libraries/AssetLogic.sol#L79-L97)),
 called by `toAddedSharesDown/Up` and `toAddedAssetsDown/Up`
-(`AssetLogic.sol:99-130`). The debt side is a separate ray index:
+([`AssetLogic.sol:99-130`](v4-aave/src/hub/libraries/AssetLogic.sol#L99-L130)). The debt side is a separate ray index:
 `AssetLogic.getDrawnIndex` (`:153-165`) and `toDrawnShares*/toDrawnAssets*`
 (`:25-55`). `grep -rn 'liquidityIndex' src/` returns nothing.
 
@@ -75,17 +75,17 @@ int256 newPremiumOffsetRay = (newPremiumShares * drawnIndex).signedSub(premiumDe
 ```
 
 The offset is set to exactly `newPremiumShares × drawnIndex` minus the premium debt
-that should remain, so `Premium.calculatePremiumRay` (`Premium.sol:17-24`), which
+that should remain, so `Premium.calculatePremiumRay` ([`Premium.sol:17-24`](v4-aave/src/hub/libraries/Premium.sol#L17-L24)), which
 returns `premiumShares × drawnIndex − premiumOffsetRay`, yields the *unchanged*
 premium at that instant. Only later index growth adds premium. The Hub enforces
 value conservation on every premium edit in `_validateApplyPremiumDelta`
-(`Hub.sol:933-959`):
+([`Hub.sol:933-959`](v4-aave/src/hub/Hub.sol#L933-L959)):
 
 ```solidity
 require(premiumRayAfter + premiumDelta.restoredPremiumRay == premiumRayBefore, InvalidPremiumChange());
 ```
 
-and caps the ratio per Spoke in `_applyPremiumDelta` (`Hub.sol:757-762`):
+and caps the ratio per Spoke in `_applyPremiumDelta` ([`Hub.sol:757-762`](v4-aave/src/hub/Hub.sol#L757-L762)):
 
 ```solidity
 require(riskPremiumThreshold == MAX_RISK_PREMIUM_THRESHOLD ||
@@ -140,7 +140,7 @@ over the idle span.
 
 **Who holds the tokens.** Only the Hub. `Spoke.supply` transfers the underlying
 *directly to the Hub address* and then calls `Hub.add`
-(`Spoke.sol:234-235`). The Spoke never custodies user funds. This is the single
+([`Spoke.sol:234-235`](v4-aave/src/spoke/Spoke.sol#L234-L235)). The Spoke never custodies user funds. This is the single
 biggest structural difference from v3, where each aToken held its own reserve.
 
 **Vocabulary.** The Hub speaks in liquidity terms, the Spoke in user terms:
@@ -161,10 +161,10 @@ biggest structural difference from v3, where each aToken held its own reserve.
 | unit | `addedShares` | `drawnShares` + `premiumShares` |
 | conversion | ERC-4626 shares vs `totalAddedAssets()` | ray `drawnIndex` |
 | manipulation defense | 1e6 virtual assets/shares | index starts at RAY, monotonic |
-| where | `SharesMath.sol` | `AssetLogic.sol:25-55`, `Premium.sol` |
+| where | `SharesMath.sol` | [`AssetLogic.sol:25-55`](v4-aave/src/hub/libraries/AssetLogic.sol#L25-L55), `Premium.sol` |
 | yield source | `totalAddedAssets` grows as debt accrues | rate from IRS |
 
-Supplier yield is *emergent*: `totalAddedAssets` (`AssetLogic.sol:79-97`) equals
+Supplier yield is *emergent*: `totalAddedAssets` ([`AssetLogic.sol:79-97`](v4-aave/src/hub/libraries/AssetLogic.sol#L79-L97)) equals
 `liquidity + swept + aggregatedOwed − realizedFees − unrealizedFees`. When debt
 accrues, `aggregatedOwed` rises, so the same number of shares is worth more.
 
@@ -334,7 +334,7 @@ revert, not a named error. That is worth knowing when debugging.
 
 `roundRayUp` (`:205`) is unusual and matters in liquidations: it rounds a
 ray-scaled value up to a whole asset unit *and keeps it in ray*, used at
-`LiquidationLogic.sol:650` and `:751` so that a premium repayment always covers a
+[`LiquidationLogic.sol:650`](v4-aave/src/spoke/libraries/LiquidationLogic.sol#L650) and `:751` so that a premium repayment always covers a
 whole token.
 
 ### 3.2 `src/libraries/math/PercentageMath.sol` (82 lines)
@@ -389,7 +389,7 @@ Remaining helpers, all pure and all used to keep the hot paths cheap:
 `mulDivDown`/`mulDivUp` here are **not** full 512-bit like OpenZeppelin's
 `Math.mulDiv`; they revert if `a·b` overflows 256 bits. Where a genuine 512-bit
 product is needed (liquidation collateral maths), the code calls OZ `Math.mulDiv`
-instead — see `LiquidationLogic.sol:635`, `:713`, `:807`.
+instead — see [`LiquidationLogic.sol:635`](v4-aave/src/spoke/libraries/LiquidationLogic.sol#L635), `:713`, `:807`.
 
 ### 3.4 `src/hub/libraries/SharesMath.sol` (63 lines)
 
@@ -411,7 +411,7 @@ full 512-bit safe.
 attacker who deposits 1 wei and donates a large amount to inflate the price per
 share must overcome the virtual 1e6 shares, which makes the classic first-depositor
 round-to-zero attack cost 1e6× more. Note the Hub *additionally* refuses zero-share
-deposits at `Hub.sol:172` (`require(shares > 0, InvalidShares())`).
+deposits at [`Hub.sol:172`](v4-aave/src/hub/Hub.sol#L172) (`require(shares > 0, InvalidShares())`).
 
 **A donation caveat worth stating.** `totalAddedAssets` is computed from *tracked*
 accounting fields (`asset.liquidity`, `asset.swept`, owed, fees), not from
@@ -419,8 +419,8 @@ accounting fields (`asset.liquidity`, `asset.swept`, owed, fees), not from
 share price by itself. It sits untracked until someone skims it — `Hub.add`
 (`:169-170`) and `Hub.reclaim` (`:435-436`) both only require that the balance is at
 *least* the expected liquidity, so surplus balance can be absorbed by a later `add`.
-`IHub.sol:95` and `:335` document this as intended skimming behaviour, and
-`TreasurySpoke.supplySkimmed` (`TreasurySpoke.sol:31-37`) is the sanctioned way to
+[`IHub.sol:95`](v4-aave/src/hub/interfaces/IHub.sol#L95) and `:335` document this as intended skimming behaviour, and
+`TreasurySpoke.supplySkimmed` ([`TreasurySpoke.sol:31-37`](v4-aave/src/spoke/TreasurySpoke.sol#L31-L37)) is the sanctioned way to
 claim it.
 
 ### 3.5 `src/hub/libraries/Premium.sol` (24 lines)
@@ -540,7 +540,7 @@ initialization, and the docs describe the Hub as immutable. The 50-slot gap exis
 regardless.
 
 **`_underlyingToAssetId` maps to 0 by default**, which is why `isUnderlyingListed`
-(`Hub.sol:446-448`) checks `_assets[id].underlying == underlying` rather than
+([`Hub.sol:446-448`](v4-aave/src/hub/Hub.sol#L446-L448)) checks `_assets[id].underlying == underlying` rather than
 `id != 0` — asset 0 is a real asset.
 
 ### 4.2 `src/hub/interfaces/IHub.sol` — the `Asset` struct (`:29-56`)
@@ -577,7 +577,7 @@ wrapping.
 | 3 | `uint200 deficitRay` |
 
 Caps are stored as **whole assets, not scaled by decimals** (`:71-72`), and compared
-after multiplying by `10**decimals` (`Hub.sol:825`, `:854`, `:914`). A cap of
+after multiplying by `10**decimals` ([`Hub.sol:825`](v4-aave/src/hub/Hub.sol#L825), `:854`, `:914`). A cap of
 `type(uint40).max` means no cap. Same sentinel convention for
 `riskPremiumThreshold` with `type(uint24).max`.
 
@@ -586,7 +586,7 @@ after multiplying by `10**decimals` (`Hub.sol:825`, `:854`, `:914`). A cap of
 
 `active` vs `halted` (`:74-75`): `active = false` blocks *every* action;
 `halted = true` blocks only the actions that instantly move liquidity. Check
-`_validateReportDeficit` (`Hub.sol:875-887`) — it requires `active` but **not**
+`_validateReportDeficit` ([`Hub.sol:875-887`](v4-aave/src/hub/Hub.sol#L875-L887)) — it requires `active` but **not**
 `!halted`, so a halted Spoke can still write off bad debt. Same for
 `_validateEliminateDeficit` (`:889-895`) and `_validatePayFeeShares` (`:897-900`).
 
@@ -601,7 +601,7 @@ struct PremiumDelta {
 ```
 
 Every premium mutation travels as this triple, and the Hub checks
-`premiumAfter + restored == premiumBefore` (`Hub.sol:954-957`).
+`premiumAfter + restored == premiumBefore` ([`Hub.sol:954-957`](v4-aave/src/hub/Hub.sol#L954-L957)).
 
 ### 4.4 `src/hub/Hub.sol` (960 lines) — constants and modifiers
 
@@ -712,7 +712,7 @@ for an unregistered caller, so `spoke.active` is false and `_validateXxx` revert
 
 **`refreshPremium(uint256 assetId, PremiumDelta premiumDelta)`** (`:362-374`) — `active` only; **requires `restoredPremiumRay == 0`** (`:369`) so no repayment can be smuggled through a refresh. Applies the delta, re-derives the rate, emits `RefreshPremium`.
 
-**`payFeeShares(uint256 assetId, uint256 shares)`** (`:377-389`) — moves added shares from the caller Spoke to the asset's `feeReceiver`. Used by liquidations to route the liquidation fee (`LiquidationLogic.sol:481`). Emits `TransferShares`.
+**`payFeeShares(uint256 assetId, uint256 shares)`** (`:377-389`) — moves added shares from the caller Spoke to the asset's `feeReceiver`. Used by liquidations to route the liquidation fee ([`LiquidationLogic.sol:481`](v4-aave/src/spoke/libraries/LiquidationLogic.sol#L481)). Emits `TransferShares`.
 
 **`transferShares(uint256 assetId, uint256 shares, address toSpoke)`** (`:392-403`) — Spoke-to-Spoke share movement; `_validateTransferShares` (`:902-918`) requires both active, both not halted, `shares > 0`, and the **receiver's** add cap to accommodate the new total → `AddCapExceeded`.
 
@@ -732,7 +732,7 @@ This is where a backstop (Umbrella-style) actually pays. Emits `EliminateDeficit
 
 **`sweep(uint256 assetId, uint256 amount)`** (`:406-424`) — caller must equal `asset.reinvestmentController` → `OnlyReinvestmentController` (`:922`); moves `amount` from `liquidity` to `swept` and transfers the tokens out. Because `swept` is still inside `totalAddedAssets`, suppliers keep their claim on it.
 
-**`reclaim(uint256 assetId, uint256 amount)`** (`:427-443`) — the mirror. Pull-style: the controller must have sent the tokens first; `InsufficientTransferred` otherwise. Any *extra* balance is absorbed into `liquidity` (`IHub.sol:335` documents this skim).
+**`reclaim(uint256 assetId, uint256 amount)`** (`:427-443`) — the mirror. Pull-style: the controller must have sent the tokens first; `InsufficientTransferred` otherwise. Any *extra* balance is absorbed into `liquidity` ([`IHub.sol:335`](v4-aave/src/hub/interfaces/IHub.sol#L335) documents this skim).
 
 **Loss-bearing note.** Nothing in `Hub.sol` forces the controller to return what it took. `swept` is only reduced by `reclaim`. If a strategy loses money and the controller never reclaims, `totalAddedAssets` still counts the swept amount, so suppliers' share price stays nominally intact while the liquidity is simply absent. The overview doc says the Governor absorbs strategy losses; that is a policy statement, not a code-enforced guarantee.
 
@@ -767,7 +767,7 @@ Spoke views: `getSpokeCount` (`:602`), `getSpokeAddedAssets` (`:607`),
 (`:662`), `getSpoke` (`:667`), `getSpokeConfig` (`:672`).
 
 `getAsset` (`:568`) returns the raw struct, so `drawnIndex`, `drawnRate` and
-`lastUpdateTimestamp` can be stale — the interface says so at `IHub.sol:349`. Use
+`lastUpdateTimestamp` can be stale — the interface says so at [`IHub.sol:349`](v4-aave/src/hub/interfaces/IHub.sol#L349). Use
 `getAssetDrawnIndex` / `getAssetDrawnRate` for live values.
 
 #### Internal helpers
@@ -784,7 +784,7 @@ maintained structurally by paired writes and rounding direction.
 
 | Invariant | Maintained by |
 |---|---|
-| 1. total drawn shares == Σ spoke drawn shares | every `asset.drawnShares ±= x` is adjacent to `spoke.drawnShares ±= x` — `Hub.sol:260-261`, `:285-286`, `:316-317` |
+| 1. total drawn shares == Σ spoke drawn shares | every `asset.drawnShares ±= x` is adjacent to `spoke.drawnShares ±= x` — [`Hub.sol:260-261`](v4-aave/src/hub/Hub.sol#L260-L261), `:285-286`, `:316-317` |
 | 2. Hub added assets ≥ Σ spoke added assets | `toAddedAssetsDown` for reads (`:607`) vs `toAddedSharesUp` on removal (`:234`) — the protocol rounds each Spoke's claim down |
 | 3. Hub added shares == Σ spoke added shares | paired writes at `:212-213`, `:234-235`, `:338-339` (`_mintFeeShares` `:776-777`), and `_transferShares` (`:726-727`) moves without changing the total |
 | 4. share price and drawn index never decrease | `getDrawnIndex` multiplies by `RAY + something ≥ 0` (`:157-164`); the share price cannot fall because every removal burns shares rounded **up** against the remover |
@@ -827,7 +827,7 @@ argument, so one configurator serves many Hubs.
 | `updateInterestRateData` | 299 | reconfigure the current IRS |
 
 Internals: `_updateSpokeCaps` (`:308`), `_updateLiquidityFee` (`:321`).
-Errors: `InvalidAddress` and `MismatchedConfigs` (`IHubConfigurator.sol:11`, `:14`).
+Errors: `InvalidAddress` and `MismatchedConfigs` ([`IHubConfigurator.sol:11`](v4-aave/src/hub/interfaces/IHubConfigurator.sol#L11), `:14`).
 
 The "across all assets/spokes" variants are the emergency levers: one call to
 `haltAsset` stops instant-liquidity actions on every Spoke for that asset while
@@ -879,7 +879,7 @@ Slot 1 packs 160+16+8+24+8+32 = 248 bits. A reserve is `(hub, assetId)` plus thi
 Spoke's own risk view of it. **`reserveId` is Spoke-local and independent of the
 Hub's `assetId`** — two reserves on one Spoke may point at the same Hub asset with
 different risk parameters only if they are different `(hub, assetId)` pairs, since
-`addReserve` rejects duplicates (`Spoke.sol:130`).
+`addReserve` rejects duplicates ([`Spoke.sol:130`](v4-aave/src/spoke/Spoke.sol#L130)).
 
 **`ReserveConfig`** (`:61-67`): `collateralRisk`, `paused`, `frozen`, `borrowable`,
 `receiveSharesEnabled`.
@@ -893,7 +893,7 @@ different risk parameters only if they are different `(hub, assetId)` pairs, sin
 Governance can publish a **new** config (`addDynamicReserveConfig`) that applies to
 new activity while existing positions keep their old terms until refreshed. This is
 v4's answer to "changing the collateral factor instantly liquidates people".
-`_validateUpdateDynamicReserveConfig` (`Spoke.sol:852-860`) forbids setting a
+`_validateUpdateDynamicReserveConfig` ([`Spoke.sol:852-860`](v4-aave/src/spoke/Spoke.sol#L852-L860)) forbids setting a
 historical key's `collateralFactor` to zero so liquidations against old keys can
 still proceed.
 
@@ -915,10 +915,10 @@ each user approves it individually.
 `healthFactor`, `totalCollateralValue`, `totalDebtValueRay`,
 `activeCollateralCount`, `borrowCount`.
 
-**Value units.** `SpokeUtils.toValue` (`SpokeUtils.sol:34-40`) returns
+**Value units.** `SpokeUtils.toValue` ([`SpokeUtils.sol:34-40`](v4-aave/src/spoke/libraries/SpokeUtils.sol#L34-L40)) returns
 `amount · price · 10**(18 − decimals)`, and with `ORACLE_DECIMALS = 8`
-(`SpokeUtils.sol:13`) this makes **1e26 == 1 USD**. That is why
-`DUST_LIQUIDATION_THRESHOLD = 1000e26` (`LiquidationLogic.sol:185`) reads as
+([`SpokeUtils.sol:13`](v4-aave/src/spoke/libraries/SpokeUtils.sol#L13)) this makes **1e26 == 1 USD**. That is why
+`DUST_LIQUIDATION_THRESHOLD = 1000e26` ([`LiquidationLogic.sol:185`](v4-aave/src/spoke/libraries/LiquidationLogic.sol#L185)) reads as
 $1,000.
 
 ### 5.3 `src/spoke/libraries/ReserveFlagsMap.sol` (109 lines)
@@ -1090,7 +1090,7 @@ require(config.liquidationFee <= 100_00, InvalidLiquidationFee());
 
 `bonus × collateralFactor < 1` guarantees that seizing collateral worth
 `debt × bonus` never exceeds the borrowing capacity that debt consumed — the
-"liquidation penalty" denominator at `LiquidationLogic.sol:799-812` can never be
+"liquidation penalty" denominator at [`LiquidationLogic.sol:799-812`](v4-aave/src/spoke/libraries/LiquidationLogic.sol#L799-L812) can never be
 zero or negative.
 
 #### User actions
@@ -1302,7 +1302,7 @@ implementation, so replacing it is an implementation swap.
 
 `src/spoke/libraries/LiquidationLogic.sol` (827 lines). An **external** library, so
 `Spoke` reaches it by `delegatecall` and its address is queryable via
-`Spoke.getLiquidationLogic()` (`Spoke.sol:667-669`). It runs in the Spoke's storage
+`Spoke.getLiquidationLogic()` ([`Spoke.sol:667-669`](v4-aave/src/spoke/Spoke.sol#L667-L669)). It runs in the Spoke's storage
 context, which is why it takes storage mappings as parameters.
 
 Constants: `HEALTH_FACTOR_LIQUIDATION_THRESHOLD = 1e18` (`:182`),
@@ -1353,7 +1353,7 @@ A **linear ramp**: the bonus is minimal at HF just under 1 and grows to the maxi
 as HF falls to `healthFactorForMaxBonus`. This is the mechanism that stops a
 position at HF 0.999 from paying a full 5-10% penalty. The denominator is safe
 because `updateLiquidationConfig` enforces `healthFactorForMaxBonus < 1e18`
-(`Spoke.sol:113`).
+([`Spoke.sol:113`](v4-aave/src/spoke/Spoke.sol#L113)).
 
 ### 6.2 `_executeLiquidation` (`:342-446`)
 
@@ -1583,7 +1583,7 @@ operational assumption.
 Constants: `MAX_ALLOWED_DRAWN_RATE = 1000_00` (1000%, `:18`),
 `MIN_OPTIMAL_RATIO = 1_00`, `MAX_OPTIMAL_RATIO = 99_00` (`:21-24`).
 
-**`InterestRateData`** (`IAssetInterestRateStrategy.sol:15-20`), all bps, one slot:
+**`InterestRateData`** ([`IAssetInterestRateStrategy.sol:15-20`](v4-aave/src/hub/interfaces/IAssetInterestRateStrategy.sol#L15-L20)), all bps, one slot:
 `uint16 optimalUsageRatio`, `uint32 baseDrawnRate`, `uint32 rateGrowthBeforeOptimal`,
 `uint32 rateGrowthAfterOptimal`.
 
@@ -1630,7 +1630,7 @@ produces, which is the same quantity arrived at from the other direction.
 A **position manager** is a contract a user authorizes to act on their Spoke
 position. Authorization is two-sided and both sides must hold:
 
-1. Spoke admin marks the manager globally active — `Spoke.updatePositionManager` (`Spoke.sol:219-222`), `restricted`.
+1. Spoke admin marks the manager globally active — `Spoke.updatePositionManager` ([`Spoke.sol:219-222`](v4-aave/src/spoke/Spoke.sol#L219-L222)), `restricted`.
 2. The user approves it — `Spoke.setUserPositionManager` (`:433`) or `setUserPositionManagersWithSig` (`:438`).
 
 `Spoke._isPositionManager` (`:909-913`) checks both, and short-circuits `true` when
@@ -1840,7 +1840,7 @@ Two roles worth calling out. `HUB_DEFICIT_ELIMINATOR_ROLE` gates
 `Hub.eliminateDeficit`, i.e. who may burn a Spoke's shares to absorb bad debt —
 that is the backstop key. `SPOKE_USER_POSITION_UPDATER_ROLE` is what
 `Spoke.updateUserRiskPremium`/`updateUserDynamicConfig` fall back to
-(`Spoke.sol:417`, `:426`) when the caller is not the user's own position manager: a
+([`Spoke.sol:417`](v4-aave/src/spoke/Spoke.sol#L417), `:426`) when the caller is not the user's own position manager: a
 keeper role that can migrate users onto new risk parameters.
 
 ---
@@ -2101,7 +2101,7 @@ interface, of upstream libraries.
 | 4 | `mapping(address => uint256)` | `_underlyingToAssetId` | 25 |
 | 5–54 | `uint256[50]` | `__gap` | 28 |
 
-`IHub.Asset` sub-layout (10 slots per asset, `IHub.sol:29-56`):
+`IHub.Asset` sub-layout (10 slots per asset, [`IHub.sol:29-56`](v4-aave/src/hub/interfaces/IHub.sol#L29-L56)):
 
 | Off | Bits | Fields |
 |---:|---|---|
@@ -2116,7 +2116,7 @@ interface, of upstream libraries.
 | +8 | 160 | `feeReceiver` |
 | +9 | 200 | `deficitRay` |
 
-`IHub.SpokeData` sub-layout (4 slots, `IHub.sol:77-91`):
+`IHub.SpokeData` sub-layout (4 slots, [`IHub.sol:77-91`](v4-aave/src/hub/interfaces/IHub.sol#L77-L91)):
 
 | Off | Bits | Fields |
 |---:|---|---|
@@ -2147,7 +2147,7 @@ interface, of upstream libraries.
 
 | Contract | Slot | Derivation |
 |---|---|---|
-| `NoncesKeyed` | `0x474d4a5585c1bae3dbeb574bb96408c7174aadd8ab635de4ab498e2723195f00` | `keccak256(abi.encode(uint256(keccak256("aave-v4.storage.NoncesKeyed")) - 1)) & ~bytes32(uint256(0xff))` — `NoncesKeyed.sol:18-20` |
+| `NoncesKeyed` | `0x474d4a5585c1bae3dbeb574bb96408c7174aadd8ab635de4ab498e2723195f00` | `keccak256(abi.encode(uint256(keccak256("aave-v4.storage.NoncesKeyed")) - 1)) & ~bytes32(uint256(0xff))` — [`NoncesKeyed.sol:18-20`](v4-aave/src/utils/NoncesKeyed.sol#L18-L20) |
 
 `ERC20Upgradeable`, `AccessManagedUpgradeable`, `Initializable` and
 `Ownable2StepUpgradeable` each use their own upstream ERC-7201 namespace, so the
@@ -2229,7 +2229,7 @@ Computed with `cast sig` against the signatures in this tree.
 
 | Error | Selector | Thrown at | Cause |
 |---|---|---|---|
-| `UnderlyingAlreadyListed()` | `0x603c058b` | `Hub.sol:62` | listing a token twice |
+| `UnderlyingAlreadyListed()` | `0x603c058b` | [`Hub.sol:62`](v4-aave/src/hub/Hub.sol#L62) | listing a token twice |
 | `AssetNotListed()` | `0xb77e1e0f` | `:118`, `:171`, `:182`, `:191`, `:407`, `:428`, `:497` | `assetId >= _assetCount` |
 | `AddCapExceeded(uint256)` | `0xde3fc6ae` | `:823-828`, `:912-917` | spoke add cap or transfer target cap |
 | `InsufficientLiquidity(uint256)` | `0xc730333f` | `:232`, `:257`, `:414` | not enough idle liquidity |
@@ -2257,19 +2257,19 @@ Computed with `cast sig` against the signatures in this tree.
 
 | Error | Selector | Thrown at | Cause |
 |---|---|---|---|
-| `AssetNotListed()` | `0xb77e1e0f` | `Spoke.sol:138` | Hub returned a zero underlying |
+| `AssetNotListed()` | `0xb77e1e0f` | [`Spoke.sol:138`](v4-aave/src/spoke/Spoke.sol#L138) | Hub returned a zero underlying |
 | `ReserveExists()` | `0xe71301f8` | `:130` | `(hub, assetId)` already listed |
 | `InvalidAssetId()` | `0xfafca5a0` | `:129` | `assetId > type(uint16).max` |
 | `InvalidAssetDecimals()` | `0xe2364765` | `:139` | decimals > 18 |
-| `ReserveNotListed()` | `0x2e5d6bb4` | `SpokeUtils.sol:24`; `Spoke.sol:186`, `:195`, `:212`, `:480` | unknown `reserveId` |
-| `ReserveNotBorrowable()` | `0xaac43c92` | `Spoke.sol:874` | borrowable flag clear |
-| `ReservePaused()` | `0xd37f5f1c` | `:863`, `:868`, `:872`, `:879`, `:887`; `LiquidationLogic.sol:536-539` | paused flag set |
-| `ReserveFrozen()` | `0x6d305815` | `Spoke.sol:864`, `:873`, `:890` | frozen flag set |
+| `ReserveNotListed()` | `0x2e5d6bb4` | [`SpokeUtils.sol:24`](v4-aave/src/spoke/libraries/SpokeUtils.sol#L24); [`Spoke.sol:186`](v4-aave/src/spoke/Spoke.sol#L186), `:195`, `:212`, `:480` | unknown `reserveId` |
+| `ReserveNotBorrowable()` | `0xaac43c92` | [`Spoke.sol:874`](v4-aave/src/spoke/Spoke.sol#L874) | borrowable flag clear |
+| `ReservePaused()` | `0xd37f5f1c` | `:863`, `:868`, `:872`, `:879`, `:887`; [`LiquidationLogic.sol:536-539`](v4-aave/src/spoke/libraries/LiquidationLogic.sol#L536-L539) | paused flag set |
+| `ReserveFrozen()` | `0x6d305815` | [`Spoke.sol:864`](v4-aave/src/spoke/Spoke.sol#L864), `:873`, `:890` | frozen flag set |
 | `HealthFactorBelowThreshold()` | `0x851aedc1` | `:691-694` | HF < 1e18 after the action |
-| `ReserveNotEnabledAsCollateral()` | `0x95aaa7c8` | `LiquidationLogic.sol:548-551` | zero collateral factor or bit unset |
+| `ReserveNotEnabledAsCollateral()` | `0x95aaa7c8` | [`LiquidationLogic.sol:548-551`](v4-aave/src/spoke/libraries/LiquidationLogic.sol#L548-L551) | zero collateral factor or bit unset |
 | `ReserveNotSupplied()` | `0xe2fadb09` | `:540` | no collateral shares to seize |
 | `ReserveNotBorrowed()` | `0x7b55ea4a` | `:543` | no drawn shares to repay |
-| `Unauthorized()` | `0x82b42900` | `Spoke.sol:91` | caller is not an approved active position manager |
+| `Unauthorized()` | `0x82b42900` | [`Spoke.sol:91`](v4-aave/src/spoke/Spoke.sol#L91) | caller is not an approved active position manager |
 | `DynamicConfigKeyUninitialized()` | `0x17e5b997` | `:857` | updating a never-added config key |
 | `InvalidAddress()` | `0xe6c4247b` | `:128`, `:672` | zero hub or price source |
 | `InvalidOracleDecimals()` | `0x38bebeba` | `:99` | oracle decimals ≠ 8 |
@@ -2279,54 +2279,54 @@ Computed with `cast sig` against the signatures in this tree.
 | `InvalidLiquidationFee()` | `0x16535458` | `:929` | fee > 100_00 |
 | `InvalidCollateralFactorAndMaxLiquidationBonus()` | `0xcf8e83b1` | `:922-928` | `bonus × CF >= 100_00`, or CF ≥ 100_00, or bonus < 100_00 |
 | `InvalidCollateralFactor()` | `0xbc8b2b40` | `:858` | new dynamic config with zero collateral factor |
-| `SelfLiquidation()` | `0x44511af1` | `LiquidationLogic.sol:534` | liquidator == user |
+| `SelfLiquidation()` | `0x44511af1` | [`LiquidationLogic.sol:534`](v4-aave/src/spoke/libraries/LiquidationLogic.sol#L534) | liquidator == user |
 | `HealthFactorNotBelowThreshold()` | `0x930bb771` | `:544-547` | position is healthy |
 | `MustNotLeaveDust()` | `0xb629b0e4` | `:684-688` | `debtToCover` too small to avoid dust |
 | `InvalidDebtToCover()` | `0x411dcff5` | `:535` | zero `debtToCover` |
 | `CannotReceiveShares()` | `0x861a96d6` | `:552-557` | `receiveShares` on a frozen or shares-disabled reserve |
-| `MaximumDynamicConfigKeyReached()` | `0x8affb4f4` | `Spoke.sol:197` | key would exceed `uint32` |
+| `MaximumDynamicConfigKeyReached()` | `0x8affb4f4` | [`Spoke.sol:197`](v4-aave/src/spoke/Spoke.sol#L197) | key would exceed `uint32` |
 | `MaximumUserReservesExceeded()` | `0x0f04df18` | `:288-292`, `:892-896` | too many borrow or collateral reserves |
 
 ### Everything else
 
 | Error | Selector | Declared in | Cause |
 |---|---|---|---|
-| `InterestRateDataNotSet(uint256)` | `0x0d183c0b` | `IBasicInterestRateStrategy.sol:10` | rate params never configured |
-| `InvalidAddress()` | `0xe6c4247b` | `IAssetInterestRateStrategy.sol:39`, `IHubConfigurator.sol:11`, `ISpokeConfigurator.sol:11`, `IPositionManagerBase.sol:16`, `IAaveOracle.sol:38` | zero address |
-| `OnlyHub()` | `0x2c53e398` | `IAssetInterestRateStrategy.sol:42` | IRS called by a non-Hub |
+| `InterestRateDataNotSet(uint256)` | `0x0d183c0b` | [`IBasicInterestRateStrategy.sol:10`](v4-aave/src/hub/interfaces/IBasicInterestRateStrategy.sol#L10) | rate params never configured |
+| `InvalidAddress()` | `0xe6c4247b` | [`IAssetInterestRateStrategy.sol:39`](v4-aave/src/hub/interfaces/IAssetInterestRateStrategy.sol#L39), [`IHubConfigurator.sol:11`](v4-aave/src/hub/interfaces/IHubConfigurator.sol#L11), [`ISpokeConfigurator.sol:11`](v4-aave/src/spoke/interfaces/ISpokeConfigurator.sol#L11), [`IPositionManagerBase.sol:16`](v4-aave/src/position-manager/interfaces/IPositionManagerBase.sol#L16), [`IAaveOracle.sol:38`](v4-aave/src/spoke/interfaces/IAaveOracle.sol#L38) | zero address |
+| `OnlyHub()` | `0x2c53e398` | [`IAssetInterestRateStrategy.sol:42`](v4-aave/src/hub/interfaces/IAssetInterestRateStrategy.sol#L42) | IRS called by a non-Hub |
 | `InvalidMaxDrawnRate()` | `0x126383a8` | `:45` | rate components sum > 1000_00 |
 | `InvalidOptimalUsageRatio()` | `0x35a8aee7` | `:48` | outside [1_00, 99_00] |
-| `MismatchedConfigs()` | `0x8f7b3d64` | `IHubConfigurator.sol:14` | array length mismatch |
-| `OnlyDeployer()` | `0x618bbdd5` | `IAaveOracle.sol:20` | `setSpoke` by a non-deployer |
+| `MismatchedConfigs()` | `0x8f7b3d64` | [`IHubConfigurator.sol:14`](v4-aave/src/hub/interfaces/IHubConfigurator.sol#L14) | array length mismatch |
+| `OnlyDeployer()` | `0x618bbdd5` | [`IAaveOracle.sol:20`](v4-aave/src/spoke/interfaces/IAaveOracle.sol#L20) | `setSpoke` by a non-deployer |
 | `SpokeAlreadySet()` | `0x307ef04a` | `:23` | oracle already bound |
 | `InvalidSourceDecimals(uint256)` | `0xbbff7655` | `:27` | feed decimals ≠ oracle decimals |
 | `InvalidSource(uint256)` | `0x0246b0be` | `:31` | no feed configured |
 | `InvalidPrice(uint256)` | `0xf9632e86` | `:35` | `latestAnswer() <= 0` |
 | `OracleMismatch()` | `0x80e24704` | `:41` | Spoke's `ORACLE()` is a different address |
-| `OnlySpoke()` | `0x564cbba0` | `IPriceOracle.sol:10` | `setReserveSource` by a non-Spoke |
-| `InvalidSignature()` | `0x8baa579f` | `IIntentConsumer.sol:11` | expired deadline or bad signature |
-| `InvalidAccountNonce(address,uint256)` | `0x752d88c0` | `INoncesKeyed.sol:6` | nonce mismatch (replay) |
-| `OnlyRescueGuardian()` | `0x3a026269` | `IRescuable.sol:9` | rescue by a non-guardian |
-| `InvalidAmount()` | `0x2c5211c6` | `IPositionManagerBase.sol:19` | zero amount |
+| `OnlySpoke()` | `0x564cbba0` | [`IPriceOracle.sol:10`](v4-aave/src/spoke/interfaces/IPriceOracle.sol#L10) | `setReserveSource` by a non-Spoke |
+| `InvalidSignature()` | `0x8baa579f` | [`IIntentConsumer.sol:11`](v4-aave/src/interfaces/IIntentConsumer.sol#L11) | expired deadline or bad signature |
+| `InvalidAccountNonce(address,uint256)` | `0x752d88c0` | [`INoncesKeyed.sol:6`](v4-aave/src/interfaces/INoncesKeyed.sol#L6) | nonce mismatch (replay) |
+| `OnlyRescueGuardian()` | `0x3a026269` | [`IRescuable.sol:9`](v4-aave/src/interfaces/IRescuable.sol#L9) | rescue by a non-guardian |
+| `InvalidAmount()` | `0x2c5211c6` | [`IPositionManagerBase.sol:19`](v4-aave/src/position-manager/interfaces/IPositionManagerBase.sol#L19) | zero amount |
 | `UnsupportedAction()` | `0x25e9714f` | `:22` | multicall disabled, or ETH sent to a gateway fallback |
 | `SpokeNotRegistered()` | `0x94918724` | `:25` | spoke not registered on the manager |
-| `InsufficientWithdrawAllowance(uint256,uint256)` | `0xa0edc624` | `ITakerPositionManager.sol:110` | allowance < amount |
+| `InsufficientWithdrawAllowance(uint256,uint256)` | `0xa0edc624` | [`ITakerPositionManager.sol:110`](v4-aave/src/position-manager/interfaces/ITakerPositionManager.sol#L110) | allowance < amount |
 | `InsufficientBorrowAllowance(uint256,uint256)` | `0x31577909` | `:113` | allowance < amount |
-| `DelegateeNotAllowed()` | `0xfada00e8` | `IConfigPositionManager.sol:135` | permission bit not granted |
-| `RepayOnBehalfMaxUintNotAllowed()` | `0x61306f9d` | `IGiverPositionManager.sol:43` | `type(uint256).max` as repay amount |
-| `NotNativeWrappedAsset()` | `0x75996463` | `INativeTokenGateway.sol:12` | reserve underlying ≠ wrapper |
+| `DelegateeNotAllowed()` | `0xfada00e8` | [`IConfigPositionManager.sol:135`](v4-aave/src/position-manager/interfaces/IConfigPositionManager.sol#L135) | permission bit not granted |
+| `RepayOnBehalfMaxUintNotAllowed()` | `0x61306f9d` | [`IGiverPositionManager.sol:43`](v4-aave/src/position-manager/interfaces/IGiverPositionManager.sol#L43) | `type(uint256).max` as repay amount |
+| `NotNativeWrappedAsset()` | `0x75996463` | [`INativeTokenGateway.sol:12`](v4-aave/src/position-manager/interfaces/INativeTokenGateway.sol#L12) | reserve underlying ≠ wrapper |
 | `NativeAmountMismatch()` | `0x677606af` | `:15` | `msg.value != amount` |
-| `MaxDataSizeExceeded()` | `0x249148e2` | `KeyValueList.sol:17` | key ≥ 2³²−1 or value ≥ 2²²⁴−1 |
-| `AccessManagerUnlabeledRole(uint64)` | `0xc0a6919f` | `IAccessManagerEnumerable.sol:11` | reading a label that was never set |
+| `MaxDataSizeExceeded()` | `0x249148e2` | [`KeyValueList.sol:17`](v4-aave/src/spoke/libraries/KeyValueList.sol#L17) | key ≥ 2³²−1 or value ≥ 2²²⁴−1 |
+| `AccessManagerUnlabeledRole(uint64)` | `0xc0a6919f` | [`IAccessManagerEnumerable.sol:11`](v4-aave/src/access/interfaces/IAccessManagerEnumerable.sol#L11) | reading a label that was never set |
 | `AccessManagerUnregisteredLabel(string)` | `0x9b0e2ce8` | `:14` | resolving an unknown label |
 | `AccessManagerRoleAlreadyLabeled(uint64)` | `0x98bb4e7f` | `:17` | relabelling a role |
 | `AccessManagerLabelAlreadyUsed(string,uint64)` | `0xf0d37523` | `:20` | label collision |
-| `InvalidConfigEngine()` | `0xa93d7028` | `AaveV4Payload.sol:17` | zero engine address |
-| `InvalidBoolValue(uint256)` | `0xb998bad5` | `EngineFlags.sol:9` | flag neither 0 nor 1 |
-| `InvalidIrDataWithNewStrategy()` | `0x5d3c1bf2` | `HubEngine.sol:20` | partial IR data with a strategy swap |
+| `InvalidConfigEngine()` | `0xa93d7028` | [`AaveV4Payload.sol:17`](v4-aave/src/config-engine/AaveV4Payload.sol#L17) | zero engine address |
+| `InvalidBoolValue(uint256)` | `0xb998bad5` | [`EngineFlags.sol:9`](v4-aave/src/config-engine/libraries/EngineFlags.sol#L9) | flag neither 0 nor 1 |
+| `InvalidIrDataWithNewStrategy()` | `0x5d3c1bf2` | [`HubEngine.sol:20`](v4-aave/src/config-engine/libraries/HubEngine.sol#L20) | partial IR data with a strategy swap |
 | `InvalidTokenizationSpokeConfig()` | `0x59322750` | `:24` | inconsistent vault config in a listing |
-| `InvalidProxyAdminOwner()` | `0x664ccbe0` | `TokenizationSpokeDeployer.sol:14` | zero proxy admin owner |
-| `MissingCreate2Factory()`, `Create2AddressDerivationFailure()`, `FailedCreate2FactoryCall()`, `ContractAlreadyDeployed()` | — | `Create2Utils.sol:13-16` | deployment-time only |
+| `InvalidProxyAdminOwner()` | `0x664ccbe0` | [`TokenizationSpokeDeployer.sol:14`](v4-aave/src/config-engine/libraries/TokenizationSpokeDeployer.sol#L14) | zero proxy admin owner |
+| `MissingCreate2Factory()`, `Create2AddressDerivationFailure()`, `FailedCreate2FactoryCall()`, `ContractAlreadyDeployed()` | — | [`Create2Utils.sol:13-16`](v4-aave/src/deployments/utils/libraries/Create2Utils.sol#L13-L16) | deployment-time only |
 
 **Not custom errors:** every `WadRayMath`, `PercentageMath` and `MathUtils` failure
 is a bare `revert(0,0)` with empty return data. If you see an unexplained empty
@@ -2398,14 +2398,14 @@ each one. An indexer can rebuild the index/rate time series from it alone.
 
 | Event | Declared | Fires from |
 |---|---|---|
-| `UpdateInterestRateData(hub, assetId, optimalUsageRatio, baseDrawnRate, growthBefore, growthAfter)` | `IAssetInterestRateStrategy.sol:29` | `AssetInterestRateStrategy.setInterestRateData:58` |
-| `UpdateReserveSource(reserveId, source)` | `IAaveOracle.sol:13` | `AaveOracle.setReserveSource:50` |
+| `UpdateInterestRateData(hub, assetId, optimalUsageRatio, baseDrawnRate, growthBefore, growthAfter)` | [`IAssetInterestRateStrategy.sol:29`](v4-aave/src/hub/interfaces/IAssetInterestRateStrategy.sol#L29) | `AssetInterestRateStrategy.setInterestRateData:58` |
+| `UpdateReserveSource(reserveId, source)` | [`IAaveOracle.sol:13`](v4-aave/src/spoke/interfaces/IAaveOracle.sol#L13) | `AaveOracle.setReserveSource:50` |
 | `SetSpoke(spoke)` | `:17` | `AaveOracle.setSpoke:40` |
-| `SetTokenizationSpokeImmutables(hub, assetId)` | `ITokenizationSpoke.sol:70` | `TokenizationSpokeInstance.initialize` |
-| `RegisterSpoke(spoke, registered)` | `IPositionManagerBase.sol:13` | `PositionManagerBase.registerSpoke:36` |
-| `SupplyOnBehalfOf(...)`, `RepayOnBehalfOf(...)` | `IGiverPositionManager.sol:17`, `:33` | `GiverPositionManager:36`, `:63` |
-| `WithdrawApproval(...)`, `BorrowApproval(...)`, `WithdrawOnBehalfOf(...)`, `BorrowOnBehalfOf(...)` | `ITakerPositionManager.sol:55`, `:69`, `:84`, `:100` | `TakerPositionManager` |
-| `UpdateConfigPermissions(...)`, `SetUsingAsCollateralOnBehalfOf(...)`, `UpdateUserRiskPremiumOnBehalfOf(...)`, `UpdateUserDynamicConfigOnBehalfOf(...)` | `IConfigPositionManager.sol:92`, `:106`, `:118`, `:128` | `ConfigPositionManager` |
+| `SetTokenizationSpokeImmutables(hub, assetId)` | [`ITokenizationSpoke.sol:70`](v4-aave/src/spoke/interfaces/ITokenizationSpoke.sol#L70) | `TokenizationSpokeInstance.initialize` |
+| `RegisterSpoke(spoke, registered)` | [`IPositionManagerBase.sol:13`](v4-aave/src/position-manager/interfaces/IPositionManagerBase.sol#L13) | `PositionManagerBase.registerSpoke:36` |
+| `SupplyOnBehalfOf(...)`, `RepayOnBehalfOf(...)` | [`IGiverPositionManager.sol:17`](v4-aave/src/position-manager/interfaces/IGiverPositionManager.sol#L17), `:33` | `GiverPositionManager:36`, `:63` |
+| `WithdrawApproval(...)`, `BorrowApproval(...)`, `WithdrawOnBehalfOf(...)`, `BorrowOnBehalfOf(...)` | [`ITakerPositionManager.sol:55`](v4-aave/src/position-manager/interfaces/ITakerPositionManager.sol#L55), `:69`, `:84`, `:100` | `TakerPositionManager` |
+| `UpdateConfigPermissions(...)`, `SetUsingAsCollateralOnBehalfOf(...)`, `UpdateUserRiskPremiumOnBehalfOf(...)`, `UpdateUserDynamicConfigOnBehalfOf(...)` | [`IConfigPositionManager.sol:92`](v4-aave/src/position-manager/interfaces/IConfigPositionManager.sol#L92), `:106`, `:118`, `:128` | `ConfigPositionManager` |
 
 Plus standard ERC-20 `Transfer`/`Approval` and ERC-4626 `Deposit`/`Withdraw` from
 `TokenizationSpoke`, and OZ `AccessManager` events from `AccessManagerEnumerable`.
@@ -2567,7 +2567,7 @@ registry entry against liquidity that already exists.
 ### Set caps, or halt a Spoke in an emergency
 
 Both are the same call, because caps and the kill switches live in one struct
-(`IHub.sol:94-100`):
+([`IHub.sol:94-100`](v4-aave/src/hub/interfaces/IHub.sol#L94-L100)):
 
 ```solidity
 struct SpokeConfig {
@@ -2589,7 +2589,7 @@ checked by `_validateAdd` / `_validateDraw` on the way in. Note the asymmetry:
 halting blocks new `add` and `draw`, but `remove` and `restore` keep working, so
 users can always exit and repay. The Spoke has its own finer-grained switches in
 `ReserveFlagsMap` — `paused`, `frozen`, `borrowable`, `receiveSharesEnabled`
-(`ReserveFlagsMap.sol:10-16`).
+([`ReserveFlagsMap.sol:10-16`](v4-aave/src/spoke/libraries/ReserveFlagsMap.sol#L10-L16)).
 
 ### Set an interest rate strategy
 
@@ -2771,7 +2771,7 @@ Verified absent by grep over `src/` (excluding `dependencies/`): **flash loans**
 **e-mode**, **isolation mode**, **siloed borrowing**, **grace periods**,
 **`rescueTokens`**, **aTokens / variable debt tokens as ERC-20s**, and
 **`liquidityIndex`**. The occurrences of "isolate" in
-`src/spoke/libraries/PositionStatusMap.sol:209-243` are bit-manipulation helpers
+[`src/spoke/libraries/PositionStatusMap.sol:209-243`](v4-aave/src/spoke/libraries/PositionStatusMap.sol#L209-L243) are bit-manipulation helpers
 (`isolateBorrowing`, `isolateCollateral`), unrelated to v3 isolation mode.
 
 New in v4 with no v3 ancestor: the **Hub/Spoke split** itself, **risk premium**
@@ -2825,7 +2825,7 @@ Three things these numbers tell you that the code alone does not:
 
 1. **Cost scales with the number of borrowed reserves, not supplied ones.**
    `withdraw` goes 111k → 221k → 270k as borrows go 0 → 1 → 2, because
-   `_notifyRiskPremiumUpdate` (`Spoke.sol:822`) walks every borrowed reserve
+   `_notifyRiskPremiumUpdate` ([`Spoke.sol:822`](v4-aave/src/spoke/Spoke.sol#L822)) walks every borrowed reserve
    (`:830-843`) and calls `Hub.refreshPremium` on each. Disabling collateral shows
    the same slope: 168k at one borrow, 241k at two.
 2. **Direction is asymmetric.** Enabling collateral is 42k; disabling the same
@@ -2833,7 +2833,7 @@ Three things these numbers tell you that the code alone does not:
 3. **The risk premium is a real tax.** `Spoke.Operations.ZeroRiskPremium.json` runs
    the identical suite with the premium at zero: `borrow: first` drops from 269,297
    to 199,509, about 70k or 26%. The mechanism is the early return at
-   `Spoke.sol:824-826` — when the new premium and the stored one are both zero,
+   [`Spoke.sol:824-826`](v4-aave/src/spoke/Spoke.sol#L824-L826) — when the new premium and the stored one are both zero,
    `_notifyRiskPremiumUpdate` skips the whole per-reserve loop. 70k is therefore the
    standing cost of pricing collateral quality per user.
 
@@ -2872,15 +2872,15 @@ document.
 
 - **Trust runs Spoke → Hub, not both ways.** The Hub does not trust Spokes with
   arbitrary premium claims: `riskPremiumThreshold` in `SpokeConfig`
-  (`IHub.sol:97`) caps the premium-to-drawn ratio a Spoke can report, and premium
+  ([`IHub.sol:97`](v4-aave/src/hub/interfaces/IHub.sol#L97)) caps the premium-to-drawn ratio a Spoke can report, and premium
   edits must conserve value at the instant they are made (§0 claim 2). That cap is
   the main structural defense against a compromised or buggy Spoke.
 - **Spokes are upgradeable, the Hub is not.** A malicious Spoke upgrade can harm
   its own users' positions freely; what it cannot do is exceed its caps or mint
   liquidity it never added. Scope your trust to the Spoke you use.
 - **Share-price manipulation** is blunted by the 1e6 virtual assets/shares offset
-  in `SharesMath.sol:13-14`, the standard ERC-4626 inflation defense, plus
-  round-down on `add` (`Hub.sol:210`) and round-up on `draw` (`:259`), both
+  in [`SharesMath.sol:13-14`](v4-aave/src/hub/libraries/SharesMath.sol#L13-L14), the standard ERC-4626 inflation defense, plus
+  round-down on `add` ([`Hub.sol:210`](v4-aave/src/hub/Hub.sol#L210)) and round-up on `draw` (`:259`), both
   favouring the protocol.
 - **Reinvestment is the weakest link.** `sweep` (`:406`) moves real tokens out to a
   controller while suppliers' claims stay whole, because `swept` remains inside

@@ -27,16 +27,16 @@ so the 3.7 release has not been versioned yet. The *code* is v3.7. Evidence:
 
 | Check | Result | Implication |
 |---|---|---|
-| `src/contracts/instances/PoolInstance.sol:15` | `POOL_REVISION = 11` | 3.7 bumped 10 → 11 |
-| `src/contracts/instances/PoolConfiguratorInstance.sol:12` | `CONFIGURATOR_REVISION = 8` | 3.7 bumped 7 → 8 |
+| [`src/contracts/instances/PoolInstance.sol:15`](aave-v3-origin/src/contracts/instances/PoolInstance.sol#L15) | `POOL_REVISION = 11` | 3.7 bumped 10 → 11 |
+| [`src/contracts/instances/PoolConfiguratorInstance.sol:12`](aave-v3-origin/src/contracts/instances/PoolConfiguratorInstance.sol#L12) | `CONFIGURATOR_REVISION = 8` | 3.7 bumped 7 → 8 |
 | `grep -r priceOracleSentinel src/contracts/protocol` | 0 hits | 3.7 deleted the sentinel |
 | `grep -r IsolationModeLogic` | 0 hits | 3.7 deleted the library |
 | `grep -r EModeLogic` | 0 hits | 3.6 merged it into `SupplyLogic` |
 | `grep -r setDebtCeiling` | 0 hits | 3.7 removed isolation mode |
 | `grep -r dropReserve src/contracts/protocol` | 4 hits, **all in comments** | 3.7 removed it; comments point at `docs/3.7/drop-reserve-removal.md` |
-| `DataTypes.sol:38-39` | `// DEPRECATED on v3.7.0` on `isolationModeTotalDebt` | explicit 3.7 marker |
-| `Errors.sol:88` | `MustNotLeaveDust` present | added in 3.7 |
-| `PercentageMath.sol:94` | `percentDivFloor` present | added in 3.7 |
+| [`DataTypes.sol:38-39`](aave-v3-origin/src/contracts/protocol/libraries/types/DataTypes.sol#L38-L39) | `// DEPRECATED on v3.7.0` on `isolationModeTotalDebt` | explicit 3.7 marker |
+| [`Errors.sol:88`](aave-v3-origin/src/contracts/protocol/libraries/helpers/Errors.sol#L88) | `MustNotLeaveDust` present | added in 3.7 |
+| [`PercentageMath.sol:94`](aave-v3-origin/src/contracts/protocol/libraries/math/PercentageMath.sol#L94) | `percentDivFloor` present | added in 3.7 |
 
 So: **read `docs/3.7/Aave-v3.7-changelog.md` as the changelog for the code you
 are looking at.** Throughout this document, features are tagged with the version
@@ -53,8 +53,8 @@ are all gone. They left permanent artefacts:
 - **Deprecated struct fields** kept as `__deprecated*` placeholders so the
   storage layout of upgradeable contracts never shifts (see §3.1).
 - **Legacy `reserveAddress != address(0)` guards** in four places
-  (`GenericLogic.sol:92`, `LiquidationLogic.sol:652`, `Pool.sol:535`,
-  `PoolLogic.sol:47`) that defend against gaps `dropReserve` could once leave in
+  ([`GenericLogic.sol:92`](aave-v3-origin/src/contracts/protocol/libraries/logic/GenericLogic.sol#L92), [`LiquidationLogic.sol:652`](aave-v3-origin/src/contracts/protocol/libraries/logic/LiquidationLogic.sol#L652), [`Pool.sol:535`](aave-v3-origin/src/contracts/protocol/pool/Pool.sol#L535),
+  [`PoolLogic.sol:47`](aave-v3-origin/src/contracts/protocol/libraries/logic/PoolLogic.sol#L47)) that defend against gaps `dropReserve` could once leave in
   `_reservesList`. They are dead weight now but are cheap and safe.
 
 This "deprecate in place, never re-pack" discipline is the single most important
@@ -280,7 +280,7 @@ functions. It is the vocabulary the whole protocol speaks.
 
 ### 3.1 `ReserveData`
 
-`DataTypes.sol:42-79`. One of these per listed asset, in `Pool`'s `_reserves`
+[`DataTypes.sol:42-79`](aave-v3-origin/src/contracts/protocol/libraries/types/DataTypes.sol#L42-L79). One of these per listed asset, in `Pool`'s `_reserves`
 mapping. **Field order is storage layout** — it can never be reordered, only
 deprecated in place.
 
@@ -311,14 +311,14 @@ decremented only by protocol actions (`ReserveLogic.sol:161,164`), so a donation
 changes nothing. This is Aave's answer to the same donation problem Uniswap
 solves with `MINIMUM_LIQUIDITY`.
 
-**`ReserveDataLegacy`** (`DataTypes.sol:9-40`) is the *old* shape, returned by
+**`ReserveDataLegacy`** ([`DataTypes.sol:9-40`](aave-v3-origin/src/contracts/protocol/libraries/types/DataTypes.sol#L9-L40)) is the *old* shape, returned by
 `Pool.getReserveData` so that pre-3.4 integrations keep compiling. It omits
 `virtualUnderlyingBalance` and still exposes `currentStableBorrowRate` and
 `isolationModeTotalDebt` as zeros. See [§16.9](#169-view-functions).
 
 ### 3.2 `ReserveCache`
 
-`DataTypes.sol:159-173`. A memory struct built once per action by
+[`DataTypes.sol:159-173`](aave-v3-origin/src/contracts/protocol/libraries/types/DataTypes.sol#L159-L173). A memory struct built once per action by
 `ReserveLogic.cache` and threaded through the whole call. It exists purely to
 avoid re-reading storage and re-calling `scaledTotalSupply()`.
 
@@ -339,7 +339,7 @@ the action began, `next` is the value after accrual. `_updateIndexes` writes
 
 ### 3.3 eMode structs
 
-**`EModeCategory`** (`DataTypes.sol:141-151`) — the live struct, in
+**`EModeCategory`** ([`DataTypes.sol:141-151`](aave-v3-origin/src/contracts/protocol/libraries/types/DataTypes.sol#L141-L151)) — the live struct, in
 `_eModeCategories`:
 
 | Field | Type | Meaning |
@@ -395,7 +395,7 @@ Two fields worth flagging:
 - `FlashloanParams.isAuthorizedFlashBorrower` (`:262`) — set from
   `ACLManager.isFlashBorrower`; authorised borrowers pay zero premium.
 - `CalculateInterestRatesParams.unbacked` (`:310`) — despite the name, since
-  **[3.3]** `ReserveLogic` passes `reserve.deficit` here (`ReserveLogic.sol:146`).
+  **[3.3]** `ReserveLogic` passes `reserve.deficit` here ([`ReserveLogic.sol:146`](aave-v3-origin/src/contracts/protocol/libraries/logic/ReserveLogic.sol#L146)).
   The field name is a fossil.
 
 ### 3.5 `ConfiguratorInputTypes`
@@ -494,7 +494,7 @@ integrations that still read it directly, and never read by the protocol.
 `libraries/configuration/UserConfiguration.sol` (194 lines). One `uint256` per
 user, **2 bits per reserve**, indexed by `ReserveData.id`.
 
-> **⚠️ The NatSpec is backwards.** `DataTypes.sol:109-111` says "The first bit
+> **⚠️ The NatSpec is backwards.** [`DataTypes.sol:109-111`](aave-v3-origin/src/contracts/protocol/libraries/types/DataTypes.sol#L109-L111) says "The first bit
 > indicates if an asset is used as collateral, the second whether an asset is
 > borrowed." The code says the opposite:
 > `setBorrowing` uses `bit = 1 << (reserveIndex << 1)` (`:36`) — the **even**
@@ -1102,7 +1102,7 @@ governance has flagged as being offboarded.
    - if **collateral**: `getUserReserveLtv(...) != 0` in the target state
      (`:489-494`). Reverts `InvalidCollateralInEmode(reserve, categoryId)`.
 
-Note both errors carry **parameters** (`Errors.sol:92-93`) — rare in this
+Note both errors carry **parameters** ([`Errors.sol:92-93`](aave-v3-origin/src/contracts/protocol/libraries/helpers/Errors.sol#L92-L93)) — rare in this
 codebase and genuinely useful, because they name the offending reserve.
 
 The check runs symmetrically for entering *and* leaving (including leaving to
@@ -2016,7 +2016,7 @@ borrowers and **does not allow taking on debt** — both to save gas.
 ```
 
 Note the receiver interface differs: `IFlashLoanSimpleReceiver.executeOperation`
-takes scalars, not arrays (`IFlashLoanSimpleReceiver.sol:25-32`).
+takes scalars, not arrays ([`IFlashLoanSimpleReceiver.sol:25-32`](aave-v3-origin/src/contracts/misc/flashloan/interfaces/IFlashLoanSimpleReceiver.sol#L25-L32)).
 
 ### 12.3 `_handleFlashLoanRepayment(reserve, params)` — `:215-252`
 
@@ -2037,7 +2037,7 @@ emit IPool.FlashLoan(...);                                             // :243-2
 
 **The entire premium goes to the treasury** (`:224`) — **[3.4]** removed the
 LP split, which is why `PoolStorage` still carries
-`__DEPRECATED_flashLoanPremiumToProtocol` (`PoolStorage.sol:46`) with the comment
+`__DEPRECATED_flashLoanPremiumToProtocol` ([`PoolStorage.sol:46`](aave-v3-origin/src/contracts/protocol/pool/PoolStorage.sol#L46)) with the comment
 "From v3.4 all flashloan premium is paid to treasury."
 
 `liquidityAdded = amountPlusPremium` (`:232`) restores the virtual balance that
@@ -3400,7 +3400,7 @@ from, and where every event is declared.
 Two conventions to know before reading any of them:
 
 1. **Events are declared in the interface, not the implementation.** `Pool.sol`
-   emits `Supply` but never declares it; the declaration is `IPool.sol:21`. If
+   emits `Supply` but never declares it; the declaration is [`IPool.sol:21`](aave-v3-origin/src/contracts/interfaces/IPool.sol#L21). If
    you are hunting for an event's indexed fields, look here, not in the contract.
 2. **The interface is the compatibility contract.** Because `Pool` and
    `PoolConfigurator` sit behind proxies, the interfaces outlive individual
@@ -3472,7 +3472,7 @@ when no underlying is transferred.
 The indexing trap lives one file over: **a burn transaction can emit a `Mint`
 event** when the amount being burned is smaller than the interest accrued since
 the user's last interaction — the balance went *up* on a "burn". It is spelled
-out at `IAToken.sol:42` and `IVariableDebtToken.sol:36`. Any indexer that
+out at `IAToken.sol:42` and [`IVariableDebtToken.sol:36`](aave-v3-origin/src/contracts/interfaces/IVariableDebtToken.sol#L36). Any indexer that
 assumes burn-means-decrease is wrong.
 
 **`IPriceOracle.sol` vs `IPriceOracleGetter.sol`.** These look redundant and are
@@ -3692,8 +3692,8 @@ upgrade (§19.2). Current revisions in this tree:
 
 | Contract | Constant | Value | File |
 |---|---|---|---|
-| `PoolInstance` | `POOL_REVISION` | `11` | `instances/PoolInstance.sol:15` **[periphery]** |
-| `PoolConfiguratorInstance` | `CONFIGURATOR_REVISION` | `8` | `instances/PoolConfiguratorInstance.sol:12` **[periphery]** |
+| `PoolInstance` | `POOL_REVISION` | `11` | [`instances/PoolInstance.sol:15`](aave-v3-origin/src/contracts/instances/PoolInstance.sol#L15) **[periphery]** |
+| `PoolConfiguratorInstance` | `CONFIGURATOR_REVISION` | `8` | [`instances/PoolConfiguratorInstance.sol:12`](aave-v3-origin/src/contracts/instances/PoolConfiguratorInstance.sol#L12) **[periphery]** |
 
 ### 21.5 Events reference
 
@@ -3707,10 +3707,10 @@ address-book events (§19.2), and `IPoolAddressesProviderRegistry.sol` declares
 
 Token-level events come from `IScaledBalanceToken.sol`: `Mint` (`:18`) and
 `Burn` (`:35`), plus `BalanceTransfer` (`IAToken.sol:21`) and
-`BorrowAllowanceDelegated` (`ICreditDelegationToken.sol:17`).
+`BorrowAllowanceDelegated` ([`ICreditDelegationToken.sol:17`](aave-v3-origin/src/contracts/interfaces/ICreditDelegationToken.sol#L17)).
 
 **The indexing trap, restated:** `IAToken.sol:42` and
-`IVariableDebtToken.sol:36` warn that a burn can emit `Mint` when accrued
+[`IVariableDebtToken.sol:36`](aave-v3-origin/src/contracts/interfaces/IVariableDebtToken.sol#L36) warn that a burn can emit `Mint` when accrued
 interest exceeds the amount burned. Index on the amount fields, never on the
 event name alone.
 
@@ -3841,7 +3841,7 @@ Pool.supply(asset, amount, onBehalfOf, referralCode)          pool/Pool.sol:118
      ├─ IAToken(aToken).mint(msg.sender, onBehalfOf, amount, index)   (§18.3)
      └─ if first supply: set the collateral bit in _usersConfig
 ```
-Emits `Supply` (`IPool.sol:21`) and `ReserveDataUpdated` (`:147`).
+Emits `Supply` ([`IPool.sol:21`](aave-v3-origin/src/contracts/interfaces/IPool.sol#L21)) and `ReserveDataUpdated` (`:147`).
 
 **Supply with an EIP-2612 permit, no prior approval** — `Pool.supplyWithPermit`
 (`:141`). Identical, with `IERC20WithPermit.permit` called first so approve and
@@ -4081,14 +4081,14 @@ v3.7** even though `package.json` still says `3.6.0`.
 
 | Change | Consequence for a reader |
 |---|---|
-| **Isolation mode removed** | `setDebtCeiling`, `setBorrowableInIsolation`, `resetIsolationModeTotalDebt` gone; `isolationModeTotalDebt` marked `// DEPRECATED on v3.7.0` (`DataTypes.sol:38-39`) and returns 0 |
+| **Isolation mode removed** | `setDebtCeiling`, `setBorrowableInIsolation`, `resetIsolationModeTotalDebt` gone; `isolationModeTotalDebt` marked `// DEPRECATED on v3.7.0` ([`DataTypes.sol:38-39`](aave-v3-origin/src/contracts/protocol/libraries/types/DataTypes.sol#L38-L39)) and returns 0 |
 | **Siloed borrowing removed** | `setSiloedBorrowing` gone, validation dropped from `validateBorrow` |
 | **Price oracle sentinel removed** | no sentinel contract exists; the addresses-provider getter/setter survive as dead API (§19.2) |
 | **`dropReserve` removed** | four `reserveAddress != address(0)` guards remain as harmless legacy defence |
 | **Isolated eMode added** | `configureEModeCategoryIsolated` / `getIsEModeCategoryIsolated`; `setEModeCategory` gained a `bool isolated` |
-| **Deterministic liquidation rounding** | `percentMulFloor` / `percentDivFloor` / `percentMulCeil` / `percentDivCeil` used explicitly in `_calculateAvailableCollateralToLiquidate`; `percentDivFloor` added at `PercentageMath.sol:94` |
+| **Deterministic liquidation rounding** | `percentMulFloor` / `percentDivFloor` / `percentMulCeil` / `percentDivCeil` used explicitly in `_calculateAvailableCollateralToLiquidate`; `percentDivFloor` added at [`PercentageMath.sol:94`](aave-v3-origin/src/contracts/protocol/libraries/math/PercentageMath.sol#L94) |
 | **Better `hasNoCollateralLeft`** | now compares scaled-balance consumption instead of base-currency value, preventing stranded debt from ceil rounding |
-| **`MustNotLeaveDust`** | new error at `Errors.sol:88` |
+| **`MustNotLeaveDust`** | new error at [`Errors.sol:88`](aave-v3-origin/src/contracts/protocol/libraries/helpers/Errors.sol#L88) |
 | `ConfiguratorLogic` internalised | no longer deployed separately; `getConfiguratorLogic()` removed |
 | Config engine inlined | no more `delegatecall` into engine libraries |
 | Revisions bumped | `POOL_REVISION` 10 → 11, `CONFIGURATOR_REVISION` 7 → 8 |

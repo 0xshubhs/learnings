@@ -24,13 +24,13 @@ version bump has not happened. Proof, all from this tree:
 
 | Evidence | Location |
 |---|---|
-| `POOL_REVISION = 11` (3.7 bumps 10 → 11) | `src/contracts/instances/PoolInstance.sol:15` |
-| `CONFIGURATOR_REVISION = 8` (3.7 bumps 7 → 8) | `src/contracts/instances/PoolConfiguratorInstance.sol:12` |
-| Config engine libraries called **internally**, not by `delegatecall` | `AaveV3ConfigEngine.sol:77` calls `ListingEngine.executeCustomAssetListing(...)` directly |
-| `EModeCategoryCreation.isolated` / `EModeCategoryUpdate.isolated` exist | `IAaveV3ConfigEngine.sol:200`, `:220` |
-| `setAssetLtvzeroInEMode` wired in the engine | `EModeEngine.sol:109` |
-| `AaveV3MiscProcedure` deploys no `PriceOracleSentinel` | `AaveV3MiscProcedure.sol:9-15` |
-| `AaveV3LibrariesBatch1` deploys `BorrowLogic`, not `ConfiguratorLogic` | `AaveV3LibrariesBatch1.sol:16` |
+| `POOL_REVISION = 11` (3.7 bumps 10 → 11) | [`src/contracts/instances/PoolInstance.sol:15`](aave-v3-origin/src/contracts/instances/PoolInstance.sol#L15) |
+| `CONFIGURATOR_REVISION = 8` (3.7 bumps 7 → 8) | [`src/contracts/instances/PoolConfiguratorInstance.sol:12`](aave-v3-origin/src/contracts/instances/PoolConfiguratorInstance.sol#L12) |
+| Config engine libraries called **internally**, not by `delegatecall` | [`AaveV3ConfigEngine.sol:77`](aave-v3-origin/src/contracts/extensions/v3-config-engine/AaveV3ConfigEngine.sol#L77) calls `ListingEngine.executeCustomAssetListing(...)` directly |
+| `EModeCategoryCreation.isolated` / `EModeCategoryUpdate.isolated` exist | [`IAaveV3ConfigEngine.sol:200`](aave-v3-origin/src/contracts/extensions/v3-config-engine/IAaveV3ConfigEngine.sol#L200), `:220` |
+| `setAssetLtvzeroInEMode` wired in the engine | [`EModeEngine.sol:109`](aave-v3-origin/src/contracts/extensions/v3-config-engine/libraries/EModeEngine.sol#L109) |
+| `AaveV3MiscProcedure` deploys no `PriceOracleSentinel` | [`AaveV3MiscProcedure.sol:9-15`](aave-v3-origin/src/deployments/contracts/procedures/AaveV3MiscProcedure.sol#L9-L15) |
+| `AaveV3LibrariesBatch1` deploys `BorrowLogic`, not `ConfiguratorLogic` | [`AaveV3LibrariesBatch1.sol:16`](aave-v3-origin/src/deployments/projects/aave-v3-libraries/AaveV3LibrariesBatch1.sol#L16) |
 | `docs/3.7/Aave-v3.7-changelog.md` exists and describes exactly this code | `docs/3.7/` |
 
 The full 3.7 delta is in `docs/3.7/Aave-v3.7-changelog.md`; §19 of this document summarises
@@ -334,12 +334,12 @@ AToken.mint / burn / _transfer   (protocol/tokenization)
 Two things worth internalising before the function walk:
 
 1. **`handleAction`'s `msg.sender` *is* the asset.** There is no `asset` parameter
-   (`RewardsController.sol:109-111`). Any contract can call `handleAction` and it will
+   ([`RewardsController.sol:109-111`](aave-v3-origin/src/contracts/rewards/RewardsController.sol#L109-L111)). Any contract can call `handleAction` and it will
    update the distribution keyed on *itself*. That is safe only because a distribution
    for an unconfigured asset has `availableRewardsCount == 0` and `_updateData` returns
-   immediately (`RewardsDistributor.sol:357-359`).
+   immediately ([`RewardsDistributor.sol:357-359`](aave-v3-origin/src/contracts/rewards/RewardsDistributor.sol#L357-L359)).
 2. **Balances are always *scaled*.** The controller reads
-   `getScaledUserBalanceAndSupply` (`RewardsController.sol:197-199`), not `balanceOf`. If
+   `getScaledUserBalanceAndSupply` ([`RewardsController.sol:197-199`](aave-v3-origin/src/contracts/rewards/RewardsController.sol#L197-L199)), not `balanceOf`. If
    it used the rebasing balance, a user's reward share would grow with the liquidity index
    even when they did nothing, and the sum of shares would not be 1.
 
@@ -350,7 +350,7 @@ Two things worth internalising before the function walk:
 The distribution keeps one number per `(asset, reward)`: an **index**, in units of
 "reward tokens per one whole unit of asset, scaled by `assetUnit = 10**assetDecimals`".
 
-`_getAssetIndex` (`RewardsDistributor.sol:489-517`) advances it:
+`_getAssetIndex` ([`RewardsDistributor.sol:489-517`](aave-v3-origin/src/contracts/rewards/RewardsDistributor.sol#L489-L517)) advances it:
 
 ```solidity
 uint256 currentTimestamp = block.timestamp > distributionEnd ? distributionEnd : block.timestamp;
@@ -410,9 +410,9 @@ discarding that sliver of emission. High-decimal assets and infrequent updates m
 negligible; a 6-decimal asset with a huge supply and per-block `handleAction` calls is the
 worst case.
 
-**Overflow guard.** The index is stored in a `uint104` (`RewardsDataTypes.sol:33`).
+**Overflow guard.** The index is stored in a `uint104` ([`RewardsDataTypes.sol:33`](aave-v3-origin/src/contracts/rewards/libraries/RewardsDataTypes.sol#L33)).
 `_updateRewardData` explicitly checks `newIndex <= type(uint104).max` and reverts
-`'INDEX_OVERFLOW'` (`RewardsDistributor.sol:292`) before the downcast. `_updateUserData`
+`'INDEX_OVERFLOW'` ([`RewardsDistributor.sol:292`](aave-v3-origin/src/contracts/rewards/RewardsDistributor.sol#L292)) before the downcast. `_updateUserData`
 does *not* re-check, and says so in a comment (`:326-328`) — the user index can only ever
 be assigned a value that already passed the asset-level check.
 
@@ -428,7 +428,7 @@ no functions.
 | Field | Type | Meaning |
 |---|---|---|
 | `emissionPerSecond` | `uint88` | Reward tokens emitted per second across *all* holders of `asset` |
-| `totalSupply` | `uint256` | Ignored on input — `RewardsController.configureAssets` overwrites it with the live `scaledTotalSupply()` (`RewardsController.sol:81`) |
+| `totalSupply` | `uint256` | Ignored on input — `RewardsController.configureAssets` overwrites it with the live `scaledTotalSupply()` ([`RewardsController.sol:81`](aave-v3-origin/src/contracts/rewards/RewardsController.sol#L81)) |
 | `distributionEnd` | `uint32` | Unix time after which the index stops moving |
 | `asset` | `address` | The incentivized aToken or variable debt token |
 | `reward` | `address` | The ERC20 paid out |
@@ -457,7 +457,7 @@ pack into one 256-bit slot (104 + 88 + 32 + 32 = 256 exactly):
 | `usersData` | `mapping` | — | Second slot |
 
 `lastUpdateTimestamp != 0` is the sentinel for "this distribution exists" — used at
-`RewardsDistributor.sol:193` and `:238`.
+[`RewardsDistributor.sol:193`](aave-v3-origin/src/contracts/rewards/RewardsDistributor.sol#L193) and `:238`.
 
 **`AssetData`** (`:44-53`):
 
@@ -506,7 +506,7 @@ Use `getAssetIndex` for that.
 
 Calls `_getAssetIndex` with the *live* `scaledTotalSupply()` and returns both the stored
 index and what it would become right now. `ERC20AaveLMUpgradeable.getCurrentRewardsIndex`
-(`extensions/stata-token/ERC20AaveLMUpgradeable.sol:119`) consumes the second value; that
+([`extensions/stata-token/ERC20AaveLMUpgradeable.sol:119`](aave-v3-origin/src/contracts/extensions/stata-token/ERC20AaveLMUpgradeable.sol#L119)) consumes the second value; that
 is how the stata token stays in sync without writing.
 
 - **External call:** `IScaledBalanceToken(asset).scaledTotalSupply()`.
@@ -518,7 +518,7 @@ is how the stata token stays in sync without writing.
 `external view` — `:80-88`
 
 Materialises `availableRewards[0..availableRewardsCount)` into memory. `refreshRewardTokens`
-in the stata token calls this (`ERC20AaveLMUpgradeable.sol:88`).
+in the stata token calls this ([`ERC20AaveLMUpgradeable.sol:88`](aave-v3-origin/src/contracts/extensions/stata-token/ERC20AaveLMUpgradeable.sol#L88)).
 
 #### `getRewardsList() → address[]`
 `external view` — `:91-93`. The global reward list. Append-only.
@@ -828,7 +828,7 @@ per-reward, never per-asset.
 
 **Bootstrap ordering.** `_rewardsController` starts as `address(0)` and is set by
 `setRewardsController` *after* the controller proxy exists. The deployment does this in
-`AaveV3SetupProcedure.sol:129-130`, immediately followed by transferring ownership of the
+[`AaveV3SetupProcedure.sol:129-130`](aave-v3-origin/src/deployments/contracts/procedures/AaveV3SetupProcedure.sol#L129-L130), immediately followed by transferring ownership of the
 manager to the pool admin (`:131`).
 
 <a name="16-transfer-strategies"></a>
@@ -928,7 +928,7 @@ collide.
 | `uint256 public constant MAX_OPTIMAL_POINT = 99_00` | 43 | 99% |
 | `mapping(address => InterestRateData) internal _interestRateData` | 46 | underlying → params |
 
-**`struct InterestRateData`** (`interfaces/IDefaultInterestRateStrategyV2.sol:24-29`) —
+**`struct InterestRateData`** ([`interfaces/IDefaultInterestRateStrategyV2.sol:24-29`](aave-v3-origin/src/contracts/interfaces/IDefaultInterestRateStrategyV2.sol#L24-L29)) —
 packs into **one storage slot**, 16 + 32 + 32 + 32 = 112 bits:
 
 | Field | Type | Unit |
@@ -973,7 +973,7 @@ upgrade takes effect immediately. Reverts `Errors.CallerNotPoolConfigurator()`.
 #### `calculateInterestRates(DataTypes.CalculateInterestRatesParams params) → (uint256 liquidityRate, uint256 variableBorrowRate)`
 `external view virtual override` — `:124-170`
 
-**Input struct** (`protocol/libraries/types/DataTypes.sol:309-319`):
+**Input struct** ([`protocol/libraries/types/DataTypes.sol:309-319`](aave-v3-origin/src/contracts/protocol/libraries/types/DataTypes.sol#L309-L319)):
 
 | Field | Meaning |
 |---|---|
@@ -1082,7 +1082,7 @@ Emits `RateDataUpdate(reserve, optimalUsageRatio, baseVariableBorrowRate, slope1
 | `getMaxVariableBorrowRate(address)` | 112-121 | ray, `base + slope1 + slope2` |
 
 `RateEngine` calls `getInterestRateDataBps` when merging `KEEP_CURRENT` values
-(`extensions/v3-config-engine/libraries/RateEngine.sol:46-48`, guarded by the
+([`extensions/v3-config-engine/libraries/RateEngine.sol:46-48`](aave-v3-origin/src/contracts/extensions/v3-config-engine/libraries/RateEngine.sol#L46-L48), guarded by the
 `atLeastOneKeepCurrent` test at `:40-43`).
 
 #### `_rayifyRateData` / `_bpsToRay`
@@ -1144,7 +1144,7 @@ Three branches, in order:
 - **No staleness check.** `latestAnswer()` returns the last answer no matter how old.
   There is no `updatedAt` comparison, no heartbeat check. A frozen Chainlink feed keeps
   serving its last value indefinitely and the protocol will happily liquidate against it.
-  `latestRoundData()` exists on the interface (`dependencies/chainlink/AggregatorInterface.sol:23-32`)
+  `latestRoundData()` exists on the interface ([`dependencies/chainlink/AggregatorInterface.sol:23-32`](aave-v3-origin/src/contracts/dependencies/chainlink/AggregatorInterface.sol#L23-L32))
   and is deliberately not used.
 - **No sanity bounds.** Any positive answer is accepted.
 - **Zero or negative → fallback.** If the fallback is `address(0)`, the call to it reverts
@@ -1172,7 +1172,7 @@ Emits `FallbackOracleUpdated`. No zero check.
 
 **Decimal contract.** Every feed must report in `BASE_CURRENCY_UNIT` decimals. Nothing here
 enforces it — enforcement lives in the config engine, where `PriceFeedEngine` requires
-`decimals() == 8` (`extensions/v3-config-engine/libraries/PriceFeedEngine.sol:27-30`). A
+`decimals() == 8` ([`extensions/v3-config-engine/libraries/PriceFeedEngine.sol:27-30`](aave-v3-origin/src/contracts/extensions/v3-config-engine/libraries/PriceFeedEngine.sol#L27-L30)). A
 feed added by direct `setAssetSources` bypasses that check entirely.
 
 ---
@@ -1541,12 +1541,12 @@ instead of a transaction script.
 **Why delegatecall at the payload→engine boundary.** The engine has no permissions of its
 own. The payload does (governance granted it `POOL_ADMIN`). `delegatecall` makes the
 configurator see `msg.sender == payload`. That is why both `AaveV3ConfigEngine` and
-`AaveV3Payload` carry an all-caps warning that they **must be stateless** (`AaveV3ConfigEngine.sol:15`,
-`AaveV3Payload.sol:11`) — a `delegatecall`ed contract writing storage would write into the
+`AaveV3Payload` carry an all-caps warning that they **must be stateless** ([`AaveV3ConfigEngine.sol:15`](aave-v3-origin/src/contracts/extensions/v3-config-engine/AaveV3ConfigEngine.sol#L15),
+[`AaveV3Payload.sol:11`](aave-v3-origin/src/contracts/extensions/v3-config-engine/AaveV3Payload.sol#L11)) — a `delegatecall`ed contract writing storage would write into the
 *payload's* slots.
 
 **[3.7]** The engine→library boundary is now plain internal library calls
-(`AaveV3ConfigEngine.sol:77` etc.); before 3.7 each engine library was separately deployed
+([`AaveV3ConfigEngine.sol:77`](aave-v3-origin/src/contracts/extensions/v3-config-engine/AaveV3ConfigEngine.sol#L77) etc.); before 3.7 each engine library was separately deployed
 and `delegatecall`ed, and `IAaveV3ConfigEngine` carried an `EngineLibraries` struct and
 per-engine address getters. Both are gone.
 
@@ -1916,7 +1916,7 @@ USD values even when the market's base currency is ETH.
 | `getUserReservesData(provider, user)` | 219-251 | `(UserReserveData[], uint8 eModeId)` |
 | `bytes32ToString(bytes32)` | 253-263 | `public pure`, for MKR's `bytes32` symbol |
 
-**`AggregatedReserveData`** (`interfaces/IUiPoolDataProviderV3.sol:8-55`) — 40 fields,
+**`AggregatedReserveData`** ([`interfaces/IUiPoolDataProviderV3.sol:8-55`](aave-v3-origin/src/contracts/helpers/interfaces/IUiPoolDataProviderV3.sol#L8-L55)) — 40 fields,
 explicitly versioned in the source comments: the base block, then `// v3 only` (`:39`),
 `// v3.1 virtualUnderlyingBalance` (`:51-52`), `// v3.3 deficit` (`:53-54`).
 **[3.7]** `isSiloedBorrowing` and `debtCeiling`/`debtCeilingDecimals` are now hardcoded to
@@ -2391,7 +2391,7 @@ configurator and the rewards controller — `ConfiguratorLogic` instantiates it 
 `src/contracts/misc/EmptyImplementation.sol` (8 lines). `contract EmptyImplementation {}`.
 
 A proxy pointed here accepts calls and does nothing. Used for the **dust bin**
-(`AaveV3TreasuryProcedure.sol:35-42`) — an address that must exist and be upgradeable later
+([`AaveV3TreasuryProcedure.sol:35-42`](aave-v3-origin/src/deployments/contracts/procedures/AaveV3TreasuryProcedure.sol#L35-L42)) — an address that must exist and be upgradeable later
 but has no behaviour today. Introduced in **[3.4]** to separate listing dust from real
 treasury income.
 
@@ -2500,9 +2500,9 @@ else fails. Cheaper than OZ's `SafeERC20` because it never allocates memory thro
 `latestTimestamp()`, `latestRound()`, `getAnswer(uint256)`, `getTimestamp(uint256)`,
 `aggregator()`, plus `AnswerUpdated` (`:46`) and `NewRound` (`:48`).
 
-Aave calls exactly two of these: `latestAnswer()` (`AaveOracle.sol:109`,
-`RewardsController.sol:351`, `PriceFeedEngine.sol:24`) and `decimals()`
-(`PriceFeedEngine.sol:28`). `latestRoundData` — the one that carries `updatedAt` — is
+Aave calls exactly two of these: `latestAnswer()` ([`AaveOracle.sol:109`](aave-v3-origin/src/contracts/misc/AaveOracle.sol#L109),
+[`RewardsController.sol:351`](aave-v3-origin/src/contracts/rewards/RewardsController.sol#L351), [`PriceFeedEngine.sol:24`](aave-v3-origin/src/contracts/extensions/v3-config-engine/libraries/PriceFeedEngine.sol#L24)) and `decimals()`
+([`PriceFeedEngine.sol:28`](aave-v3-origin/src/contracts/extensions/v3-config-engine/libraries/PriceFeedEngine.sol#L28)). `latestRoundData` — the one that carries `updatedAt` — is
 declared and never used, which is the staleness gap noted in §3.
 
 ### `WETH9` — `dependencies/weth/WETH9.sol` (754 lines)
@@ -2610,7 +2610,7 @@ the report structs, `inputs/` (2 files) for per-network configuration, and two
 
 ### 13.3 `AaveV3BatchOrchestration.deployAaveV3` — the whole market in one call
 
-`projects/aave-v3-batched/AaveV3BatchOrchestration.sol:39-132`. A `library`, so it is
+[`projects/aave-v3-batched/AaveV3BatchOrchestration.sol:39-132`](aave-v3-origin/src/deployments/projects/aave-v3-batched/AaveV3BatchOrchestration.sol#L39-L132). A `library`, so it is
 `delegatecall`ed into the deploying script and everything it creates is owned by that script's
 address until ownership is transferred at step 8.
 
@@ -2647,7 +2647,7 @@ The ordering is forced by dependency, and it is worth reading as a dependency gr
 Two ordering facts that are easy to miss:
 
 - **Step 5 deploys a second interest rate strategy.** Step 1 already created one at
-  `AaveV3SetupProcedure.sol:38-40`. Line `:74` then immediately overwrites the step-5 result
+  [`AaveV3SetupProcedure.sol:38-40`](aave-v3-origin/src/deployments/contracts/procedures/AaveV3SetupProcedure.sol#L38-L40). Line `:74` then immediately overwrites the step-5 result
   with the step-1 address: `variables.miscReport.defaultInterestRateStrategy =
   variables.initialReport.interestRateStrategy;`. The `AaveV3MiscBatch` deployment is therefore
   **discarded** — dead gas kept for report-shape compatibility.
@@ -2758,8 +2758,8 @@ two-batch pipeline, in a prior transaction, at **deterministic CREATE2 addresses
 
 | Batch | File | Deploys |
 |---|---|---|
-| `AaveV3LibrariesBatch1` | `projects/aave-v3-libraries/AaveV3LibrariesBatch1.sol:16` | `BorrowLogic` |
-| `AaveV3LibrariesBatch2` | `projects/aave-v3-libraries/AaveV3LibrariesBatch2.sol:20-26` | `FlashLoanLogic`, `LiquidationLogic`, `PoolLogic`, `SupplyLogic` |
+| `AaveV3LibrariesBatch1` | [`projects/aave-v3-libraries/AaveV3LibrariesBatch1.sol:16`](aave-v3-origin/src/deployments/projects/aave-v3-libraries/AaveV3LibrariesBatch1.sol#L16) | `BorrowLogic` |
+| `AaveV3LibrariesBatch2` | [`projects/aave-v3-libraries/AaveV3LibrariesBatch2.sol:20-26`](aave-v3-origin/src/deployments/projects/aave-v3-libraries/AaveV3LibrariesBatch2.sol#L20-L26) | `FlashLoanLogic`, `LiquidationLogic`, `PoolLogic`, `SupplyLogic` |
 
 Both use `salt = keccak256('AAVE_V3_LIBRARIES_BATCH')` and `Create2Utils._create2Deploy`. The
 split is a gas-limit split: `BorrowLogic` alone in batch 1, the other four in batch 2.
@@ -2815,7 +2815,7 @@ The intermediate structs are `InitialReport` (`:131-135`), `SetupReport` (`:137-
 plus `AaveV3GettersProcedureOne.GettersReportBatchOne` and
 `AaveV3GettersProcedureTwo.GettersReportBatchTwo`. `ContractsReport` (`:23-46`) is the same
 data typed as interfaces instead of addresses; `MarketReportUtils.toContractsReport`
-(`contracts/utilities/MarketReportUtils.sol:7`) converts between them for test ergonomics.
+([`contracts/utilities/MarketReportUtils.sol:7`](aave-v3-origin/src/deployments/contracts/utilities/MarketReportUtils.sol#L7)) converts between them for test ergonomics.
 
 ### 13.10 Inputs and configuration
 
@@ -2852,7 +2852,7 @@ address can later be traced back to the exact source that produced it.
 for cases where the contract cannot be imported directly, with broadcast variants at `:23` and
 `:35`, and `getCreate2Address` at `:61`.
 
-`IErrors` (`interfaces/IErrors.sol:5-10`) collects the six deployment reverts:
+`IErrors` ([`interfaces/IErrors.sol:5-10`](aave-v3-origin/src/deployments/interfaces/IErrors.sol#L5-L10)) collects the six deployment reverts:
 `L2MustBeEnabled`, `L2MustBeDisabled`, `ProviderNotFound`, `InterestRateStrategyNotFound`,
 `ProxyAdminNotFound`, `PoolAdminNotFound`.
 
@@ -2923,7 +2923,7 @@ cast sig "getAssetPrice(address)"     # 0xb3596f07
 | `0xf5cf673b` | `setClaimer(address,address)` |
 
 The `configureAssets` tuple is `RewardsDataTypes.RewardsConfigInput`
-(`src/contracts/rewards/libraries/RewardsDataTypes.sol:8-16`): `emissionPerSecond` `uint88`,
+([`src/contracts/rewards/libraries/RewardsDataTypes.sol:8-16`](aave-v3-origin/src/contracts/rewards/libraries/RewardsDataTypes.sol#L8-L16)): `emissionPerSecond` `uint88`,
 `totalSupply` `uint256`, `distributionEnd` `uint32`, `asset`, `reward`, `transferStrategy`,
 `rewardOracle`. The last two are interface types, which ABI-encode as `address`.
 
@@ -3009,7 +3009,7 @@ and calldata can be relayed verbatim.
 calls through the generic `IReserveInterestRateStrategy` interface, and it `abi.decode`s into
 the struct form (`:74-80`). Two different selectors, one behaviour. The `calculateInterestRates`
 tuple is `DataTypes.CalculateInterestRatesParams`
-(`src/contracts/protocol/libraries/types/DataTypes.sol:309-319`); its `usingVirtualBalance`
+([`src/contracts/protocol/libraries/types/DataTypes.sol:309-319`](aave-v3-origin/src/contracts/protocol/libraries/types/DataTypes.sol#L309-L319)); its `usingVirtualBalance`
 `bool` is **deprecated in 3.4 but still in the ABI**, so the selector still carries it.
 
 ### 14.7 The stata-token stack (§4)
@@ -3169,24 +3169,24 @@ Inherits `RewardsDistributor` then `VersionedInitializable`, so the parent's slo
 
 | Slot | Type | Name | Declared |
 |---:|---|---|---|
-| — | `address immutable` | `EMISSION_MANAGER` | `RewardsDistributor.sol:19` (bytecode, not storage) |
-| 0 | `address` | `_emissionManager` | `RewardsDistributor.sol:21` |
-| 1 | `mapping(address => AssetData)` | `_assets` | `RewardsDistributor.sol:24` |
-| 2 | `mapping(address => bool)` | `_isRewardEnabled` | `RewardsDistributor.sol:27` |
-| 3 | `address[]` | `_rewardsList` | `RewardsDistributor.sol:30` |
-| 4 | `address[]` | `_assetsList` | `RewardsDistributor.sol:33` |
-| 5 | `uint256` | `lastInitializedRevision` | `VersionedInitializable.sol:29` |
-| 6 | `bool` | `initializing` | `VersionedInitializable.sol:34` (a `uint256` fills slot 5 completely, so no packing) |
-| 7–56 | `uint256[50]` | `______gap` | `VersionedInitializable.sol:85` |
-| 57 | `mapping(address => address)` | `_authorizedClaimers` | `RewardsController.sol:25` |
-| 58 | `mapping(address => ITransferStrategyBase)` | `_transferStrategy` | `RewardsController.sol:30` |
-| 59 | `mapping(address => AggregatorInterface)` | `_rewardOracle` | `RewardsController.sol:37` |
+| — | `address immutable` | `EMISSION_MANAGER` | [`RewardsDistributor.sol:19`](aave-v3-origin/src/contracts/rewards/RewardsDistributor.sol#L19) (bytecode, not storage) |
+| 0 | `address` | `_emissionManager` | [`RewardsDistributor.sol:21`](aave-v3-origin/src/contracts/rewards/RewardsDistributor.sol#L21) |
+| 1 | `mapping(address => AssetData)` | `_assets` | [`RewardsDistributor.sol:24`](aave-v3-origin/src/contracts/rewards/RewardsDistributor.sol#L24) |
+| 2 | `mapping(address => bool)` | `_isRewardEnabled` | [`RewardsDistributor.sol:27`](aave-v3-origin/src/contracts/rewards/RewardsDistributor.sol#L27) |
+| 3 | `address[]` | `_rewardsList` | [`RewardsDistributor.sol:30`](aave-v3-origin/src/contracts/rewards/RewardsDistributor.sol#L30) |
+| 4 | `address[]` | `_assetsList` | [`RewardsDistributor.sol:33`](aave-v3-origin/src/contracts/rewards/RewardsDistributor.sol#L33) |
+| 5 | `uint256` | `lastInitializedRevision` | [`VersionedInitializable.sol:29`](aave-v3-origin/src/contracts/misc/aave-upgradeability/VersionedInitializable.sol#L29) |
+| 6 | `bool` | `initializing` | [`VersionedInitializable.sol:34`](aave-v3-origin/src/contracts/misc/aave-upgradeability/VersionedInitializable.sol#L34) (a `uint256` fills slot 5 completely, so no packing) |
+| 7–56 | `uint256[50]` | `______gap` | [`VersionedInitializable.sol:85`](aave-v3-origin/src/contracts/misc/aave-upgradeability/VersionedInitializable.sol#L85) |
+| 57 | `mapping(address => address)` | `_authorizedClaimers` | [`RewardsController.sol:25`](aave-v3-origin/src/contracts/rewards/RewardsController.sol#L25) |
+| 58 | `mapping(address => ITransferStrategyBase)` | `_transferStrategy` | [`RewardsController.sol:30`](aave-v3-origin/src/contracts/rewards/RewardsController.sol#L30) |
+| 59 | `mapping(address => AggregatorInterface)` | `_rewardOracle` | [`RewardsController.sol:37`](aave-v3-origin/src/contracts/rewards/RewardsController.sol#L37) |
 
 `_emissionManager` at slot 0 is **vestigial**: `EMISSION_MANAGER` is `immutable` and lives in
 bytecode, so the storage variable is never read. It cannot be removed without shifting every
 slot below it.
 
-`RewardsDataTypes.AssetData` (`RewardsDataTypes.sol:44-53`) contains two mappings plus
+`RewardsDataTypes.AssetData` ([`RewardsDataTypes.sol:44-53`](aave-v3-origin/src/contracts/rewards/libraries/RewardsDataTypes.sol#L44-L53)) contains two mappings plus
 `availableRewardsCount` `uint128` and `decimals` `uint8` — those two pack into one slot of the
 struct, but since `_assets` is a mapping the struct is laid out per-key at
 `keccak256(key . slot)`, not inline.
@@ -3196,9 +3196,9 @@ struct, but since `_assets` is a mapping the struct is laid out per-key at
 | Slot | Type | Name | Declared |
 |---:|---|---|---|
 | 0…N | — | `AccessControlUpgradeable` + `ReentrancyGuardUpgradeable` state | inherited (OZ upgradeable) |
-| next | `uint256[53]` | `______gap` | `Collector.sol:42` |
-| +53 | `uint256` | `_nextStreamId` | `Collector.sol:47` |
-| +54 | `mapping(uint256 => Stream)` | `_streams` | `Collector.sol:52` |
+| next | `uint256[53]` | `______gap` | [`Collector.sol:42`](aave-v3-origin/src/contracts/treasury/Collector.sol#L42) |
+| +53 | `uint256` | `_nextStreamId` | [`Collector.sol:47`](aave-v3-origin/src/contracts/treasury/Collector.sol#L47) |
+| +54 | `mapping(uint256 => Stream)` | `_streams` | [`Collector.sol:52`](aave-v3-origin/src/contracts/treasury/Collector.sol#L52) |
 
 `ETH_MOCK_ADDRESS` (`:30`) and `FUNDS_ADMIN_ROLE` (`:33`) are `constant` — no storage.
 The `[53]` gap is unusually large because this contract is shared across every Aave market and
@@ -3211,8 +3211,8 @@ minefield. Instead each layer keeps its state in a struct at a fixed, isolated s
 
 | Namespace | Slot | Struct | Declared |
 |---|---|---|---|
-| `aave-dao.storage.ERC20AaveLM` | `0x4fad66563f105be0bff96185c9058c4934b504d3ba15ca31e86294f0b01fd200` | `ERC20AaveLMStorage` | `ERC20AaveLMUpgradeable.sol:30-31` |
-| `aave-dao.storage.ERC4626StataToken` | `0x55029d3f54709e547ed74b2fc842d93107ab1490ab7555dd9dd0bf6451101900` | `ERC4626StataTokenStorage` | `ERC4626StataTokenUpgradeable.sol:31-32` |
+| `aave-dao.storage.ERC20AaveLM` | `0x4fad66563f105be0bff96185c9058c4934b504d3ba15ca31e86294f0b01fd200` | `ERC20AaveLMStorage` | [`ERC20AaveLMUpgradeable.sol:30-31`](aave-v3-origin/src/contracts/extensions/stata-token/ERC20AaveLMUpgradeable.sol#L30-L31) |
+| `aave-dao.storage.ERC4626StataToken` | `0x55029d3f54709e547ed74b2fc842d93107ab1490ab7555dd9dd0bf6451101900` | `ERC4626StataTokenStorage` | [`ERC4626StataTokenUpgradeable.sol:31-32`](aave-v3-origin/src/contracts/extensions/stata-token/ERC4626StataTokenUpgradeable.sol#L31-L32) |
 
 Both were **recomputed and confirmed**, not copied:
 
@@ -3226,7 +3226,7 @@ cast keccak "aave-dao.storage.ERC20AaveLM"      # inner
 The low byte is masked to zero so the struct can never begin mid-word, which is what keeps a
 dynamic array or mapping inside the struct from colliding with the next namespace.
 
-`ERC20AaveLMStorage` (`ERC20AaveLMUpgradeable.sol:22-27`), at consecutive offsets from its base slot:
+`ERC20AaveLMStorage` ([`ERC20AaveLMUpgradeable.sol:22-27`](aave-v3-origin/src/contracts/extensions/stata-token/ERC20AaveLMUpgradeable.sol#L22-L27)), at consecutive offsets from its base slot:
 
 | Offset | Type | Name |
 |---:|---|---|
@@ -3235,7 +3235,7 @@ dynamic array or mapping inside the struct from colliding with the next namespac
 | +2 | `mapping(address => RewardIndexCache)` | `_startIndex` |
 | +3 | `mapping(address => mapping(address => UserRewardsData))` | `_userRewardsData` |
 
-`ERC4626StataTokenStorage` (`ERC4626StataTokenUpgradeable.sol:26-28`) holds exactly one field,
+`ERC4626StataTokenStorage` ([`ERC4626StataTokenUpgradeable.sol:26-28`](aave-v3-origin/src/contracts/extensions/stata-token/ERC4626StataTokenUpgradeable.sol#L26-L28)) holds exactly one field,
 `IERC20 _aToken`, at +0.
 
 The OZ layers (`ERC20Upgradeable`, `ERC20PermitUpgradeable`, `PausableUpgradeable`) use their
@@ -3246,7 +3246,7 @@ storage regions and no gaps at all** — adding a field to any layer is safe.
 
 | Slot | Type | Name | Declared |
 |---:|---|---|---|
-| — | `IPool immutable` | `POOL` | `StataTokenFactory.sol:20` |
+| — | `IPool immutable` | `POOL` | [`StataTokenFactory.sol:20`](aave-v3-origin/src/contracts/extensions/stata-token/StataTokenFactory.sol#L20) |
 | — | `address immutable` | `INITIAL_OWNER` | `:23` |
 | — | `ITransparentProxyFactory immutable` | `TRANSPARENT_PROXY_FACTORY` | `:26` |
 | — | `address immutable` | `STATA_TOKEN_IMPL` | `:29` |
@@ -3287,14 +3287,14 @@ are the ones an indexer can filter on without decoding the data blob.
 
 | Event | Parameters | Emitted when |
 |---|---|---|
-| `AssetConfigUpdated` | `asset` **idx**, `reward` **idx**, `oldEmission`, `newEmission`, `oldDistributionEnd`, `newDistributionEnd`, `assetIndex` | `_configureAssets`, `setDistributionEnd`, `setEmissionPerSecond` — any change to an emission curve. Declared `IRewardsDistributor.sol:20-28` |
-| `Accrued` | `asset` **idx**, `reward` **idx**, `user` **idx**, `assetIndex`, `userIndex`, `rewardsAccrued` | `_updateUserData`, every time a user's reward debt is checkpointed. `IRewardsDistributor.sol:39-46` |
-| `RewardsClaimed` | `user` **idx**, `reward` **idx**, `to` **idx**, `claimer`, `amount` | any successful claim. `IRewardsController.sol:30-36` |
+| `AssetConfigUpdated` | `asset` **idx**, `reward` **idx**, `oldEmission`, `newEmission`, `oldDistributionEnd`, `newDistributionEnd`, `assetIndex` | `_configureAssets`, `setDistributionEnd`, `setEmissionPerSecond` — any change to an emission curve. Declared [`IRewardsDistributor.sol:20-28`](aave-v3-origin/src/contracts/rewards/interfaces/IRewardsDistributor.sol#L20-L28) |
+| `Accrued` | `asset` **idx**, `reward` **idx**, `user` **idx**, `assetIndex`, `userIndex`, `rewardsAccrued` | `_updateUserData`, every time a user's reward debt is checkpointed. [`IRewardsDistributor.sol:39-46`](aave-v3-origin/src/contracts/rewards/interfaces/IRewardsDistributor.sol#L39-L46) |
+| `RewardsClaimed` | `user` **idx**, `reward` **idx**, `to` **idx**, `claimer`, `amount` | any successful claim. [`IRewardsController.sol:30-36`](aave-v3-origin/src/contracts/rewards/interfaces/IRewardsController.sol#L30-L36) |
 | `ClaimerSet` | `user` **idx**, `claimer` **idx** | `setClaimer` |
 | `TransferStrategyInstalled` | `reward` **idx**, `transferStrategy` **idx** | `_installTransferStrategy` |
 | `RewardOracleUpdated` | `reward` **idx**, `rewardOracle` **idx** | `_setRewardOracle` |
-| `EmissionAdminUpdated` | `reward` **idx**, `oldAdmin` **idx**, `newAdmin` **idx** | `EmissionManager.setEmissionAdmin`. `IEmissionManager.sol:21-25` |
-| `EmergencyWithdrawal` | `caller` **idx**, `token` **idx**, `to` **idx**, `amount` | `TransferStrategyBase.emergencyWithdrawal`. `ITransferStrategyBase.sol:8-13` |
+| `EmissionAdminUpdated` | `reward` **idx**, `oldAdmin` **idx**, `newAdmin` **idx** | `EmissionManager.setEmissionAdmin`. [`IEmissionManager.sol:21-25`](aave-v3-origin/src/contracts/rewards/interfaces/IEmissionManager.sol#L21-L25) |
+| `EmergencyWithdrawal` | `caller` **idx**, `token` **idx**, `to` **idx**, `amount` | `TransferStrategyBase.emergencyWithdrawal`. [`ITransferStrategyBase.sol:8-13`](aave-v3-origin/src/contracts/rewards/interfaces/ITransferStrategyBase.sol#L8-L13) |
 
 Three indexed address fields on `Accrued` and `RewardsClaimed` is the maximum Solidity allows,
 and it is deliberate: a UI needs to filter by user, by reward, and by destination independently.
@@ -3314,9 +3314,9 @@ Plus the inherited ERC-20 `Transfer` / `Approval` and OZ `Paused` / `Unpaused`.
 
 | Event | Parameters | Emitted when |
 |---|---|---|
-| `CreateStream` | `streamId` **idx**, `sender` **idx**, `recipient` **idx**, `deposit`, `tokenAddress`, `startTime`, `stopTime` | `createStream`. `ICollector.sol:83-91` |
+| `CreateStream` | `streamId` **idx**, `sender` **idx**, `recipient` **idx**, `deposit`, `tokenAddress`, `startTime`, `stopTime` | `createStream`. [`ICollector.sol:83-91`](aave-v3-origin/src/contracts/treasury/ICollector.sol#L83-L91) |
 | `WithdrawFromStream` | `streamId` **idx**, `recipient` **idx**, `amount` | `withdrawFromStream` |
-| `CancelStream` | `streamId` **idx**, `sender` **idx**, `recipient` **idx**, `senderBalance`, `recipientBalance` | `cancelStream`. `ICollector.sol:109-115` |
+| `CancelStream` | `streamId` **idx**, `sender` **idx**, `recipient` **idx**, `senderBalance`, `recipientBalance` | `cancelStream`. [`ICollector.sol:109-115`](aave-v3-origin/src/contracts/treasury/ICollector.sol#L109-L115) |
 
 Note `tokenAddress` is **not** indexed on `CreateStream`, so "all streams of token X" requires
 decoding every log rather than a filtered query.
@@ -3358,41 +3358,41 @@ which one you get tells you roughly when the code was written:
 
 | String | Thrown at | Cause |
 |---|---|---|
-| `ONLY_EMISSION_MANAGER` | `RewardsDistributor.sol:36` | a non-`EMISSION_MANAGER` called a configuration function |
-| `ONLY_EMISSION_ADMIN` | `EmissionManager.sol:26` | caller is not the registered admin for that reward |
-| `CLAIMER_UNAUTHORIZED` | `RewardsController.sol:40` | `claimRewardsOnBehalf` by an address not set via `setClaimer` |
-| `INVALID_TO_ADDRESS` | `RewardsController.sol:120` | claim destination is `address(0)` |
-| `INVALID_USER_ADDRESS` | `RewardsController.sol:132` | `onBehalfOf` is `address(0)` |
-| `TRANSFER_ERROR` | `RewardsController.sol:305` | the transfer strategy returned `false` |
-| `STRATEGY_CAN_NOT_BE_ZERO` | `RewardsController.sol:335` | configuring a reward with no transfer strategy |
-| `STRATEGY_MUST_BE_CONTRACT` | `RewardsController.sol:336` | transfer strategy address has no code |
-| `ORACLE_MUST_RETURN_PRICE` | `RewardsController.sol:351` | reward oracle's `latestAnswer()` is `<= 0` |
-| `DISTRIBUTION_DOES_NOT_EXIST` | `RewardsDistributor.sol:194` | `setEmissionPerSecond` for an unconfigured `(asset, reward)` |
-| `INDEX_OVERFLOW` | `RewardsDistributor.sol:292` | the reward index exceeded `uint104` |
-| `INVALID_INPUT` | `RewardsDistributor.sol:187` | `rewards.length != newEmissionsPerSecond.length` |
-| `REWARD_TOKEN_NOT_STAKE_CONTRACT` | `StakedTokenTransferStrategy.sol:46` | reward is not the configured stake token |
-| `ETH_TRANSFER_FAILED` | `WrappedTokenGatewayV3.sol:160` | the native transfer in `_safeTransferETH` reverted |
-| `INVALID_TOKEN` | `WalletBalanceProvider.sol:41` | balance query on a non-contract, non-ETH address |
-| `MISSING_CREATE2_FACTORY` | `Create2Utils.sol:10` | the Safe singleton factory is not deployed on this chain |
+| `ONLY_EMISSION_MANAGER` | [`RewardsDistributor.sol:36`](aave-v3-origin/src/contracts/rewards/RewardsDistributor.sol#L36) | a non-`EMISSION_MANAGER` called a configuration function |
+| `ONLY_EMISSION_ADMIN` | [`EmissionManager.sol:26`](aave-v3-origin/src/contracts/rewards/EmissionManager.sol#L26) | caller is not the registered admin for that reward |
+| `CLAIMER_UNAUTHORIZED` | [`RewardsController.sol:40`](aave-v3-origin/src/contracts/rewards/RewardsController.sol#L40) | `claimRewardsOnBehalf` by an address not set via `setClaimer` |
+| `INVALID_TO_ADDRESS` | [`RewardsController.sol:120`](aave-v3-origin/src/contracts/rewards/RewardsController.sol#L120) | claim destination is `address(0)` |
+| `INVALID_USER_ADDRESS` | [`RewardsController.sol:132`](aave-v3-origin/src/contracts/rewards/RewardsController.sol#L132) | `onBehalfOf` is `address(0)` |
+| `TRANSFER_ERROR` | [`RewardsController.sol:305`](aave-v3-origin/src/contracts/rewards/RewardsController.sol#L305) | the transfer strategy returned `false` |
+| `STRATEGY_CAN_NOT_BE_ZERO` | [`RewardsController.sol:335`](aave-v3-origin/src/contracts/rewards/RewardsController.sol#L335) | configuring a reward with no transfer strategy |
+| `STRATEGY_MUST_BE_CONTRACT` | [`RewardsController.sol:336`](aave-v3-origin/src/contracts/rewards/RewardsController.sol#L336) | transfer strategy address has no code |
+| `ORACLE_MUST_RETURN_PRICE` | [`RewardsController.sol:351`](aave-v3-origin/src/contracts/rewards/RewardsController.sol#L351) | reward oracle's `latestAnswer()` is `<= 0` |
+| `DISTRIBUTION_DOES_NOT_EXIST` | [`RewardsDistributor.sol:194`](aave-v3-origin/src/contracts/rewards/RewardsDistributor.sol#L194) | `setEmissionPerSecond` for an unconfigured `(asset, reward)` |
+| `INDEX_OVERFLOW` | [`RewardsDistributor.sol:292`](aave-v3-origin/src/contracts/rewards/RewardsDistributor.sol#L292) | the reward index exceeded `uint104` |
+| `INVALID_INPUT` | [`RewardsDistributor.sol:187`](aave-v3-origin/src/contracts/rewards/RewardsDistributor.sol#L187) | `rewards.length != newEmissionsPerSecond.length` |
+| `REWARD_TOKEN_NOT_STAKE_CONTRACT` | [`StakedTokenTransferStrategy.sol:46`](aave-v3-origin/src/contracts/rewards/transfer-strategies/StakedTokenTransferStrategy.sol#L46) | reward is not the configured stake token |
+| `ETH_TRANSFER_FAILED` | [`WrappedTokenGatewayV3.sol:160`](aave-v3-origin/src/contracts/helpers/WrappedTokenGatewayV3.sol#L160) | the native transfer in `_safeTransferETH` reverted |
+| `INVALID_TOKEN` | [`WalletBalanceProvider.sol:41`](aave-v3-origin/src/contracts/helpers/WalletBalanceProvider.sol#L41) | balance query on a non-contract, non-ETH address |
+| `MISSING_CREATE2_FACTORY` | [`Create2Utils.sol:10`](aave-v3-origin/src/deployments/contracts/utilities/Create2Utils.sol#L10) | the Safe singleton factory is not deployed on this chain |
 
 Config engine, all in `src/contracts/extensions/v3-config-engine/`:
 
 | String | Thrown at | Cause |
 |---|---|---|
-| `ONLY_NONZERO_ENGINE_CONSTANTS` | `AaveV3ConfigEngine.sol:42` | a zero address in `EngineConstants` at construction |
-| `ONLY_NONZERO_TOKEN_IMPLS` | `AaveV3ConfigEngine.sol:45` | zero aToken or vToken implementation |
-| `AT_LEAST_ONE_ASSET_REQUIRED` | `AaveV3ConfigEngine.sol:59` | empty `listings` array |
-| `AT_LEAST_ONE_UPDATE_REQUIRED` | `libraries/EModeEngine.sol:21` (and siblings) | empty `updates` array |
-| `INVALID_ASSET` | `libraries/ListingEngine.sol:59` | listing an asset with address zero |
-| `PRICE_FEED_ALWAYS_REQUIRED` | `libraries/PriceFeedEngine.sol:22` | price feed omitted |
-| `FEED_SHOULD_RETURN_POSITIVE_PRICE` | `libraries/PriceFeedEngine.sol:25` | feed's `latestAnswer()` is `<= 0` |
-| `FEED_MUST_USE_8_DECIMALS` | `libraries/PriceFeedEngine.sol:29` | feed decimals are not 8 |
-| `INVALID_RESERVE_FACTOR` | `libraries/BorrowEngine.sol:41` | reserve factor out of range |
-| `INVALID_LIQ_PROTOCOL_FEE` | `libraries/CollateralEngine.sol:83` | `liqProtocolFee >= 100_00` |
-| `INVALID_LT_LB_RATIO` | `libraries/EModeEngine.sol:176` | liquidation threshold and bonus would make liquidation unprofitable or insolvent |
-| `INVALID_LABEL` | `libraries/EModeEngine.sol:34` | empty or over-long e-mode label |
-| `INVALID_UPDATE` | `libraries/EModeEngine.sol:82` | updating an e-mode category that does not exist (`liquidationThreshold == 0`) |
-| `INVALID_CONVERSION_TO_BOOL` | `EngineFlags.sol:26` | a flag that is neither 0 nor 1 |
+| `ONLY_NONZERO_ENGINE_CONSTANTS` | [`AaveV3ConfigEngine.sol:42`](aave-v3-origin/src/contracts/extensions/v3-config-engine/AaveV3ConfigEngine.sol#L42) | a zero address in `EngineConstants` at construction |
+| `ONLY_NONZERO_TOKEN_IMPLS` | [`AaveV3ConfigEngine.sol:45`](aave-v3-origin/src/contracts/extensions/v3-config-engine/AaveV3ConfigEngine.sol#L45) | zero aToken or vToken implementation |
+| `AT_LEAST_ONE_ASSET_REQUIRED` | [`AaveV3ConfigEngine.sol:59`](aave-v3-origin/src/contracts/extensions/v3-config-engine/AaveV3ConfigEngine.sol#L59) | empty `listings` array |
+| `AT_LEAST_ONE_UPDATE_REQUIRED` | [`libraries/EModeEngine.sol:21`](aave-v3-origin/src/contracts/extensions/v3-config-engine/libraries/EModeEngine.sol#L21) (and siblings) | empty `updates` array |
+| `INVALID_ASSET` | [`libraries/ListingEngine.sol:59`](aave-v3-origin/src/contracts/extensions/v3-config-engine/libraries/ListingEngine.sol#L59) | listing an asset with address zero |
+| `PRICE_FEED_ALWAYS_REQUIRED` | [`libraries/PriceFeedEngine.sol:22`](aave-v3-origin/src/contracts/extensions/v3-config-engine/libraries/PriceFeedEngine.sol#L22) | price feed omitted |
+| `FEED_SHOULD_RETURN_POSITIVE_PRICE` | [`libraries/PriceFeedEngine.sol:25`](aave-v3-origin/src/contracts/extensions/v3-config-engine/libraries/PriceFeedEngine.sol#L25) | feed's `latestAnswer()` is `<= 0` |
+| `FEED_MUST_USE_8_DECIMALS` | [`libraries/PriceFeedEngine.sol:29`](aave-v3-origin/src/contracts/extensions/v3-config-engine/libraries/PriceFeedEngine.sol#L29) | feed decimals are not 8 |
+| `INVALID_RESERVE_FACTOR` | [`libraries/BorrowEngine.sol:41`](aave-v3-origin/src/contracts/extensions/v3-config-engine/libraries/BorrowEngine.sol#L41) | reserve factor out of range |
+| `INVALID_LIQ_PROTOCOL_FEE` | [`libraries/CollateralEngine.sol:83`](aave-v3-origin/src/contracts/extensions/v3-config-engine/libraries/CollateralEngine.sol#L83) | `liqProtocolFee >= 100_00` |
+| `INVALID_LT_LB_RATIO` | [`libraries/EModeEngine.sol:176`](aave-v3-origin/src/contracts/extensions/v3-config-engine/libraries/EModeEngine.sol#L176) | liquidation threshold and bonus would make liquidation unprofitable or insolvent |
+| `INVALID_LABEL` | [`libraries/EModeEngine.sol:34`](aave-v3-origin/src/contracts/extensions/v3-config-engine/libraries/EModeEngine.sol#L34) | empty or over-long e-mode label |
+| `INVALID_UPDATE` | [`libraries/EModeEngine.sol:82`](aave-v3-origin/src/contracts/extensions/v3-config-engine/libraries/EModeEngine.sol#L82) | updating an e-mode category that does not exist (`liquidationThreshold == 0`) |
+| `INVALID_CONVERSION_TO_BOOL` | [`EngineFlags.sol:26`](aave-v3-origin/src/contracts/extensions/v3-config-engine/EngineFlags.sol#L26) | a flag that is neither 0 nor 1 |
 
 `EngineFlags.KEEP_CURRENT` is the sentinel that makes partial updates possible; passing it where
 a real value is required is what produces most of these.
@@ -3401,30 +3401,30 @@ a real value is required is what produces most of these.
 
 | Error | Reverted at | Cause |
 |---|---|---|
-| `OnlyPauseGuardian(address caller)` | `StataTokenV2.sol:39` | `setPaused` by an address failing `canPause` |
-| `StaticATokenInvalidZeroShares()` | `ERC4626StataTokenUpgradeable.sol:221` | a deposit that would mint zero shares |
-| `PoolAddressMismatch(address pool)` | `ERC4626StataTokenUpgradeable.sol:64` | initialising against an aToken from a different pool |
-| `NotListedUnderlying(address underlying)` | `StataTokenFactory.sol:56` | creating a wrapper for an asset with no aToken |
-| `RewardNotInitialized(address reward)` | `ERC20AaveLMUpgradeable.sol:235` | reward index requested before registration |
-| `ZeroIncentivesControllerIsForbidden()` | `ERC20AaveLMUpgradeable.sol:43` | constructing the LM layer with a zero controller |
-| `CallerNotIncentivesController()` | `TransferStrategyBase.sol:27` | `performTransfer` called by anyone but the controller |
-| `OnlyRewardsAdmin()` | `TransferStrategyBase.sol:35` | admin-only strategy function called by another address |
-| `InvalidZeroAddress()` | `Collector.sol:203` | transfer to `address(0)` |
-| `OnlyFundsAdmin()` / `OnlyFundsAdminOrRecipient()` | `Collector.sol:61`, `:72` | missing `FUNDS_ADMIN_ROLE` (or not the stream recipient) |
-| `StreamDoesNotExist()` | `Collector.sol:81` | unknown stream id (`isEntity` false) |
-| `InvalidRecipient()` | `Collector.sol:243-244` | stream recipient is the Collector itself or the sender |
-| `InvalidZeroAmount()` | `Collector.sol:245`, `:300` | zero deposit, or zero withdrawal |
-| `InvalidStartTime()` / `InvalidStopTime()` | `Collector.sol:246-247` | start in the past, or stop not after start |
-| `DepositSmallerTimeDelta()` | `Collector.sol:253` | deposit smaller than the duration in seconds, so the per-second rate would be zero |
-| `DepositNotMultipleTimeDelta()` | `Collector.sol:256` | deposit not an exact multiple of the duration, which would leave dust |
-| `BalanceExceeded()` | `Collector.sol:304` | withdrawing more than has vested |
-| `InvalidClaimer(address)` | `ERC20AaveLMUpgradeable.sol:69` | `claimRewardsOnBehalf` on the stata-token by an unapproved caller |
-| `InsufficientBorrowAllowance(address,uint256,uint256)` | declared `interfaces/ICreditDelegationToken.sol:30`, thrown in `protocol/` | credit delegation allowance too low |
-| `NoAvailableEmodeCategory()` | declared `libraries/EModeEngine.sol:15` | all 255 e-mode slots are taken |
-| `RewardsControllerImplementationMustBeSet()` | `AaveV3SetupProcedure.sol:124` | neither controller proxy nor implementation supplied |
+| `OnlyPauseGuardian(address caller)` | [`StataTokenV2.sol:39`](aave-v3-origin/src/contracts/extensions/stata-token/StataTokenV2.sol#L39) | `setPaused` by an address failing `canPause` |
+| `StaticATokenInvalidZeroShares()` | [`ERC4626StataTokenUpgradeable.sol:221`](aave-v3-origin/src/contracts/extensions/stata-token/ERC4626StataTokenUpgradeable.sol#L221) | a deposit that would mint zero shares |
+| `PoolAddressMismatch(address pool)` | [`ERC4626StataTokenUpgradeable.sol:64`](aave-v3-origin/src/contracts/extensions/stata-token/ERC4626StataTokenUpgradeable.sol#L64) | initialising against an aToken from a different pool |
+| `NotListedUnderlying(address underlying)` | [`StataTokenFactory.sol:56`](aave-v3-origin/src/contracts/extensions/stata-token/StataTokenFactory.sol#L56) | creating a wrapper for an asset with no aToken |
+| `RewardNotInitialized(address reward)` | [`ERC20AaveLMUpgradeable.sol:235`](aave-v3-origin/src/contracts/extensions/stata-token/ERC20AaveLMUpgradeable.sol#L235) | reward index requested before registration |
+| `ZeroIncentivesControllerIsForbidden()` | [`ERC20AaveLMUpgradeable.sol:43`](aave-v3-origin/src/contracts/extensions/stata-token/ERC20AaveLMUpgradeable.sol#L43) | constructing the LM layer with a zero controller |
+| `CallerNotIncentivesController()` | [`TransferStrategyBase.sol:27`](aave-v3-origin/src/contracts/rewards/transfer-strategies/TransferStrategyBase.sol#L27) | `performTransfer` called by anyone but the controller |
+| `OnlyRewardsAdmin()` | [`TransferStrategyBase.sol:35`](aave-v3-origin/src/contracts/rewards/transfer-strategies/TransferStrategyBase.sol#L35) | admin-only strategy function called by another address |
+| `InvalidZeroAddress()` | [`Collector.sol:203`](aave-v3-origin/src/contracts/treasury/Collector.sol#L203) | transfer to `address(0)` |
+| `OnlyFundsAdmin()` / `OnlyFundsAdminOrRecipient()` | [`Collector.sol:61`](aave-v3-origin/src/contracts/treasury/Collector.sol#L61), `:72` | missing `FUNDS_ADMIN_ROLE` (or not the stream recipient) |
+| `StreamDoesNotExist()` | [`Collector.sol:81`](aave-v3-origin/src/contracts/treasury/Collector.sol#L81) | unknown stream id (`isEntity` false) |
+| `InvalidRecipient()` | [`Collector.sol:243-244`](aave-v3-origin/src/contracts/treasury/Collector.sol#L243-L244) | stream recipient is the Collector itself or the sender |
+| `InvalidZeroAmount()` | [`Collector.sol:245`](aave-v3-origin/src/contracts/treasury/Collector.sol#L245), `:300` | zero deposit, or zero withdrawal |
+| `InvalidStartTime()` / `InvalidStopTime()` | [`Collector.sol:246-247`](aave-v3-origin/src/contracts/treasury/Collector.sol#L246-L247) | start in the past, or stop not after start |
+| `DepositSmallerTimeDelta()` | [`Collector.sol:253`](aave-v3-origin/src/contracts/treasury/Collector.sol#L253) | deposit smaller than the duration in seconds, so the per-second rate would be zero |
+| `DepositNotMultipleTimeDelta()` | [`Collector.sol:256`](aave-v3-origin/src/contracts/treasury/Collector.sol#L256) | deposit not an exact multiple of the duration, which would leave dust |
+| `BalanceExceeded()` | [`Collector.sol:304`](aave-v3-origin/src/contracts/treasury/Collector.sol#L304) | withdrawing more than has vested |
+| `InvalidClaimer(address)` | [`ERC20AaveLMUpgradeable.sol:69`](aave-v3-origin/src/contracts/extensions/stata-token/ERC20AaveLMUpgradeable.sol#L69) | `claimRewardsOnBehalf` on the stata-token by an unapproved caller |
+| `InsufficientBorrowAllowance(address,uint256,uint256)` | declared [`interfaces/ICreditDelegationToken.sol:30`](aave-v3-origin/src/contracts/interfaces/ICreditDelegationToken.sol#L30), thrown in `protocol/` | credit delegation allowance too low |
+| `NoAvailableEmodeCategory()` | declared [`libraries/EModeEngine.sol:15`](aave-v3-origin/src/contracts/extensions/v3-config-engine/libraries/EModeEngine.sol#L15) | all 255 e-mode slots are taken |
+| `RewardsControllerImplementationMustBeSet()` | [`AaveV3SetupProcedure.sol:124`](aave-v3-origin/src/deployments/contracts/procedures/AaveV3SetupProcedure.sol#L124) | neither controller proxy nor implementation supplied |
 | `L2MustBeEnabled()` / `L2MustBeDisabled()` | pool procedures | `DeployFlags.l2` disagrees with the batch chosen |
-| `MarketOwnerMustBeSet()` | `AaveV3SetupProcedure.sol:207` | `roles.marketOwner` is `address(0)` |
-| `PoolAdminNotFound()` | `AaveV3HelpersProcedureTwo.sol:17` | `poolAdmin` is `address(0)` |
+| `MarketOwnerMustBeSet()` | [`AaveV3SetupProcedure.sol:207`](aave-v3-origin/src/deployments/contracts/procedures/AaveV3SetupProcedure.sol#L207) | `roles.marketOwner` is `address(0)` |
+| `PoolAdminNotFound()` | [`AaveV3HelpersProcedureTwo.sol:17`](aave-v3-origin/src/deployments/contracts/procedures/AaveV3HelpersProcedureTwo.sol#L17) | `poolAdmin` is `address(0)` |
 | `ProviderNotFound()` / `ProxyAdminNotFound()` / `InterestRateStrategyNotFound()` | deployment utilities | a lookup returned nothing |
 
 Reproduce the full list with:

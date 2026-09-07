@@ -88,8 +88,8 @@ affected 0.2.15, 0.2.16 and 0.3.0 only. The LP oracle is a later addition on
 **0.4.3** with the modern `staticcall`/`abi_encode` syntax and a `curve_std`
 import, so it reads differently from everything else here.
 
-Also note `# pragma optimize codesize` on both pools (`CurveStableSwapNG.vy:2`,
-`CurveStableSwapMetaNG.vy:2`) versus `# pragma optimize gas` on the math and
+Also note `# pragma optimize codesize` on both pools ([`CurveStableSwapNG.vy:2`](stableswap-ng/contracts/main/CurveStableSwapNG.vy#L2),
+[`CurveStableSwapMetaNG.vy:2`](stableswap-ng/contracts/main/CurveStableSwapMetaNG.vy#L2)) versus `# pragma optimize gas` on the math and
 gauge. The pools are near the 24 KB contract-size limit, which is the reason the
 math and the views were split into separate contracts at all.
 
@@ -131,7 +131,7 @@ calls because it must also carry the base-pool interaction code and would
 otherwise not fit.
 
 The second: **`views_implementation` is read from the factory on every call**
-(`CurveStableSwapNG.vy:1697`, `:1711`, `:1770`, `:1818`). `get_dy`, `get_dx`,
+([`CurveStableSwapNG.vy:1697`](stableswap-ng/contracts/main/CurveStableSwapNG.vy#L1697), `:1711`, `:1770`, `:1818`). `get_dy`, `get_dx`,
 `calc_token_amount` and `dynamic_fee` on the pool are all thin forwarders. The
 factory admin can therefore swap the entire quoting implementation for every
 pool at once. That is a live upgrade path on an otherwise immutable pool.
@@ -152,7 +152,7 @@ pool at once. That is a live upgrade path on an otherwise immutable pool.
 
 One trap worth flagging immediately: Curve's `Ann` is `A * n`, not `A * n^n`,
 because the historical `A` already absorbs a factor of `n^(n-1)`. This is why
-the LP oracle has to rescale it (`StableSwapNGLPOracle.vy:61-68`), and why
+the LP oracle has to rescale it ([`StableSwapNGLPOracle.vy:61-68`](stableswap-ng/contracts/main/StableSwapNGLPOracle.vy#L61-L68)), and why
 comparing `A` across pools with different coin counts is misleading.
 
 ---
@@ -205,7 +205,7 @@ trade. That factor is the entire product.
 
 ### 1.2 `get_D` — Newton on the invariant
 
-`CurveStableSwapNG.vy:1079-1126` (inlined) and `CurveStableSwapNGMath.vy:90-136`
+[`CurveStableSwapNG.vy:1079-1126`](stableswap-ng/contracts/main/CurveStableSwapNG.vy#L1079-L1126) (inlined) and [`CurveStableSwapNGMath.vy:90-136`](stableswap-ng/contracts/main/CurveStableSwapNGMath.vy#L90-L136)
 (the metapool's copy, parameterised by `_n_coins`).
 
 **Derivation.** Write `S = Σx_i` and `P = Πx_i`. Move everything to one side:
@@ -255,14 +255,14 @@ D = (
   it remains the guaranteed escape hatch.
 - `D_P = D_P * D / x` divides by each balance. If any `xp[i]` is 0 this reverts
   on division by zero. The Math contract spells the consequence out at
-  `CurveStableSwapNGMath.vy:112`: *"If division by 0, this will be borked: only
+  [`CurveStableSwapNGMath.vy:112`](stableswap-ng/contracts/main/CurveStableSwapNGMath.vy#L112): *"If division by 0, this will be borked: only
   withdrawal will work. And that is good"*.
 - Rounding: every step floors. `D` is therefore a slight under-estimate, which
   is the safe direction — LP value is understated, never overstated.
 
 ### 1.3 `get_y` — solving for one balance
 
-`CurveStableSwapNG.vy:1009-1076`, `CurveStableSwapNGMath.vy:18-84`.
+[`CurveStableSwapNG.vy:1009-1076`](stableswap-ng/contracts/main/CurveStableSwapNG.vy#L1009-L1076), [`CurveStableSwapNGMath.vy:18-84`](stableswap-ng/contracts/main/CurveStableSwapNGMath.vy#L18-L84).
 
 Given every balance except `x_j`, and given `D`, find `x_j`. Isolate `y = x_j` in
 the invariant. Let `S' = Σ_{i≠j} x_i` and `P' = Π_{i≠j} x_i`. The invariant
@@ -308,7 +308,7 @@ for _i in range(MAX_COINS_128):
 
 ### 1.4 `get_y_D` — solving for one balance at a reduced D
 
-`CurveStableSwapNG.vy:1130-1184`, `CurveStableSwapNGMath.vy:143-197`.
+[`CurveStableSwapNG.vy:1130-1184`](stableswap-ng/contracts/main/CurveStableSwapNG.vy#L1130-L1184), [`CurveStableSwapNGMath.vy:143-197`](stableswap-ng/contracts/main/CurveStableSwapNGMath.vy#L143-L197).
 
 Identical algebra to `get_y`, but the question is different: *keep every other
 balance fixed, and ask what `x_i` would be if the invariant were `D_new` instead
@@ -331,7 +331,7 @@ the 255 cap — is the same. Note `assert i >= 0` / `assert i < N_COINS_128`
 
 ### 1.5 `_dynamic_fee` — pricing imbalance
 
-`CurveStableSwapNG.vy:887-901`. This is new in NG and is the single biggest
+[`CurveStableSwapNG.vy:887-901`](stableswap-ng/contracts/main/CurveStableSwapNG.vy#L887-L901). This is new in NG and is the single biggest
 behavioural change from the classic pools.
 
 ```vyper
@@ -406,8 +406,8 @@ swapping them.
 
 ### 1.6 `_get_p` — the state price from partial derivatives
 
-`CurveStableSwapNG.vy:1313-1337` (returns a `DynArray`, one price per coin
-relative to coin 0), `CurveStableSwapMetaNG.vy:1371-1387` (returns a single
+[`CurveStableSwapNG.vy:1313-1337`](stableswap-ng/contracts/main/CurveStableSwapNG.vy#L1313-L1337) (returns a `DynArray`, one price per coin
+relative to coin 0), [`CurveStableSwapMetaNG.vy:1371-1387`](stableswap-ng/contracts/main/CurveStableSwapMetaNG.vy#L1371-L1387) (returns a single
 `uint256`, since metapools are always 2 coins).
 
 This is the **state price**, not the last traded price: the marginal exchange
@@ -461,7 +461,7 @@ therefore documented as *"if i = 0, it will return the state price of coin[1]"*.
 
 ### 1.7 `_calc_moving_average` — the keeper-free EMA
 
-`CurveStableSwapNG.vy:1393-1411`.
+[`CurveStableSwapNG.vy:1393-1411`](stableswap-ng/contracts/main/CurveStableSwapNG.vy#L1393-L1411).
 
 ```vyper
 last_spot_value: uint256 = packed_value & (2**128 - 1)
@@ -512,7 +512,7 @@ So 866 is "10-minute half-life". `D_ma_time` defaults to `62324`, which is
 **The spot cap.** `upkeep_oracles` stores `min(spot_price[i], 2 * 10**18)`
 (`:1361`). No single observation above 2.0 can ever enter the accumulator. This
 bounds the oracle's output — the LP oracle's docstring calls this out explicitly
-(`StableSwapNGLPOracle.vy:106-107`).
+([`StableSwapNGLPOracle.vy:106-107`](stableswap-ng/contracts/main/StableSwapNGLPOracle.vy#L106-L107)).
 
 **`exp`.** `:1469-1537` is the Snekmate/Remco Bloemen `wad_exp`, a (6,7)-term
 rational approximation in a 2^96 base. It returns 0 for `x <= -41.446e18` and
@@ -523,7 +523,7 @@ take the spot value".
 
 ### 1.8 `_calc_withdraw_one_coin`
 
-`CurveStableSwapNG.vy:1233-1294`. Returns a 5-tuple
+[`CurveStableSwapNG.vy:1233-1294`](stableswap-ng/contracts/main/CurveStableSwapNG.vy#L1233-L1294). Returns a 5-tuple
 `(dy, dy_fee, xp, amp, D1)` — the last three exist so the caller can feed
 `upkeep_oracles` without recomputing.
 
@@ -554,9 +554,9 @@ back to `upkeep_oracles` reflects the post-withdrawal state.
 
 ### 1.9 `_stored_rates` — the four asset types
 
-`CurveStableSwapNG.vy:433-469`. This is where NG's support for
+[`CurveStableSwapNG.vy:433-469`](stableswap-ng/contracts/main/CurveStableSwapNG.vy#L433-L469). This is where NG's support for
 non-plain tokens lives. It starts from the immutable `rate_multipliers` — set by
-the factory to `10**(36 − decimals)` (`CurveStableSwapFactoryNG.vy:515`) — and
+the factory to `10**(36 − decimals)` ([`CurveStableSwapFactoryNG.vy:515`](stableswap-ng/contracts/main/CurveStableSwapFactoryNG.vy#L515)) — and
 multiplies in a live rate per coin.
 
 **Type 0, Standard.** No branch is taken. `rates[i]` stays `10**(36−d)`, so
@@ -701,7 +701,7 @@ factory and becomes the immutable `factory` (`:287`).
 
 **Checks.** Only one: `assert _ma_exp_time != 0` (`:295`). Everything else —
 fee bounds, decimals ≤ 18, duplicate coins, array lengths — is validated by the
-factory before it deploys (`CurveStableSwapFactoryNG.vy:496-521`). **A pool
+factory before it deploys ([`CurveStableSwapFactoryNG.vy:496-521`](stableswap-ng/contracts/main/CurveStableSwapFactoryNG.vy#L496-L521)). **A pool
 deployed by any other means is unvalidated.**
 
 **State written.** `initial_A = future_A = _A*100`; `fee`; `offpeg_fee_multiplier`;
@@ -1576,7 +1576,7 @@ constants (`MAX_COINS = 8` `:11`, `MAX_COINS_128` `:12`, `A_PRECISION = 100` `:1
 **Why it exists.** The metapool cannot fit its math inline and stay under the
 24 KB EIP-170 limit, so the math is deployed once and shared by every metapool.
 The factory stores it as `math_implementation` (`:91`) and passes it into each
-metapool's constructor (`CurveStableSwapMetaNG.vy:345`). The plain pool does not
+metapool's constructor ([`CurveStableSwapMetaNG.vy:345`](stableswap-ng/contracts/main/CurveStableSwapMetaNG.vy#L345)). The plain pool does not
 use it at all.
 
 | Function | `line` | Signature | Notes |
@@ -1607,7 +1607,7 @@ mainnet deployments listed in comments at `:35-36`.
 `dynamic_fee` are quoting functions used by routers, never by the pool's own
 state transitions. Moving them out buys ~4 KB of pool bytecode, and — more
 importantly — lets the factory admin fix a quoting bug for every deployed pool at
-once by calling `set_views_implementation` (`CurveStableSwapFactoryNG.vy:813`).
+once by calling `set_views_implementation` ([`CurveStableSwapFactoryNG.vy:813`](stableswap-ng/contracts/main/CurveStableSwapFactoryNG.vy#L813)).
 The pool reads `factory.views_implementation()` on every call (`NG:1697` etc.), so
 the swap is live and retroactive.
 
@@ -1839,7 +1839,7 @@ gauge: address = create_from_blueprint(self.gauge_implementation, _pool, code_of
 
 Permissionless — anyone can deploy the gauge for a registered pool. It does not
 add the gauge to the GaugeController; that still needs a DAO vote. Note the
-gauge's constructor sets `manager = tx.origin` (`LiquidityGauge.vy:172`), so
+gauge's constructor sets `manager = tx.origin` ([`LiquidityGauge.vy:172`](stableswap-ng/contracts/main/LiquidityGauge.vy#L172)), so
 **whoever sends the `deploy_gauge` transaction becomes the gauge manager** and
 can add reward tokens.
 
@@ -2026,7 +2026,7 @@ credits the burn accordingly. That re-deposit is why `burn_amount -=` appears on
 864 lines, Vyper 0.3.10, `# pragma optimize gas`.
 `VERSION = "v6.1.0"` (`:93`) with the comment *"updated from v6.0.0 (makes
 rewards semi-permissionless)"*. Deployed per-pool by `deploy_gauge`
-(`CurveStableSwapFactoryNG.vy:694`) via blueprint — the `@dev` at `:9` notes this
+([`CurveStableSwapFactoryNG.vy:694`](stableswap-ng/contracts/main/CurveStableSwapFactoryNG.vy#L694)) via blueprint — the `@dev` at `:9` notes this
 is what differs from v5.
 
 ### 9.1 Hardcoded mainnet addresses — `:105-109`
@@ -2523,8 +2523,8 @@ break against NG plain pools.
 | ProxyAdmin | `execute(address,bytes)` | `0x1cff79cd` |
 
 Two probe selectors used internally: `D_ma_time()` (NG detection,
-`CurveStableSwapMetaNG.vy:341` and `CurveStableSwapNGViews.vy:406`) and
-`dynamic_fee(int128,int128)` (`_has_static_fee`, `CurveStableSwapNGViews.vy:333`).
+[`CurveStableSwapMetaNG.vy:341`](stableswap-ng/contracts/main/CurveStableSwapMetaNG.vy#L341) and [`CurveStableSwapNGViews.vy:406`](stableswap-ng/contracts/main/CurveStableSwapNGViews.vy#L406)) and
+`dynamic_fee(int128,int128)` (`_has_static_fee`, [`CurveStableSwapNGViews.vy:333`](stableswap-ng/contracts/main/CurveStableSwapNGViews.vy#L333)).
 
 ---
 
@@ -3026,7 +3026,7 @@ parameter.
 
 **6. The 2.0 price cap.** `upkeep_oracles` stores `min(spot, 2e18)` (`:1361`).
 For a pool whose true ratio exceeds 2.0 the oracle silently saturates. The LP
-oracle documents the knock-on effect at `StableSwapNGLPOracle.vy:106-107`.
+oracle documents the knock-on effect at [`StableSwapNGLPOracle.vy:106-107`](stableswap-ng/contracts/main/StableSwapNGLPOracle.vy#L106-L107).
 
 **7. `get_virtual_price` and donations.** Its own docstring warns
 (`:1744-1746`). In a non-rebasing pool a donation does not move `D` (donated
@@ -3036,7 +3036,7 @@ tokens are outside `stored_balances`), but in a rebasing pool `_balances()` read
 **8. Read-only reentrancy is fixed here, but not upstream.** `get_virtual_price`,
 `totalSupply`, `price_oracle` and `D_oracle` are all `@view @nonreentrant('lock')`
 (`:1740`, `:1729`, `:1445`, `:1456`). Combined with the factory's ban on native
-ETH (`CurveStableSwapFactoryNG.vy:750`), the classic stETH-pool vector is closed.
+ETH ([`CurveStableSwapFactoryNG.vy:750`](stableswap-ng/contracts/main/CurveStableSwapFactoryNG.vy#L750)), the classic stETH-pool vector is closed.
 **A metapool over a classic base pool inherits the base pool's exposure** —
 `_stored_rates` calls `BASE_POOL.get_virtual_price()` (`:532`), and if that base
 pool is an old ETH pool without the lock, the metapool's rates can be read
@@ -3083,7 +3083,7 @@ safe. Any fork that loosens the lock breaks this function.
 carries `@nonreentrant('lock')`. Metapool: `:1077` does not.
 
 **18. `deploy_gauge` hands managership to `tx.origin`.** The gauge constructor
-sets `manager = tx.origin` (`LiquidityGauge.vy:172`), and the manager can
+sets `manager = tx.origin` ([`LiquidityGauge.vy:172`](stableswap-ng/contracts/main/LiquidityGauge.vy#L172)), and the manager can
 `add_reward` (`:717`) and `set_gauge_manager` (`:665`). Whoever sends the deploy
 transaction — not the factory, not the DAO — controls reward listing.
 

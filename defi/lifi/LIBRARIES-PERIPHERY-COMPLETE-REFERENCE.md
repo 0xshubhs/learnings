@@ -90,12 +90,12 @@ Trivial functions get a compressed form. Nothing is skipped.
 
 **Two conventions that run through the whole codebase:**
 
-- **`address(0)` means native.** `LibAsset.NULL_ADDRESS` (`src/Libraries/LibAsset.sol:23`)
+- **`address(0)` means native.** `LibAsset.NULL_ADDRESS` ([`src/Libraries/LibAsset.sol:23`](contracts/src/Libraries/LibAsset.sol#L23))
   is the asset id for ETH/BNB/AVAX/etc. Every asset-handling function branches on
   `isNativeAsset()`. Note that two *other* native sentinels appear in the tree for
   external-protocol compatibility: `0xEeee…EEeE` in `ReceiverChainflip`
-  (`src/Periphery/ReceiverChainflip.sol:29-30`) and `LiFiDEXAggregator`
-  (`src/Periphery/LiFiDEXAggregator.sol:19`). Do not mix them up.
+  ([`src/Periphery/ReceiverChainflip.sol:29-30`](contracts/src/Periphery/ReceiverChainflip.sol#L29-L30)) and `LiFiDEXAggregator`
+  ([`src/Periphery/LiFiDEXAggregator.sol:19`](contracts/src/Periphery/LiFiDEXAggregator.sol#L19)). Do not mix them up.
 - **Balance-difference accounting.** The protocol almost never trusts a return
   value from an external contract. It reads its own balance before, makes the
   call, reads after, and uses the delta. This is what makes arbitrary-DEX calls
@@ -185,7 +185,7 @@ in a declared state variable.
 
 ### 2.1 `LiFiDiamond.sol`
 
-**Contract** `LiFiDiamond` (`src/LiFiDiamond.sol:13`), Solidity `^0.8.17`,
+**Contract** `LiFiDiamond` ([`src/LiFiDiamond.sol:13`](contracts/src/LiFiDiamond.sol#L13)), Solidity `^0.8.17`,
 version tag `1.0.0`. No inheritance. **No declared state variables** — all state
 is reached through namespaced slots.
 
@@ -247,7 +247,7 @@ refunds). Without it, a bare-value transfer would hit `fallback()` with
 
 ### 2.2 `LibDiamond.sol`
 
-**Library** `LibDiamond` (`src/Libraries/LibDiamond.sol:11`), version `1.0.0`.
+**Library** `LibDiamond` ([`src/Libraries/LibDiamond.sol:11`](contracts/src/Libraries/LibDiamond.sol#L11)), version `1.0.0`.
 
 #### Storage
 
@@ -303,7 +303,7 @@ usual storage-pointer trick: it computes an address, it does not read.
 
 Writes `ds.contractOwner`, emits `OwnershipTransferred(previousOwner, _newOwner)`
 (`:79-82`, `:90`). **No access control of its own** — every caller must gate it.
-Callers: the diamond constructor (`src/LiFiDiamond.sol:15`) and `OwnershipFacet`.
+Callers: the diamond constructor ([`src/LiFiDiamond.sol:15`](contracts/src/LiFiDiamond.sol#L15)) and `OwnershipFacet`.
 
 #### `contractOwner() internal view returns (address)` — `:93`
 Single `SLOAD`.
@@ -423,7 +423,7 @@ an EOA.
 
 ### 2.3 `LibDiamondLoupe.sol`
 
-**Library** (`src/Libraries/LibDiamondLoupe.sol:9`), version `1.0.0`. Exists so a
+**Library** ([`src/Libraries/LibDiamondLoupe.sol:9`](contracts/src/Libraries/LibDiamondLoupe.sol#L9)), version `1.0.0`. Exists so a
 facet can read the loupe **without** an external call back into the diamond.
 Four functions, all `internal view`, all thin reads of `LibDiamond.diamondStorage()`:
 
@@ -456,10 +456,10 @@ ERC-7201 does it; the constant *is* the struct's base slot, and fields sit at
 
 | Namespace string | Slot | Struct | Declared at |
 |---|---|---|---|
-| `diamond.standard.diamond.storage` | `0xc8fcad8db84d3cc18b4c41d551ea0ee66dd599cde068d998e57d5e09332c131c` | `LibDiamond.DiamondStorage` (5 fields) | `src/Libraries/LibDiamond.sol:12` |
-| `com.lifi.library.access.management` | `0xdf05114fe8fad5d7cd2d71c5651effc2a4c21f13ee8b4a462e2a3bd4e140c73e` | `LibAccess.AccessStorage` (1 field) | `src/Libraries/LibAccess.sol:12` |
-| `com.lifi.library.allow.list` | `0x7a8ac5d3b7183f220a0602439da45ea337311d699902d1ed11a3725a714e7f1e` | `LibAllowList.AllowListStorage` (10 fields) | `src/Libraries/LibAllowList.sol:28` |
-| `com.lifi.reentrancyguard` | `0xa65bb2f450488ab0858c00edc14abc5297769bf42adb48cfb77752890e8b697b` | `ReentrancyGuard.ReentrancyStorage` (1 field) | `src/Helpers/ReentrancyGuard.sol:11` |
+| `diamond.standard.diamond.storage` | `0xc8fcad8db84d3cc18b4c41d551ea0ee66dd599cde068d998e57d5e09332c131c` | `LibDiamond.DiamondStorage` (5 fields) | [`src/Libraries/LibDiamond.sol:12`](contracts/src/Libraries/LibDiamond.sol#L12) |
+| `com.lifi.library.access.management` | `0xdf05114fe8fad5d7cd2d71c5651effc2a4c21f13ee8b4a462e2a3bd4e140c73e` | `LibAccess.AccessStorage` (1 field) | [`src/Libraries/LibAccess.sol:12`](contracts/src/Libraries/LibAccess.sol#L12) |
+| `com.lifi.library.allow.list` | `0x7a8ac5d3b7183f220a0602439da45ea337311d699902d1ed11a3725a714e7f1e` | `LibAllowList.AllowListStorage` (10 fields) | [`src/Libraries/LibAllowList.sol:28`](contracts/src/Libraries/LibAllowList.sol#L28) |
+| `com.lifi.reentrancyguard` | `0xa65bb2f450488ab0858c00edc14abc5297769bf42adb48cfb77752890e8b697b` | `ReentrancyGuard.ReentrancyStorage` (1 field) | [`src/Helpers/ReentrancyGuard.sol:11`](contracts/src/Helpers/ReentrancyGuard.sol#L11) |
 
 Reproduce any of these with `cast keccak "com.lifi.library.allow.list"`.
 
@@ -467,7 +467,7 @@ Reproduce any of these with `cast keccak "com.lifi.library.allow.list"`.
 Anything it needs must go through one of these libraries, or a new namespace. The
 `AllowListStorage` struct in particular is **append-only** — its first six fields
 are kept purely for storage-layout compatibility with already-deployed diamonds
-(`src/Libraries/LibAllowList.sol:32-51`), and reordering them would corrupt every
+([`src/Libraries/LibAllowList.sol:32-51`](contracts/src/Libraries/LibAllowList.sol#L32-L51)), and reordering them would corrupt every
 live deployment.
 
 ---
@@ -486,7 +486,7 @@ Neither implies the other.
 
 ### 4.1 `LibAllowList.sol` — what may be called
 
-**Library** (`src/Libraries/LibAllowList.sol:25`), version `2.0.0`. This is the
+**Library** ([`src/Libraries/LibAllowList.sol:25`](contracts/src/Libraries/LibAllowList.sol#L25)), version `2.0.0`. This is the
 single control that makes "call an arbitrary contract with arbitrary calldata"
 safe. Without it, `LibSwap.swap` would be a universal fund drain.
 
@@ -525,7 +525,7 @@ Whitelisting the spender with the sentinel selector `0xffffffff` makes
 `contractIsAllowed(spender)` true — satisfying V1 consumers — **without**
 authorising any call to it in the V2 model, because `0xffffffff` is not a real
 selector any function will ever have. `SwapperV2` enforces exactly this
-(`src/Helpers/SwapperV2.sol:25`, `:209-214`).
+([`src/Helpers/SwapperV2.sol:25`](contracts/src/Helpers/SwapperV2.sol#L25), `:209-214`).
 
 #### `addAllowedContractSelector(address _contract, bytes4 _selector) internal` — `:70`
 
@@ -537,7 +537,7 @@ selector any function will ever have. `SwapperV2` enforces exactly this
      — this is where `InvalidContract()` can fire.
   3. `++selectorReferenceCount[s]`; if it becomes 1, `_addAllowedSelector(s)`.
   4. Push onto `whitelistedSelectorsByContract[c]` and record the 1-based index.
-- **Callers.** `WhitelistManagerFacet.sol:112`.
+- **Callers.** [`WhitelistManagerFacet.sol:112`](contracts/src/Facets/WhitelistManagerFacet.sol#L112).
 - **Gotcha.** Step 2 runs *before* the push in step 4, so the length check is
   correct. Reordering them would break the refcount.
 
@@ -547,16 +547,16 @@ Mirror image. Idempotent (`:114`). Order matters and is commented as such
 (`:119-131`): delete from the source of truth, remove from the iterable list
 **first** so the length is fresh, then drop the contract if the list is now
 empty, then decrement the global refcount and drop the selector if it hits zero.
-Callers: `WhitelistManagerFacet.sol:114`.
+Callers: [`WhitelistManagerFacet.sol:114`](contracts/src/Facets/WhitelistManagerFacet.sol#L114).
 
 #### `contractSelectorIsAllowed(address, bytes4) internal view returns (bool)` — `:140`
 
 **The function that matters at runtime.** One `SLOAD`. Called from
-`SwapperV2.sol:205`, `:211`, `:252`, `:258`, `GenericSwapFacetV3.sol:164`, `:359`,
-`:368`, `:420`, `:431`, and `WhitelistManagerFacet.sol:58`, `:103`.
+[`SwapperV2.sol:205`](contracts/src/Helpers/SwapperV2.sol#L205), `:211`, `:252`, `:258`, [`GenericSwapFacetV3.sol:164`](contracts/src/Facets/GenericSwapFacetV3.sol#L164), `:359`,
+`:368`, `:420`, `:431`, and [`WhitelistManagerFacet.sol:58`](contracts/src/Facets/WhitelistManagerFacet.sol#L58), `:103`.
 
 #### `getWhitelistedSelectorsForContract(address) internal view returns (bytes4[])` — `:151`
-Backend-sync getter. Caller: `WhitelistManagerFacet.sol:65`, `:82`.
+Backend-sync getter. Caller: [`WhitelistManagerFacet.sol:65`](contracts/src/Facets/WhitelistManagerFacet.sol#L65), `:82`.
 
 #### Backward-compatibility reads
 
@@ -564,7 +564,7 @@ Backend-sync getter. Caller: `WhitelistManagerFacet.sol:65`, `:82`.
 |---|---|---|
 | `contractIsAllowed(address)` | `:168` | V1 boolean. **Not granular** — true if *any* selector (or `0xffffffff`) is whitelisted for it |
 | `selectorIsAllowed(bytes4)` | `:179` | V1 boolean, global across all contracts |
-| `getAllowedContracts()` | `:186` | whole `contracts` array; caller `WhitelistManagerFacet.sol:75` |
+| `getAllowedContracts()` | `:186` | whole `contracts` array; caller [`WhitelistManagerFacet.sol:75`](contracts/src/Facets/WhitelistManagerFacet.sol#L75) |
 | `getAllowedSelectors()` | `:192` | whole `selectors` array |
 
 #### Private sync helpers
@@ -590,7 +590,7 @@ diamond's entire token balance to that pair. `transferFrom` on a token, or any
 
 ### 4.2 `LibAccess.sol` — who may call
 
-**Library** (`src/Libraries/LibAccess.sol:10`), version `1.0.0`. 65 lines.
+**Library** ([`src/Libraries/LibAccess.sol:10`](contracts/src/Libraries/LibAccess.sol#L10)), version `1.0.0`. 65 lines.
 
 Storage: `struct AccessStorage { mapping(bytes4 => mapping(address => bool)) execAccess; }`
 (`:16-18`) at the slot in [§3](#3-namespaced-storage-the-slot-table).
@@ -623,7 +623,7 @@ helper called from a differently-named entry point.
 
 ### 5.1 `LibAsset.sol`
 
-**Library** (`src/Libraries/LibAsset.sol:17`), version `2.1.3`. Uses
+**Library** ([`src/Libraries/LibAsset.sol:17`](contracts/src/Libraries/LibAsset.sol#L17)), version `2.1.3`. Uses
 `solady/utils/SafeTransferLib` for every actual movement.
 
 **Constants.**
@@ -652,8 +652,8 @@ return nothing.
 #### `transferFromERC20(address assetId, address from, address recipient, uint256 amount) internal` — `:95`
 Reverts `NullAddrIsNotAnERC20Token()` (`0xd1bebf0c`) if `assetId` is native
 (`:102-104`) and `InvalidReceiver()` on zero recipient, then `safeTransferFrom`.
-Callers include `ERC20Proxy.sol:61`, `FeeForwarder.sol:68`, `Permit2Proxy.sol:114`,
-`Patcher.sol:279`, `OutputValidator.sol:136`.
+Callers include [`ERC20Proxy.sol:61`](contracts/src/Periphery/ERC20Proxy.sol#L61), [`FeeForwarder.sol:68`](contracts/src/Periphery/FeeForwarder.sol#L68), [`Permit2Proxy.sol:114`](contracts/src/Periphery/Permit2Proxy.sol#L114),
+[`Patcher.sol:279`](contracts/src/Periphery/Patcher.sol#L279), [`OutputValidator.sol:136`](contracts/src/Periphery/OutputValidator.sol#L136).
 
 #### `depositAsset(address assetId, uint256 amount) internal` — `:118`
 - `amount == 0` → `InvalidAmount()` (`0x2c5211c6`).
@@ -695,12 +695,12 @@ return size > 23;                                  // :208
 **Not** the usual `size > 0`. An EIP-7702 delegated EOA has exactly 23 bytes of
 code (`0xef0100` + 20-byte address), and must still be treated as an EOA. The
 documented limitation (`:197-198`) is that a self-destructed contract is
-indistinguishable from an EOA. Callers: `LibSwap.sol:53`, `LibAllowList.sol:202`,
-`TokenWrapper.sol:47`, `:53`.
+indistinguishable from an EOA. Callers: [`LibSwap.sol:53`](contracts/src/Libraries/LibSwap.sol#L53), [`LibAllowList.sol:202`](contracts/src/Libraries/LibAllowList.sol#L202),
+[`TokenWrapper.sol:47`](contracts/src/Periphery/TokenWrapper.sol#L47), `:53`.
 
 ### 5.2 `LibSwap.sol`
 
-**Library** (`src/Libraries/LibSwap.sol:14`), version `1.1.0`. 109 lines, one
+**Library** ([`src/Libraries/LibSwap.sol:14`](contracts/src/Libraries/LibSwap.sol#L14)), version `1.1.0`. 109 lines, one
 function — and it is the most powerful primitive in the protocol.
 
 #### `struct SwapData` (`:23-31`)
@@ -750,11 +750,11 @@ rather than a delta. Indexers must not assume this field is always a delta.
 
 **Why this is safe.** Only because every caller checks `LibAllowList` first.
 `swap` itself performs no authorisation. Callers, all three of them:
-`Executor.sol:229`, `SwapperV2.sol:217`, `SwapperV2.sol:264`.
+[`Executor.sol:229`](contracts/src/Periphery/Executor.sol#L229), [`SwapperV2.sol:217`](contracts/src/Helpers/SwapperV2.sol#L217), [`SwapperV2.sol:264`](contracts/src/Helpers/SwapperV2.sol#L264).
 
 ### 5.3 `LibBytes.sol`
 
-**Library** (`src/Libraries/LibBytes.sol:5`), version `1.1.0`.
+**Library** ([`src/Libraries/LibBytes.sol:5`](contracts/src/Libraries/LibBytes.sol#L5)), version `1.1.0`.
 
 Errors: `SliceOverflow()` `0x47aaf07a`, `SliceOutOfBounds()` `0x3b99b53d`,
 `AddressOutOfBounds()` `0x8f95a28a`, `HexLengthInsufficient()` `0x2194895a`,
@@ -770,12 +770,12 @@ Errors: `SliceOverflow()` `0x47aaf07a`, `SliceOutOfBounds()` `0x3b99b53d`,
 | `toAddressUnchecked(bytes32 _value)` | `:150` | Truncating downcast. Only where dropping high bits is intentional |
 
 The checked/unchecked `bytes32 → address` pair was added in v1.1.0 for non-EVM
-address handling. `ReceiverOIF.sol:93-94` carries a TODO to migrate to the
+address handling. [`ReceiverOIF.sol:93-94`](contracts/src/Periphery/ReceiverOIF.sol#L93-L94) carries a TODO to migrate to the
 checked variant.
 
 ### 5.4 `LibUtil.sol`
 
-**Library** (`src/Libraries/LibUtil.sol:8`), version `1.0.0`. Three functions.
+**Library** ([`src/Libraries/LibUtil.sol:8`](contracts/src/Libraries/LibUtil.sol#L8)), version `1.0.0`. Three functions.
 
 - **`getRevertMsg(bytes memory _res) internal pure returns (string memory)` — `:11`.**
   Returns `"Transaction reverted silently"` if `_res.length < 68`, else strips the
@@ -786,12 +786,12 @@ checked variant.
 - **`revertWith(bytes memory data) internal pure` — `:27`.** Assembly
   `revert(dataPtr, dataSize)`, re-throwing captured returndata **verbatim**. This
   is what preserves a DEX's custom error through `LibSwap.swap`. Callers:
-  `LibSwap.sol:90`, `Patcher.sol:357`, `GasZipPeriphery.sol:106`, `Permit2Proxy.sol:109`.
+  [`LibSwap.sol:90`](contracts/src/Libraries/LibSwap.sol#L90), [`Patcher.sol:357`](contracts/src/Periphery/Patcher.sol#L357), [`GasZipPeriphery.sol:106`](contracts/src/Periphery/GasZipPeriphery.sol#L106), [`Permit2Proxy.sol:109`](contracts/src/Periphery/Permit2Proxy.sol#L109).
   Marked `pure` while reverting — legal, and a common idiom.
 
 ### 5.5 `OFTComposeMsgCodec.sol`
 
-**Library** (`src/Libraries/OFTComposeMsgCodec.sol:10`), version `1.0.0`.
+**Library** ([`src/Libraries/OFTComposeMsgCodec.sol:10`](contracts/src/Libraries/OFTComposeMsgCodec.sol#L10)), version `1.0.0`.
 Vendored verbatim from LayerZero v2 with only the pragma changed (`:4-8`).
 
 Byte layout of an OFT compose message:
@@ -816,7 +816,7 @@ Offsets are the private constants at `:12-15`.
 | `composeMsg(bytes calldata)` | `:75` | `[76:]` — the LI.FI payload |
 | `addressToBytes32(address)` / `bytes32ToAddress(bytes32)` | `:86` / `:95` | unchecked casts |
 
-Only `ReceiverStargateV2` uses it (`src/Periphery/ReceiverStargateV2.sol:121`, `:131`).
+Only `ReceiverStargateV2` uses it ([`src/Periphery/ReceiverStargateV2.sol:121`](contracts/src/Periphery/ReceiverStargateV2.sol#L121), `:131`).
 Using `amountLD` from the message rather than a balance read is deliberate: the
 receiver may already hold dust of the same token.
 
@@ -826,7 +826,7 @@ receiver may already hold dust of the same token.
 
 ### 6.1 `SwapperV2.sol`
 
-**Contract** `SwapperV2 is ILiFi` (`src/Helpers/SwapperV2.sol:14`), version
+**Contract** `SwapperV2 is ILiFi` ([`src/Helpers/SwapperV2.sol:14`](contracts/src/Helpers/SwapperV2.sol#L14)), version
 `1.2.0`. Inherited by **32 facets** (`grep -l _depositAndSwap src/Facets/ | wc -l`).
 This is the subtlest contract in the repository and the one most worth reading
 slowly.
@@ -932,7 +932,7 @@ Three things to notice:
 
 ### 6.2 `Validatable.sol`
 
-**Contract** (`src/Helpers/Validatable.sol:13`), version `1.0.0`. Six modifiers,
+**Contract** ([`src/Helpers/Validatable.sol:13`](contracts/src/Helpers/Validatable.sol#L13)), version `1.0.0`. Six modifiers,
 no state. Every bridge facet composes several.
 
 | Modifier | Line | Rejects | Error |
@@ -957,7 +957,7 @@ calldata was rearranged, hence `InformationMismatch()`.
 
 ### 6.3 `ReentrancyGuard.sol`
 
-**Abstract contract** (`src/Helpers/ReentrancyGuard.sol:8`), version `1.0.0`.
+**Abstract contract** ([`src/Helpers/ReentrancyGuard.sol:8`](contracts/src/Helpers/ReentrancyGuard.sol#L8)), version `1.0.0`.
 
 Diamond-storage based rather than a state variable, for the reason given in §2:
 a facet cannot own storage. Namespace `com.lifi.reentrancyguard` → slot
@@ -991,7 +991,7 @@ facets, the first guarded call in a transaction always pays full price.
 
 ### 6.4 `TransferrableOwnership.sol`
 
-**Contract** `TransferrableOwnership is IERC173` (`src/Helpers/TransferrableOwnership.sol:8`),
+**Contract** `TransferrableOwnership is IERC173` ([`src/Helpers/TransferrableOwnership.sol:8`](contracts/src/Helpers/TransferrableOwnership.sol#L8)),
 version `1.0.0`. The periphery's ownership model — note the periphery does **not**
 use `LibDiamond`'s owner, because periphery contracts are standalone.
 
@@ -1018,7 +1018,7 @@ owner must prove control by transacting.
 ### 6.5 `WithdrawablePeriphery.sol`
 
 **Abstract contract** `WithdrawablePeriphery is TransferrableOwnership`
-(`src/Helpers/WithdrawablePeriphery.sol:16`), version `1.0.0`.
+([`src/Helpers/WithdrawablePeriphery.sol:16`](contracts/src/Helpers/WithdrawablePeriphery.sol#L16)), version `1.0.0`.
 
 Event: `TokensWithdrawn(address assetId, address payable receiver, uint256 amount)` (`:19`).
 
@@ -1043,7 +1043,7 @@ deployed bytecode.
 
 ### 6.6 `LiFiData.sol`
 
-**Contract** (`src/Helpers/LiFiData.sol:8`), version `1.0.2`. Pure constants, no
+**Contract** ([`src/Helpers/LiFiData.sol:8`](contracts/src/Helpers/LiFiData.sol#L8)), version `1.0.2`. Pure constants, no
 functions.
 
 ```solidity
@@ -1080,7 +1080,7 @@ Ganache/Hardhat chain id. Harmless in production, confusing in tests.
 
 ### 7.1 `ILiFi.sol` — the protocol's vocabulary
 
-**Interface** (`src/Interfaces/ILiFi.sol:7`), version `1.0.1`. Inherited by
+**Interface** ([`src/Interfaces/ILiFi.sol:7`](contracts/src/Interfaces/ILiFi.sol#L7)), version `1.0.1`. Inherited by
 `SwapperV2`, `Executor`, every Receiver, and every bridge facet. It defines the
 one struct and the events that the entire LI.FI backend indexes on.
 
@@ -1108,7 +1108,7 @@ value in the emitted event is the *actual* amount bridged, not the user's floor.
 | Event | Line | topic0 | Emitted by |
 |---|---|---|---|
 | `LiFiTransferStarted(BridgeData)` | `:25` | `0xcba69f43792f9f399347222505213b55af8e0b0b54b893085c2e27ecbe1644f1` | every bridge facet, source chain |
-| `LiFiTransferCompleted(bytes32 indexed, address, address, uint256, uint256)` | `:27` | `0xb8c86983f929c6b770461983d1bbde1870408120f07123e9c12d49f35a0b4c4b` | `Executor._processSwaps` (`Executor.sol:204`) |
+| `LiFiTransferCompleted(bytes32 indexed, address, address, uint256, uint256)` | `:27` | `0xb8c86983f929c6b770461983d1bbde1870408120f07123e9c12d49f35a0b4c4b` | `Executor._processSwaps` ([`Executor.sol:204`](contracts/src/Periphery/Executor.sol#L204)) |
 | `LiFiTransferRecovered(bytes32 indexed, address, address, uint256, uint256)` | `:35` | `0x1fbfa988fd46deed0de12c94c7b5dcb537d51b804246d0083f245f7a8997d170` | Receivers, when the destination swap failed and raw tokens were forwarded |
 | `LiFiGenericSwapCompleted(bytes32 indexed, string, string, address, address, address, uint256, uint256)` | `:43` | `0x38eee76fd911eabac79da7af16053e809be0e12c8637f156e77e1af309b99537` | `GenericSwapFacetV3` (same-chain swaps) |
 | `BridgeToNonEVMChain(bytes32 indexed, uint256 indexed, bytes)` | `:55` | — | facets bridging to non-EVM, address as `bytes` |
@@ -1265,7 +1265,7 @@ Per-contract errors are listed with each contract, and gathered in [§19](#19-cr
 ## 9. Security: `LiFiTimelockController.sol`
 
 **Contract** `LiFiTimelockController is TimelockController`
-(`src/Security/LiFiTimelockController.sol:20`), version `1.0.1`. Extends
+([`src/Security/LiFiTimelockController.sol:20`](contracts/src/Security/LiFiTimelockController.sol#L20)), version `1.0.1`. Extends
 OpenZeppelin's `TimelockController`.
 
 Also declares `interface EmergencyPause { function unpauseDiamond(address[] calldata _blacklist) external; }`
@@ -1327,7 +1327,7 @@ protection users have against a malicious or compromised upgrade.
 ### 10.1 `Executor.sol`
 
 **Contract** `Executor is ILiFi, ReentrancyGuard, ERC1155Holder, ERC721Holder, WithdrawablePeriphery`
-(`src/Periphery/Executor.sol:20-26`), version `2.1.0`.
+([`src/Periphery/Executor.sol:20-26`](contracts/src/Periphery/Executor.sol#L20-L26)), version `2.1.0`.
 
 This is the destination-chain workhorse: it receives bridged funds and performs
 arbitrary swaps/calls with them. `ERC1155Holder` and `ERC721Holder` are inherited
@@ -1425,7 +1425,7 @@ Required for native output from destination swaps and for WETH unwrapping.
 
 ### 10.2 `ERC20Proxy.sol`
 
-**Contract** `ERC20Proxy is WithdrawablePeriphery` (`src/Periphery/ERC20Proxy.sol:12`),
+**Contract** `ERC20Proxy is WithdrawablePeriphery` ([`src/Periphery/ERC20Proxy.sol:12`](contracts/src/Periphery/ERC20Proxy.sol#L12)),
 version `1.2.0`. 63 lines that carry a lot of weight.
 
 **Why it exists.** Users approve the *proxy*, not the Executor. The Executor is
@@ -1458,7 +1458,7 @@ the name — it takes the token as its first argument.
 **Trust model.** An authorised caller can move *any* token from *any* address that
 has approved this proxy, in any amount. `authorizedCallers` is therefore the most
 security-critical mapping in the periphery. The `Executor` guard at
-`Executor.sol:224` is the other half of that story.
+[`Executor.sol:224`](contracts/src/Periphery/Executor.sol#L224) is the other half of that story.
 
 ---
 
@@ -1497,7 +1497,7 @@ Every one of them decodes the identical payload shape:
 ### 11.1 `ReceiverAcrossV3.sol`
 
 **Contract** `ReceiverAcrossV3 is ILiFi, WithdrawablePeriphery`
-(`src/Periphery/ReceiverAcrossV3.sol:18`), version `1.1.0`.
+([`src/Periphery/ReceiverAcrossV3.sol:18`](contracts/src/Periphery/ReceiverAcrossV3.sol#L18)), version `1.1.0`.
 
 Immutables: `IExecutor public immutable executor` (`:23`), `address public immutable spokepool` (`:25`).
 Modifier `onlySpokepool()` (`:28`) → `UnAuthorized()`.
@@ -1520,7 +1520,7 @@ Carries a `TODO(EXSC-241)` about routing through `LibAsset` for Tron USDT suppor
 
 ### 11.2 `ReceiverAcrossV4.sol`
 
-**Contract** (`src/Periphery/ReceiverAcrossV4.sol:16`), version `1.0.0`.
+**Contract** ([`src/Periphery/ReceiverAcrossV4.sol:16`](contracts/src/Periphery/ReceiverAcrossV4.sol#L16)), version `1.0.0`.
 Functionally the V3 contract with three changes:
 
 1. Immutables renamed to SCREAMING_CASE: `EXECUTOR` (`:20`), `SPOKEPOOL` (`:21`).
@@ -1534,7 +1534,7 @@ The entry point is still called `handleV3AcrossMessage` (`:57`); the comment at
 ### 11.3 `ReceiverStargateV2.sol`
 
 **Contract** `ReceiverStargateV2 is ILiFi, WithdrawablePeriphery, ILayerZeroComposer`
-(`src/Periphery/ReceiverStargateV2.sol:40-44`), version `1.1.0`. The most defensive
+([`src/Periphery/ReceiverStargateV2.sol:40-44`](contracts/src/Periphery/ReceiverStargateV2.sol#L40-L44)), version `1.1.0`. The most defensive
 of the five.
 
 Declares `interface IPool { function token() external view returns (address); }` (`:16-18`)
@@ -1587,7 +1587,7 @@ reserve is in practice slightly larger than requested, which is the safe directi
 
 ### 11.4 `ReceiverChainflip.sol`
 
-**Contract** (`src/Periphery/ReceiverChainflip.sol:16`), version `1.0.1`.
+**Contract** ([`src/Periphery/ReceiverChainflip.sol:16`](contracts/src/Periphery/ReceiverChainflip.sol#L16)), version `1.0.1`.
 
 Immutables `executor` (`:24`), `chainflipVault` (`:27`). Constant
 `CHAINFLIP_NATIVE_ADDRESS = 0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE` (`:29-30`).
@@ -1619,7 +1619,7 @@ Across receivers. Native (`:152-173`): `try` with `value: amount`, catch →
 ### 11.5 `ReceiverOIF.sol`
 
 **Contract** `ReceiverOIF is ILiFi, WithdrawablePeriphery, IOutputCallback`
-(`src/Periphery/ReceiverOIF.sol:31`), version `1.0.0`. Declares
+([`src/Periphery/ReceiverOIF.sol:31`](contracts/src/Periphery/ReceiverOIF.sol#L31)), version `1.0.0`. Declares
 `interface IOutputCallback { function outputFilled(bytes32 token, uint256 amount, bytes calldata executionData) external; }` (`:15-24`).
 
 Immutables `EXECUTOR` (`:33`), `OUTPUT_SETTLER` (`:34`). Modifier
@@ -1672,7 +1672,7 @@ withdrawal, the other is a pass-through that keeps nothing.
 
 ### 12.1 `FeeCollector.sol`
 
-**Contract** `FeeCollector is TransferrableOwnership` (`src/Periphery/FeeCollector.sol:12`),
+**Contract** `FeeCollector is TransferrableOwnership` ([`src/Periphery/FeeCollector.sol:12`](contracts/src/Periphery/FeeCollector.sol#L12)),
 version `1.0.1`. Note it inherits `TransferrableOwnership` **directly**, not
 `WithdrawablePeriphery` — it has its own withdrawal semantics, and an owner-level
 sweep would let LI.FI take integrator balances.
@@ -1716,7 +1716,7 @@ record.
 
 ### 12.2 `FeeForwarder.sol`
 
-**Contract** `FeeForwarder is WithdrawablePeriphery` (`src/Periphery/FeeForwarder.sol:16`),
+**Contract** `FeeForwarder is WithdrawablePeriphery` ([`src/Periphery/FeeForwarder.sol:16`](contracts/src/Periphery/FeeForwarder.sol#L16)),
 version `2.0.0`. The modern replacement: no ledger, no custody.
 
 The contract header (`:11-14`) states the design intent — a normal invocation
@@ -1763,7 +1763,7 @@ array is legal and just emits an event (`:84`).
 
 ### 13.1 `TokenWrapper.sol`
 
-**Contract** `TokenWrapper is WithdrawablePeriphery` (`src/Periphery/TokenWrapper.sol:27`),
+**Contract** `TokenWrapper is WithdrawablePeriphery` ([`src/Periphery/TokenWrapper.sol:27`](contracts/src/Periphery/TokenWrapper.sol#L27)),
 version `1.2.1`. Wraps/unwraps native, optionally through a decimal converter.
 
 Immutables (`:28-32`): `WRAPPED_TOKEN`, `CONVERTER`, `USE_CONVERTER` (private),
@@ -1799,7 +1799,7 @@ ratio rather than measured.
 
 ### 13.2 `LidoWrapper.sol`
 
-**Contract** `LidoWrapper is WithdrawablePeriphery` (`src/Periphery/LidoWrapper.sol:26`),
+**Contract** `LidoWrapper is WithdrawablePeriphery` ([`src/Periphery/LidoWrapper.sol:26`](contracts/src/Periphery/LidoWrapper.sol#L26)),
 version `1.0.0`. This is the reference's main contact with liquid staking, so the
 mechanics are worth stating properly.
 
@@ -1879,7 +1879,7 @@ anyone, since both functions operate on full balances.
 
 ## 14. Periphery: `OutputValidator.sol`
 
-**Contract** `OutputValidator is WithdrawablePeriphery` (`src/Periphery/OutputValidator.sol:20`),
+**Contract** `OutputValidator is WithdrawablePeriphery` ([`src/Periphery/OutputValidator.sol:20`](contracts/src/Periphery/OutputValidator.sol#L20)),
 version `1.0.0`. Skims **positive slippage** — output above what the user was
 quoted — to a validation wallet.
 
@@ -1924,7 +1924,7 @@ not already sent or approved.
 ## 15. Periphery: `GasZipPeriphery.sol`
 
 **Contract** `GasZipPeriphery is ILiFi, WithdrawablePeriphery`
-(`src/Periphery/GasZipPeriphery.sol:18`), version `1.0.2`. Buys destination-chain
+([`src/Periphery/GasZipPeriphery.sol:18`](contracts/src/Periphery/GasZipPeriphery.sol#L18)), version `1.0.2`. Buys destination-chain
 gas via gas.zip, as a route step.
 
 Immutables `GAS_ZIP_ROUTER` (`:22`), `LIFI_DIAMOND` (`:23`); constants
@@ -1957,7 +1957,7 @@ in the DEX calldata, and the cumulative check happens back in
 (`:128-131`), then **sweeps its entire remaining native balance to `msg.sender`**
 (`:135-138`), described at `:133-134` as a backend money-flow requirement.
 
-The receiver is `bytes32` to accommodate Solana. `IGasZip.sol:14-16` warns that
+The receiver is `bytes32` to accommodate Solana. [`IGasZip.sol:14-16`](contracts/src/Interfaces/IGasZip.sol#L14-L16) warns that
 **EVM addresses must be left-aligned** (trailing zeros), not right-aligned — the
 opposite of the usual `bytes32(uint256(uint160(addr)))` padding. Getting this
 wrong sends gas to a wrong address on every destination chain.
@@ -1981,7 +1981,7 @@ slot is always zero.
 
 ## 16. Periphery: `Permit2Proxy.sol`
 
-**Contract** `Permit2Proxy is WithdrawablePeriphery` (`src/Periphery/Permit2Proxy.sol:16`),
+**Contract** `Permit2Proxy is WithdrawablePeriphery` ([`src/Periphery/Permit2Proxy.sol:16`](contracts/src/Periphery/Permit2Proxy.sol#L16)),
 version `1.0.4`. Lets a user authorise a diamond call by **signature** instead of a
 prior `approve` transaction.
 
@@ -2079,7 +2079,7 @@ theoretical.
 
 ## 17. Periphery: `Patcher.sol`
 
-**Contract** `Patcher` (`src/Periphery/Patcher.sol:17`), version `1.0.1`. **No
+**Contract** `Patcher` ([`src/Periphery/Patcher.sol:17`](contracts/src/Periphery/Patcher.sol#L17)), version `1.0.1`. **No
 inheritance, no owner, no access control.**
 
 **The problem it solves.** A route is built off-chain, but some amounts are not
@@ -2176,7 +2176,7 @@ the contract says so.
 ## 18. Periphery: `LiFiDEXAggregator.sol`
 
 **Contract** `LiFiDEXAggregator is WithdrawablePeriphery`
-(`src/Periphery/LiFiDEXAggregator.sol:62`), version `1.12.0`. 1,820 lines — the
+([`src/Periphery/LiFiDEXAggregator.sol:62`](contracts/src/Periphery/LiFiDEXAggregator.sol#L62)), version `1.12.0`. 1,820 lines — the
 largest file in the repository. Forked from Sushi's `RouteProcessor4`
 (`:56-59`) and extended with seven more DEX families.
 
@@ -2581,31 +2581,31 @@ share a single slot — 22 of 32 bytes used.
 
 | Event | Declared | Emitted by | Indexed fields |
 |---|---|---|---|
-| `DiamondCut(FacetCut[],address,bytes)` | `LibDiamond.sol:84` | `LibDiamond.diamondCut:132` | none |
-| `OwnershipTransferred(address,address)` | `LibDiamond.sol:79`, `IERC173.sol:10` | `setContractOwner:90`, `confirmOwnershipTransfer:54` | both |
-| `OwnershipTransferRequested(address,address)` | `TransferrableOwnership.sol:20` | `transferOwnership:40` | both |
-| `AccessGranted(address,bytes4)` | `LibAccess.sol:21` | `addAccess:46` | both |
-| `AccessRevoked(address,bytes4)` | `LibAccess.sol:22` | `removeAccess:55` | both |
-| `AssetSwapped(bytes32,address,address,address,uint256,uint256,uint256)` | `LibSwap.sol:41` | `LibSwap.swap:97` | **none** |
-| `LiFiTransferStarted(BridgeData)` | `ILiFi.sol:25` | every bridge facet | none |
-| `LiFiTransferCompleted(bytes32,address,address,uint256,uint256)` | `ILiFi.sol:27` | `Executor:204` | `transactionId` |
-| `LiFiTransferRecovered(bytes32,address,address,uint256,uint256)` | `ILiFi.sol:35` | `ReceiverAcrossV3:115`, `ReceiverAcrossV4:111`, `ReceiverStargateV2:159/179/204/230`, `ReceiverChainflip:143/165` | `transactionId` |
-| `LiFiGenericSwapCompleted(...)` | `ILiFi.sol:43` | `GenericSwapFacetV3` | `transactionId` |
-| `BridgeToNonEVMChain(bytes32,uint256,bytes)` | `ILiFi.sol:55` | non-EVM bridge facets | both |
-| `BridgeToNonEVMChainBytes32(bytes32,uint256,bytes32)` | `ILiFi.sol:60` | non-EVM bridge facets | both |
-| `TokensWithdrawn(address,address,uint256)` | `WithdrawablePeriphery.sol:19` | `withdrawToken:40` | none |
-| `ERC20ProxySet(address)` | `Executor.sol:33` | constructor `:81` | yes |
-| `AuthorizationChanged(address,bool)` | `ERC20Proxy.sol:17` | constructor `:33`, `setAuthorizedCaller:45` | `caller` |
-| `FeesCollected(address,address,uint256,uint256)` | `FeeCollector.sol:25` | `:63`, `:90` | token, integrator |
-| `FeesWithdrawn(address,address,uint256)` | `FeeCollector.sol:31` | `:107`, `:126` | token, to |
-| `LiFiFeesWithdrawn(address,address,uint256)` | `FeeCollector.sol:36` | `:143`, `:161` | token, to |
-| `FeesForwarded(address,FeeDistribution[])` | `FeeForwarder.sol:32` | `:76`, `:125` | token |
-| `OutputValidated(address,address,uint256)` | `OutputValidator.sol:27` | `:75`, `:89`, `:143` | token, wallet |
-| `PatchExecuted(address,address,uint256,bool,uint256)` | `Patcher.sol:46` | `:97`, `:153`, `:208`, `:247` | caller, finalTarget |
-| `TokensDeposited(address,address,uint256,address)` | `Patcher.sol:59` | `_depositAndApprove:290` | caller, token, finalTarget |
-| `Route(address,address,address,address,uint256,uint256,uint256)` | `LiFiDEXAggregator.sol:68` | `processRouteInternal:262` | from, tokenIn, tokenOut |
-| `DiamondAddressUpdated(address)` | `LiFiTimelockController.sol:26` | `:57`, `:67` | yes |
-| `ContractSelectorWhitelistChanged(address,bytes4,bool)` | `IWhitelistManagerFacet.sol:13` | `WhitelistManagerFacet` | all three |
+| `DiamondCut(FacetCut[],address,bytes)` | [`LibDiamond.sol:84`](contracts/src/Libraries/LibDiamond.sol#L84) | `LibDiamond.diamondCut:132` | none |
+| `OwnershipTransferred(address,address)` | [`LibDiamond.sol:79`](contracts/src/Libraries/LibDiamond.sol#L79), [`IERC173.sol:10`](contracts/src/Interfaces/IERC173.sol#L10) | `setContractOwner:90`, `confirmOwnershipTransfer:54` | both |
+| `OwnershipTransferRequested(address,address)` | [`TransferrableOwnership.sol:20`](contracts/src/Helpers/TransferrableOwnership.sol#L20) | `transferOwnership:40` | both |
+| `AccessGranted(address,bytes4)` | [`LibAccess.sol:21`](contracts/src/Libraries/LibAccess.sol#L21) | `addAccess:46` | both |
+| `AccessRevoked(address,bytes4)` | [`LibAccess.sol:22`](contracts/src/Libraries/LibAccess.sol#L22) | `removeAccess:55` | both |
+| `AssetSwapped(bytes32,address,address,address,uint256,uint256,uint256)` | [`LibSwap.sol:41`](contracts/src/Libraries/LibSwap.sol#L41) | `LibSwap.swap:97` | **none** |
+| `LiFiTransferStarted(BridgeData)` | [`ILiFi.sol:25`](contracts/src/Interfaces/ILiFi.sol#L25) | every bridge facet | none |
+| `LiFiTransferCompleted(bytes32,address,address,uint256,uint256)` | [`ILiFi.sol:27`](contracts/src/Interfaces/ILiFi.sol#L27) | `Executor:204` | `transactionId` |
+| `LiFiTransferRecovered(bytes32,address,address,uint256,uint256)` | [`ILiFi.sol:35`](contracts/src/Interfaces/ILiFi.sol#L35) | `ReceiverAcrossV3:115`, `ReceiverAcrossV4:111`, `ReceiverStargateV2:159/179/204/230`, `ReceiverChainflip:143/165` | `transactionId` |
+| `LiFiGenericSwapCompleted(...)` | [`ILiFi.sol:43`](contracts/src/Interfaces/ILiFi.sol#L43) | `GenericSwapFacetV3` | `transactionId` |
+| `BridgeToNonEVMChain(bytes32,uint256,bytes)` | [`ILiFi.sol:55`](contracts/src/Interfaces/ILiFi.sol#L55) | non-EVM bridge facets | both |
+| `BridgeToNonEVMChainBytes32(bytes32,uint256,bytes32)` | [`ILiFi.sol:60`](contracts/src/Interfaces/ILiFi.sol#L60) | non-EVM bridge facets | both |
+| `TokensWithdrawn(address,address,uint256)` | [`WithdrawablePeriphery.sol:19`](contracts/src/Helpers/WithdrawablePeriphery.sol#L19) | `withdrawToken:40` | none |
+| `ERC20ProxySet(address)` | [`Executor.sol:33`](contracts/src/Periphery/Executor.sol#L33) | constructor `:81` | yes |
+| `AuthorizationChanged(address,bool)` | [`ERC20Proxy.sol:17`](contracts/src/Periphery/ERC20Proxy.sol#L17) | constructor `:33`, `setAuthorizedCaller:45` | `caller` |
+| `FeesCollected(address,address,uint256,uint256)` | [`FeeCollector.sol:25`](contracts/src/Periphery/FeeCollector.sol#L25) | `:63`, `:90` | token, integrator |
+| `FeesWithdrawn(address,address,uint256)` | [`FeeCollector.sol:31`](contracts/src/Periphery/FeeCollector.sol#L31) | `:107`, `:126` | token, to |
+| `LiFiFeesWithdrawn(address,address,uint256)` | [`FeeCollector.sol:36`](contracts/src/Periphery/FeeCollector.sol#L36) | `:143`, `:161` | token, to |
+| `FeesForwarded(address,FeeDistribution[])` | [`FeeForwarder.sol:32`](contracts/src/Periphery/FeeForwarder.sol#L32) | `:76`, `:125` | token |
+| `OutputValidated(address,address,uint256)` | [`OutputValidator.sol:27`](contracts/src/Periphery/OutputValidator.sol#L27) | `:75`, `:89`, `:143` | token, wallet |
+| `PatchExecuted(address,address,uint256,bool,uint256)` | [`Patcher.sol:46`](contracts/src/Periphery/Patcher.sol#L46) | `:97`, `:153`, `:208`, `:247` | caller, finalTarget |
+| `TokensDeposited(address,address,uint256,address)` | [`Patcher.sol:59`](contracts/src/Periphery/Patcher.sol#L59) | `_depositAndApprove:290` | caller, token, finalTarget |
+| `Route(address,address,address,address,uint256,uint256,uint256)` | [`LiFiDEXAggregator.sol:68`](contracts/src/Periphery/LiFiDEXAggregator.sol#L68) | `processRouteInternal:262` | from, tokenIn, tokenOut |
+| `DiamondAddressUpdated(address)` | [`LiFiTimelockController.sol:26`](contracts/src/Security/LiFiTimelockController.sol#L26) | `:57`, `:67` | yes |
+| `ContractSelectorWhitelistChanged(address,bytes4,bool)` | [`IWhitelistManagerFacet.sol:13`](contracts/src/Interfaces/IWhitelistManagerFacet.sol#L13) | `WhitelistManagerFacet` | all three |
 
 ### 19.4 Per-contract error tables
 
@@ -2684,7 +2684,7 @@ delegate into is documented here.
 ### 20.1 Add a facet to the diamond
 
 Entry: `DiamondCutFacet.diamondCut(FacetCut[], address _init, bytes _calldata)`
-(`src/Facets/DiamondCutFacet.sol:18`).
+([`src/Facets/DiamondCutFacet.sol:18`](contracts/src/Facets/DiamondCutFacet.sol#L18)).
 
 ```
 DiamondCutFacet.diamondCut                       Facets/DiamondCutFacet.sol:18
@@ -2712,7 +2712,7 @@ a mixed upgrade needs both actions in one `FacetCut[]`.
 ### 20.2 Allowlist a DEX
 
 Entry: `WhitelistManagerFacet.setContractSelectorWhitelist(address, bytes4, bool)`
-(`src/Facets/WhitelistManagerFacet.sol:18`).
+([`src/Facets/WhitelistManagerFacet.sol:18`](contracts/src/Facets/WhitelistManagerFacet.sol#L18)).
 
 ```
 WhitelistManagerFacet.setContractSelectorWhitelist    Facets/WhitelistManagerFacet.sol:18
@@ -2727,7 +2727,7 @@ WhitelistManagerFacet.setContractSelectorWhitelist    Facets/WhitelistManagerFac
 
 Use `batchSetContractSelectorWhitelist` (`:30`) to list a whole router in one
 transaction. Removal is the same path through
-`removeAllowedContractSelector` (`Libraries/LibAllowList.sol:108`), which also
+`removeAllowedContractSelector` ([`Libraries/LibAllowList.sol:108`](contracts/src/Libraries/LibAllowList.sol#L108)), which also
 walks `_removeSelectorFromIterableList` (`:313`) to keep the enumerable list
 compact.
 
@@ -2740,7 +2740,7 @@ sentinel selector `APPROVE_TO_ONLY_SELECTOR` = `0xffffffff`. See
 ### 20.3 Grant a per-selector permission
 
 Entry: `AccessManagerFacet.setCanExecute(bytes4, address, bool)`
-(`src/Facets/AccessManagerFacet.sol:24`).
+([`src/Facets/AccessManagerFacet.sol:24`](contracts/src/Facets/AccessManagerFacet.sol#L24)).
 
 ```
 AccessManagerFacet.setCanExecute            Facets/AccessManagerFacet.sol:24
@@ -2751,7 +2751,7 @@ AccessManagerFacet.setCanExecute            Facets/AccessManagerFacet.sol:24
 ```
 
 The permission is consumed by `LibAccess.enforceAccessControl()`
-(`Libraries/LibAccess.sol:60`), which a facet calls at the top of a restricted
+([`Libraries/LibAccess.sol:60`](contracts/src/Libraries/LibAccess.sol#L60)), which a facet calls at the top of a restricted
 function. It permits the diamond owner *or* an address explicitly granted that
 selector. This is orthogonal to the allowlist of [§20.2](#202-allowlist-a-dex):
 allowlist answers "what may the diamond call out to", access control answers "who
@@ -2797,7 +2797,7 @@ instead of the requested one.
 ### 20.5 Collect an integrator fee
 
 Entry: `FeeCollector.collectTokenFees(address, uint256, uint256, address)`
-(`src/Periphery/FeeCollector.sol:54`), normally invoked as one `SwapData` step
+([`src/Periphery/FeeCollector.sol:54`](contracts/src/Periphery/FeeCollector.sol#L54)), normally invoked as one `SwapData` step
 inside a route rather than called directly.
 
 ```
@@ -2827,7 +2827,7 @@ model: split and forward immediately instead of accruing a balance.
 
 ### 20.6 Wrap ETH inside a route
 
-Entry: `TokenWrapper.deposit()` (`src/Periphery/TokenWrapper.sol:74`), used as a
+Entry: `TokenWrapper.deposit()` ([`src/Periphery/TokenWrapper.sol:74`](contracts/src/Periphery/TokenWrapper.sol#L74)), used as a
 `SwapData` step so a native-in route can feed an ERC20-only DEX.
 
 ```
@@ -2845,7 +2845,7 @@ transactions — which is exactly why it is a stateless periphery contract.
 ### 20.7 Convert stETH to wstETH (and back)
 
 Entry: `LidoWrapper.wrapStETHToWstETH(uint256)`
-(`src/Periphery/LidoWrapper.sol:67`).
+([`src/Periphery/LidoWrapper.sol:67`](contracts/src/Periphery/LidoWrapper.sol#L67)).
 
 ```
 route step: callTo = LidoWrapper, callData = wrapStETHToWstETH(amount)
@@ -2874,7 +2874,7 @@ the caller's output. See [§21.7](#217-balance-based-periphery-contracts).
 ### 20.8 Sign a Permit2 route (gasless approval)
 
 Entry: `Permit2Proxy.callDiamondWithPermit2Witness(...)`
-(`src/Periphery/Permit2Proxy.sol:168`).
+([`src/Periphery/Permit2Proxy.sol:168`](contracts/src/Periphery/Permit2Proxy.sol#L168)).
 
 ```
 off-chain: user signs a PermitTransferFrom whose witness commits to
@@ -2907,7 +2907,7 @@ for tokens that implement EIP-2612 natively.
 ### 20.9 Patch an amount at execution time
 
 Entry: `Patcher.depositAndExecuteWithDynamicPatches(...)`
-(`src/Periphery/Patcher.sol:128`).
+([`src/Periphery/Patcher.sol:128`](contracts/src/Periphery/Patcher.sol#L128)).
 
 The problem: at signing time you do not know the exact output of an earlier step,
 but the later step's calldata must contain it.
@@ -2944,7 +2944,7 @@ standing between a caller and rewriting an arbitrary word of `data`. See
 ### 20.10 Aggregate one swap across three DEXes
 
 Entry: `LiFiDEXAggregator.processRoute(...)`
-(`src/Periphery/LiFiDEXAggregator.sol:151`).
+([`src/Periphery/LiFiDEXAggregator.sol:151`](contracts/src/Periphery/LiFiDEXAggregator.sol#L151)).
 
 ```
 LiFiDEXAggregator.processRoute(tokenIn, amountIn, tokenOut, amountOutMin, to, route)
@@ -2983,7 +2983,7 @@ instead of an address recomputation.
 ### 20.11 Emergency-pause the diamond
 
 Entry: `EmergencyPauseFacet.pauseDiamond()`
-(`src/Facets/EmergencyPauseFacet.sol:98`), callable by the pauser wallet or the
+([`src/Facets/EmergencyPauseFacet.sol:98`](contracts/src/Facets/EmergencyPauseFacet.sol#L98)), callable by the pauser wallet or the
 owner — deliberately *not* timelocked, because an incident will not wait.
 
 ```
@@ -3011,7 +3011,7 @@ first response.
 Two separate mechanisms, depending on where the funds are stuck.
 
 **In the diamond** — `WithdrawFacet.withdraw(address, address payable, uint256)`
-(`src/Facets/WithdrawFacet.sol:65`):
+([`src/Facets/WithdrawFacet.sol:65`](contracts/src/Facets/WithdrawFacet.sol#L65)):
 
 ```
 WithdrawFacet.withdraw(assetAddress, receiver, amount)   Facets/WithdrawFacet.sol:65
@@ -3025,7 +3025,7 @@ call to liberate them first, for example claiming from a bridge that expects the
 diamond to be the claimant.
 
 **In a periphery contract** — `WithdrawablePeriphery.withdrawToken(address, address payable, uint256)`
-(`src/Helpers/WithdrawablePeriphery.sol:27`), inherited by the Receivers,
+([`src/Helpers/WithdrawablePeriphery.sol:27`](contracts/src/Helpers/WithdrawablePeriphery.sol#L27)), inherited by the Receivers,
 `GasZipPeriphery`, `Permit2Proxy` and others:
 
 ```
@@ -3050,7 +3050,7 @@ with user-supplied calldata, by design**. Everything below follows from that.
 
 ### 21.1 The allowlist is the load-bearing control, and it is not in `LibSwap`
 
-`LibSwap.swap` (`src/Libraries/LibSwap.sol:51`) performs the raw call:
+`LibSwap.swap` ([`src/Libraries/LibSwap.sol:51`](contracts/src/Libraries/LibSwap.sol#L51)) performs the raw call:
 
 ```solidity
 (bool success, bytes memory res) = _swap.callTo.call{
@@ -3058,7 +3058,7 @@ with user-supplied calldata, by design**. Everything below follows from that.
 }(_swap.callData);
 ```
 
-That is `src/Libraries/LibSwap.sol:86-88`. It validates that `callTo` has code
+That is [`src/Libraries/LibSwap.sol:86-88`](contracts/src/Libraries/LibSwap.sol#L86-L88). It validates that `callTo` has code
 (`:53`) and that `fromAmount != 0` (`:57`), and **nothing else**. It never
 consults `LibAllowList`.
 
@@ -3066,9 +3066,9 @@ The check lives one level up, in the callers:
 
 | Caller | Allowlist check at |
 |---|---|
-| `SwapperV2._executeSwaps` (no-reserve overload) | `src/Helpers/SwapperV2.sol:205`, `:211` |
-| `SwapperV2._executeSwaps` (reserve overload) | `src/Helpers/SwapperV2.sol:252`, `:258` |
-| `GenericSwapFacetV3` | `src/Facets/GenericSwapFacetV3.sol:164`, `:359`, `:368`, `:420`, `:431` |
+| `SwapperV2._executeSwaps` (no-reserve overload) | [`src/Helpers/SwapperV2.sol:205`](contracts/src/Helpers/SwapperV2.sol#L205), `:211` |
+| `SwapperV2._executeSwaps` (reserve overload) | [`src/Helpers/SwapperV2.sol:252`](contracts/src/Helpers/SwapperV2.sol#L252), `:258` |
+| `GenericSwapFacetV3` | [`src/Facets/GenericSwapFacetV3.sol:164`](contracts/src/Facets/GenericSwapFacetV3.sol#L164), `:359`, `:368`, `:420`, `:431` |
 
 The practical consequence: **any new facet that calls `LibSwap.swap` directly,
 without going through `SwapperV2`, has no allowlist at all.** When reviewing a
@@ -3084,7 +3084,7 @@ already-deployed facets, and the source marks both "Avoid use in new code"
 ### 21.2 The Executor has no allowlist whatsoever
 
 `Periphery/Executor.sol` is a standalone contract, not a facet, and its
-`_executeSwaps` (`src/Periphery/Executor.sol:217`) has exactly one guard before
+`_executeSwaps` ([`src/Periphery/Executor.sol:217`](contracts/src/Periphery/Executor.sol#L217)) has exactly one guard before
 calling `LibSwap.swap`:
 
 ```solidity
@@ -3103,7 +3103,7 @@ because of two structural properties, and both must hold:
    and forwards the final asset. A balance left in it is stealable by the next
    caller.
 2. **Approvals live in `ERC20Proxy`, not the Executor.** `ERC20Proxy.transferFrom`
-   (`src/Periphery/ERC20Proxy.sol:53`) only honours calls from an
+   ([`src/Periphery/ERC20Proxy.sol:53`](contracts/src/Periphery/ERC20Proxy.sol#L53)) only honours calls from an
    `authorizedCallers` address. The single `callTo != erc20Proxy` check above
    stops an attacker from routing a "swap" whose target is the proxy itself,
    which would otherwise let them spend other users' standing approvals.
@@ -3112,7 +3112,7 @@ That one-line check is doing far more work than its size suggests.
 
 ### 21.3 Approval residue
 
-`LibAsset.maxApproveERC20` is called before every swap (`LibSwap.sol:71`) and
+`LibAsset.maxApproveERC20` is called before every swap ([`LibSwap.sol:71`](contracts/src/Libraries/LibSwap.sol#L71)) and
 grants an unlimited allowance to `approveTo`. Nothing revokes it afterwards.
 
 For a whitelisted DEX that is intentional and saves gas. The danger is the
@@ -3120,7 +3120,7 @@ For a whitelisted DEX that is intentional and saves gas. The danger is the
 to an arbitrary address that was never vetted. `SwapperV2` closes this by
 requiring the `approveTo` address to be whitelisted against the sentinel selector
 `APPROVE_TO_ONLY_SELECTOR` = `0xffffffff`, declared at
-`src/Helpers/SwapperV2.sol:25` and enforced at `:213` and `:260`. The intent is
+[`src/Helpers/SwapperV2.sol:25`](contracts/src/Helpers/SwapperV2.sol#L25) and enforced at `:213` and `:260`. The intent is
 documented in the NatSpec above each overload (`:185`, `:226`): whitelisting
 `approveTo` against this sentinel is what "prevent[s] allowance leaks".
 
@@ -3140,7 +3140,7 @@ trust here. In production the owner is `LiFiTimelockController`
 Two gaps worth knowing:
 
 - **`EmergencyPauseFacet` is deliberately outside the timelock.** `pauseDiamond`
-  (`src/Facets/EmergencyPauseFacet.sol:98`) is callable immediately by the pauser
+  ([`src/Facets/EmergencyPauseFacet.sol:98`](contracts/src/Facets/EmergencyPauseFacet.sol#L98)) is callable immediately by the pauser
   wallet. That is correct for incident response, but it means the pauser key can
   halt the protocol with no delay. It can only pause, not redirect funds.
 - **`unpauseDiamond` takes a `_blacklist`** (`:132`) and is owner-only. The
@@ -3148,7 +3148,7 @@ Two gaps worth knowing:
   cycle is itself an upgrade mechanism.
 
 `LibDiamond.diamondCut` also delegatecalls an arbitrary `_init` address
-(`initializeDiamondCut`, `src/Libraries/LibDiamond.sol:326`). An upgrade
+(`initializeDiamondCut`, [`src/Libraries/LibDiamond.sol:326`](contracts/src/Libraries/LibDiamond.sol#L326)). An upgrade
 proposal must be reviewed for what `_init` does, not just for which selectors
 move.
 
@@ -3156,7 +3156,7 @@ move.
 
 `LibSwap.swap` used to assert that the contract held at least `fromAmount` before
 swapping. That check was deliberately deleted; the source explains why at
-`src/Libraries/LibSwap.sol:78-82`:
+[`src/Libraries/LibSwap.sol:78-82`](contracts/src/Libraries/LibSwap.sol#L78-L82):
 
 > we used to have a sending asset balance check here
 > (`initialSendingAssetBalance >= _swap.fromAmount`) — this check was removed to
@@ -3172,7 +3172,7 @@ consequences to hold in mind:
   output as `newBalance - initialReceivingAssetBalance` (`:104-106`, inside the
   `AssetSwapped` emit), and
   `SwapperV2`'s `noLeftovers` modifier and `Executor._processSwaps`
-  (`src/Periphery/Executor.sol:139`) both snapshot before and after. This is the
+  ([`src/Periphery/Executor.sol:139`](contracts/src/Periphery/Executor.sol#L139)) both snapshot before and after. This is the
   right design for fee-on-transfer tokens and it is why `minAmount` checks are
   the real protection, not the declared amounts.
 - **Failures are opaque.** A fee-on-transfer token that leaves the contract short
@@ -3244,10 +3244,10 @@ checks `msg.sender`:
 
 | Receiver | Modifier | Line |
 |---|---|---|
-| `ReceiverAcrossV4` | `onlySpokepool` | `src/Periphery/ReceiverAcrossV4.sol:24` |
-| `ReceiverAcrossV3` | `onlySpokepool` | `src/Periphery/ReceiverAcrossV3.sol:28` |
-| `ReceiverStargateV2` | `onlyEndpointV2` | `src/Periphery/ReceiverStargateV2.sol:58` |
-| `ReceiverChainflip` | `onlyChainflipVault` | `src/Periphery/ReceiverChainflip.sol:36` |
+| `ReceiverAcrossV4` | `onlySpokepool` | [`src/Periphery/ReceiverAcrossV4.sol:24`](contracts/src/Periphery/ReceiverAcrossV4.sol#L24) |
+| `ReceiverAcrossV3` | `onlySpokepool` | [`src/Periphery/ReceiverAcrossV3.sol:28`](contracts/src/Periphery/ReceiverAcrossV3.sol#L28) |
+| `ReceiverStargateV2` | `onlyEndpointV2` | [`src/Periphery/ReceiverStargateV2.sol:58`](contracts/src/Periphery/ReceiverStargateV2.sol#L58) |
+| `ReceiverChainflip` | `onlyChainflipVault` | [`src/Periphery/ReceiverChainflip.sol:36`](contracts/src/Periphery/ReceiverChainflip.sol#L36) |
 
 Without this, anyone could call `handleV3AcrossMessage` with a forged payload and
 have the Receiver approve and spend whatever tokens it happened to hold. Combined

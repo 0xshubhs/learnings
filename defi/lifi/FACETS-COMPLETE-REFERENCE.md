@@ -139,7 +139,7 @@ Almost every bridge facet is the same 120-line shape. Learn it once here and the
 
 ### 2.1 `ILiFi.BridgeData` field by field
 
-`src/Interfaces/ILiFi.sol:10-21`. This struct is the protocol's lingua franca:
+[`src/Interfaces/ILiFi.sol:10-21`](contracts/src/Interfaces/ILiFi.sol#L10-L21). This struct is the protocol's lingua franca:
 every bridge facet takes it as its first argument, and the off-chain API builds
 it.
 
@@ -175,7 +175,7 @@ The two booleans exist so that a wallet simulating the calldata can check that
 the *declared* intent matches the *actual* function selector. That is exactly
 what `CalldataVerificationFacet` (§3.9) does.
 
-**Events** (`ILiFi.sol:25-64`):
+**Events** ([`ILiFi.sol:25-64`](contracts/src/Interfaces/ILiFi.sol#L25-L64)):
 
 | Event | Line | Emitted where | Purpose |
 |---|---|---|---|
@@ -192,7 +192,7 @@ what `CalldataVerificationFacet` (§3.9) does.
 Every bridge facet exposes exactly two externals plus one internal. Using
 `AcrossFacet` as the canonical example:
 
-**`startBridgeTokensViaAcross(BridgeData, AcrossData)`** — `src/Facets/AcrossFacet.sol:57-74`.
+**`startBridgeTokensViaAcross(BridgeData, AcrossData)`** — [`src/Facets/AcrossFacet.sol:57-74`](contracts/src/Facets/AcrossFacet.sol#L57-L74).
 User already holds the token the bridge wants. The facet pulls it and bridges.
 
 ```solidity
@@ -229,7 +229,7 @@ The single most important line in the whole codebase is that assignment.
 `_bridgeData` is `memory`, so overwriting `minAmount` with the swap's actual
 output means the bridge always receives what the swap actually produced, and the
 `minAmount` the caller passed in becomes the **slippage floor** enforced inside
-`_depositAndSwap` (`src/Helpers/SwapperV2.sol:120-124`, which reverts
+`_depositAndSwap` ([`src/Helpers/SwapperV2.sol:120-124`](contracts/src/Helpers/SwapperV2.sol#L120-L124), which reverts
 `CumulativeSlippageTooHigh(_minAmount, newBalance)`).
 
 **`_startBridge(BridgeData, XData)`** — `:107-141`. Internal, does three things
@@ -244,15 +244,15 @@ From `src/Helpers/Validatable.sol` and `src/Helpers/ReentrancyGuard.sol`:
 
 | Modifier | Source | Reverts with | Checks |
 |---|---|---|---|
-| `nonReentrant` | `ReentrancyGuard.sol:30-36` | `ReentrancyError()` | diamond-storage flag at `keccak256("com.lifi.reentrancyguard")` |
-| `validateBridgeData` | `Validatable.sol:14-25` | `InvalidReceiver()`, `InvalidAmount()`, `CannotBridgeToSameNetwork()` | receiver non-zero, `minAmount != 0`, `destinationChainId != block.chainid` |
+| `nonReentrant` | [`ReentrancyGuard.sol:30-36`](contracts/src/Helpers/ReentrancyGuard.sol#L30-L36) | `ReentrancyError()` | diamond-storage flag at `keccak256("com.lifi.reentrancyguard")` |
+| `validateBridgeData` | [`Validatable.sol:14-25`](contracts/src/Helpers/Validatable.sol#L14-L25) | `InvalidReceiver()`, `InvalidAmount()`, `CannotBridgeToSameNetwork()` | receiver non-zero, `minAmount != 0`, `destinationChainId != block.chainid` |
 | `noNativeAsset` | `:27-32` | `NativeAssetNotSupported()` | `sendingAssetId` is not `address(0)` |
 | `onlyAllowSourceToken` | `:34-42` | `InvalidSendingToken()` | asset equals a facet-fixed token (e.g. USDC) |
 | `onlyAllowDestinationChain` | `:44-52` | `InvalidDestinationChain()` | destination equals a facet-fixed chain |
 | `containsSourceSwaps` | `:54-59` | `InformationMismatch()` | `hasSourceSwaps == true` |
 | `doesNotContainSourceSwaps` | `:61-66` | `InformationMismatch()` | `hasSourceSwaps == false` |
 | `doesNotContainDestinationCalls` | `:68-75` | `InformationMismatch()` | `hasDestinationCall == false` |
-| `refundExcessNative` | `SwapperV2.sol:67` | — | snapshots native balance, returns the surplus to the caller after the body |
+| `refundExcessNative` | [`SwapperV2.sol:67`](contracts/src/Helpers/SwapperV2.sol#L67) | — | snapshots native balance, returns the surplus to the caller after the body |
 
 The `nonReentrant` guard is notable: it lives in **diamond storage**, not a
 per-facet variable, so it is shared across every facet in the Diamond. Two
@@ -326,7 +326,7 @@ different facets cannot re-enter each other.
 
 Facets that need their own state (chain-id maps, config) declare a namespaced
 struct so they cannot collide with another facet's slots. The idiom, from
-`src/Facets/AllBridgeFacet.sol:33-34` and `:315-321`:
+[`src/Facets/AllBridgeFacet.sol:33-34`](contracts/src/Facets/AllBridgeFacet.sol#L33-L34) and `:315-321`:
 
 ```solidity
 bytes32 internal constant NAMESPACE = keccak256("com.lifi.facets.allbridge");
@@ -344,7 +344,7 @@ Facets using this pattern and their namespace strings:
 
 | Facet | Namespace constant | Line |
 |---|---|---|
-| `ReentrancyGuard` (shared) | `com.lifi.reentrancyguard` | `Helpers/ReentrancyGuard.sol:11` |
+| `ReentrancyGuard` (shared) | `com.lifi.reentrancyguard` | [`Helpers/ReentrancyGuard.sol:11`](contracts/src/Helpers/ReentrancyGuard.sol#L11) |
 | `AllBridgeFacet` | `com.lifi.facets.allbridge` | `:33` |
 | `DeBridgeDlnFacet` | `com.lifi.facets.debridgedln` | `:28` |
 | `EmergencyPauseFacet` | `com.lifi.facets.emergencyPauseFacet` | `:33` |
@@ -413,7 +413,7 @@ the most dangerous: whoever can call it controls every other facet.
 - **External calls**: `delegatecall` to `_init` if non-zero.
 - **Events**: `DiamondCut(FacetCut[], address, bytes)` emitted by `LibDiamond`.
 - **Access control**: contract owner only. In production the owner is `LiFiTimelockController` (`src/Security/LiFiTimelockController.sol`), so a cut is a two-step timelocked operation.
-- **Gotchas**: there is no pause check here. `EmergencyPauseFacet` explicitly refuses to remove the facet holding `diamondCut.selector` (`EmergencyPauseFacet.sol:80-81` and `EmergencyPauseFacet.sol:164-165`) because doing so would make the Diamond permanently immutable.
+- **Gotchas**: there is no pause check here. `EmergencyPauseFacet` explicitly refuses to remove the facet holding `diamondCut.selector` ([`EmergencyPauseFacet.sol:80-81`](contracts/src/Facets/EmergencyPauseFacet.sol#L80-L81) and [`EmergencyPauseFacet.sol:164-165`](contracts/src/Facets/EmergencyPauseFacet.sol#L164-L165)) because doing so would make the Diamond permanently immutable.
 
 ### 3.2 DiamondLoupeFacet
 
@@ -436,7 +436,7 @@ All five are `external view override`, no access control, no state writes.
 `EmergencyPauseFacet`, whose `fallback` reverts `DiamondIsPaused()`. Tooling that
 assumes the loupe always answers will break during an incident. `LibDiamondLoupe`
 provides internal equivalents so `EmergencyPauseFacet` can still read the facet
-list while paused (`EmergencyPauseFacet.sol:159-161` and `EmergencyPauseFacet.sol:200`).
+list while paused ([`EmergencyPauseFacet.sol:159-161`](contracts/src/Facets/EmergencyPauseFacet.sol#L159-L161) and [`EmergencyPauseFacet.sol:200`](contracts/src/Facets/EmergencyPauseFacet.sol#L200)).
 
 ### 3.3 OwnershipFacet
 
@@ -493,7 +493,7 @@ the right to call one specific admin function without making it the owner.
 external view. Direct read of the mapping. No access control.
 
 The consuming side is `LibAccess.enforceAccessControl()`, used by
-`WithdrawFacet` (`WithdrawFacet.sol:43`, `:71`) and `WhitelistManagerFacet` (`WhitelistManagerFacet.sol:24`, `:36`).
+`WithdrawFacet` ([`WithdrawFacet.sol:43`](contracts/src/Facets/WithdrawFacet.sol#L43), `:71`) and `WhitelistManagerFacet` ([`WhitelistManagerFacet.sol:24`](contracts/src/Facets/WhitelistManagerFacet.sol#L24), `:36`).
 
 ### 3.5 WhitelistManagerFacet
 
@@ -531,7 +531,7 @@ The single funnel for all state changes.
 
 **Gotcha worth internalising**: `SwapperV2._executeSwaps` documents that when
 `approveTo != callTo`, the `approveTo` address must be whitelisted with the
-sentinel selector `0xffffffff` (`GenericSwapFacetV3.sol:24` names it
+sentinel selector `0xffffffff` ([`GenericSwapFacetV3.sol:24`](contracts/src/Facets/GenericSwapFacetV3.sol#L24) names it
 `APPROVE_TO_ONLY_SELECTOR`). Without that rule, an attacker could get an
 allowance granted to an address that was never vetted.
 
@@ -852,7 +852,7 @@ for native, or just `cost` for ERC20; `refundExcessNative` returns any surplus.
 
 **`swapAndStartBridgeTokensViaArbitrumBridge(BridgeData, SwapData[], ArbitrumData)`** — `:87-113`.
 Same, but calls the **five-argument** `_depositAndSwap` overload
-(`SwapperV2.sol:135`) passing `cost` as `_nativeReserve` `:104-110`. That reserve
+([`SwapperV2.sol:135`](contracts/src/Helpers/SwapperV2.sol#L135)) passing `cost` as `_nativeReserve` `:104-110`. That reserve
 is the reason the overload exists: without it, the positive-slippage refund would
 sweep the native the bridge fee needs.
 
@@ -1101,7 +1101,7 @@ modified copy.
 Validation, in order:
 1. `if (_acrossData.message.length > 0 != _bridgeData.hasDestinationCall) revert InformationMismatch();` `:162-164`. The declared flag must match reality.
 2. `destinationChainId = _getAcrossChainId(_bridgeData.destinationChainId)` `:167-169`.
-3. **Non-EVM branch** `:172-184`: if `_bridgeData.receiver == NON_EVM_ADDRESS` (the sentinel `0x11f111f111f111F111f111f111F111f111f111F1` from `LiFiData.sol:9-10`), require `receiverAddress != 0` else `InvalidNonEVMReceiver()`, and emit `BridgeToNonEVMChainBytes32(transactionId, destinationChainId, receiverAddress)`. Nothing more can be validated — a Solana pubkey is opaque to the EVM.
+3. **Non-EVM branch** `:172-184`: if `_bridgeData.receiver == NON_EVM_ADDRESS` (the sentinel `0x11f111f111f111F111f111f111F111f111f111F1` from [`LiFiData.sol:9-10`](contracts/src/Helpers/LiFiData.sol#L9-L10)), require `receiverAddress != 0` else `InvalidNonEVMReceiver()`, and emit `BridgeToNonEVMChainBytes32(transactionId, destinationChainId, receiverAddress)`. Nothing more can be validated — a Solana pubkey is opaque to the EVM.
 4. **EVM branch** `:185-199`: unless there is a destination call, require `_convertAddressToBytes32(_bridgeData.receiver) == _acrossData.receiverAddress` else `InvalidReceiver()`. The exemption exists because with a destination call the Across recipient is LI.FI's Receiver contract while `bridgeData.receiver` is the end user. Then require `receiverAddress != 0`.
 5. `if (_acrossData.refundAddress == bytes32(0)) revert InvalidCallData();` `:202-204` — an explicit guard against burning the refund path.
 
@@ -2048,7 +2048,7 @@ the user asks to "refuel" several chains at once.
 
 ### 11.1 Every custom error declared in a facet
 
-43 facet-local errors. Errors from `src/Errors/GenericErrors.sol` (45 of them, listed at `GenericErrors.sol:5-45`) are shared and not repeated here.
+43 facet-local errors. Errors from `src/Errors/GenericErrors.sol` (45 of them, listed at [`GenericErrors.sol:5-45`](contracts/src/Errors/GenericErrors.sol#L5-L45)) are shared and not repeated here.
 
 | Error | Facet | Line | Cause |
 |---|---|---|---|
@@ -2102,7 +2102,7 @@ facets rather than shared. Same name, same selector, different declaration site.
 
 **The one string-based revert left in the facets** is
 `"Invalid callTo length; expected at least 20 bytes"` in
-`CalldataVerificationFacet.sol:349`.
+[`CalldataVerificationFacet.sol:349`](contracts/src/Facets/CalldataVerificationFacet.sol#L349).
 
 ### 11.2 Events declared in facets
 
@@ -2141,7 +2141,7 @@ Beyond `ILiFi`'s six shared events (§2.1), fourteen facets declare their own:
 ### 11.4 Facets holding diamond storage
 
 Sixteen namespaces, verified per facet: `com.lifi.reentrancyguard` (shared, in
-`ReentrancyGuard`), plus `com.lifi.facets.` + `allbridge` (`AllBridgeFacet.sol:33`),
+`ReentrancyGuard`), plus `com.lifi.facets.` + `allbridge` ([`AllBridgeFacet.sol:33`](contracts/src/Facets/AllBridgeFacet.sol#L33)),
 `debridgedln` (`:28`), `emergencyPauseFacet` (`:33`), `frax` (`:42`),
 `layerswap` (`:28`), `mayan` (`:43`), `megaeth` (`:21`), `nearintents` (`:31`),
 `optimism` (`:26`), `ownership` (`:16`), `periphery_registry` (`:13`),

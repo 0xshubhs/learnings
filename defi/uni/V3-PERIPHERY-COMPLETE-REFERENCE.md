@@ -198,10 +198,10 @@ end of the batch, but a naive fork can double-spend `msg.value`.
 `base/BlockTimestamp.sol` — abstract, 12 lines. Exists solely so tests can freeze
 time.
 
-#### `_blockTimestamp() internal view virtual returns (uint256)` — `base/BlockTimestamp.sol:9`
+#### `_blockTimestamp() internal view virtual returns (uint256)` — [`base/BlockTimestamp.sol:9`](v3-periphery/contracts/base/BlockTimestamp.sol#L9)
 
-Returns `block.timestamp`. Overridden in `test/MockTimeNonfungiblePositionManager.sol:16`
-and `test/MockTimeSwapRouter.sol:12` to return a settable value.
+Returns `block.timestamp`. Overridden in [`test/MockTimeNonfungiblePositionManager.sol:16`](v3-periphery/contracts/test/MockTimeNonfungiblePositionManager.sol#L16)
+and [`test/MockTimeSwapRouter.sol:12`](v3-periphery/contracts/test/MockTimeSwapRouter.sol#L12) to return a settable value.
 
 - **Checks / writes / calls / events:** none.
 - **Callers:** `PeripheryValidation.checkDeadline` (`:8`), `ERC721Permit.permit` (`:63`).
@@ -212,7 +212,7 @@ and `test/MockTimeSwapRouter.sol:12` to return a settable value.
 
 `base/PeripheryValidation.sol` — abstract, 11 lines, `is BlockTimestamp`.
 
-#### `modifier checkDeadline(uint256 deadline)` — `base/PeripheryValidation.sol:7`
+#### `modifier checkDeadline(uint256 deadline)` — [`base/PeripheryValidation.sol:7`](v3-periphery/contracts/base/PeripheryValidation.sol#L7)
 
 ```solidity
 modifier checkDeadline(uint256 deadline) {
@@ -240,7 +240,7 @@ modifier checkDeadline(uint256 deadline) {
 
 Both are `immutable`, so they live in bytecode, not storage — reads are free.
 
-#### `constructor(address _factory, address _WETH9)` — `base/PeripheryImmutableState.sol:14`
+#### `constructor(address _factory, address _WETH9)` — [`base/PeripheryImmutableState.sol:14`](v3-periphery/contracts/base/PeripheryImmutableState.sol#L14)
 
 Assigns both immutables. No validation: a zero factory produces a contract whose
 every pool address is garbage, and whose `verifyCallback` therefore always fails.
@@ -249,7 +249,7 @@ every pool address is garbage, and whose `verifyCallback` therefore always fails
 
 `base/Multicall.sol` — abstract, 28 lines, `is IMulticall`.
 
-#### `multicall(bytes[] calldata data) public payable returns (bytes[] memory results)` — `base/Multicall.sol:11`
+#### `multicall(bytes[] calldata data) public payable returns (bytes[] memory results)` — [`base/Multicall.sol:11`](v3-periphery/contracts/base/Multicall.sol#L11)
 
 Batches N calls to *this same contract* in one transaction.
 
@@ -293,7 +293,7 @@ Test double: `test/TestMulticall.sol`.
 `base/SelfPermit.sol` — abstract, 63 lines, `is ISelfPermit`. Designed to be the
 *first* element of a `multicall` so an EOA can approve and act in one transaction.
 
-#### `selfPermit(address token, uint256 value, uint256 deadline, uint8 v, bytes32 r, bytes32 s) public payable` — `base/SelfPermit.sol:16`
+#### `selfPermit(address token, uint256 value, uint256 deadline, uint8 v, bytes32 r, bytes32 s) public payable` — [`base/SelfPermit.sol:16`](v3-periphery/contracts/base/SelfPermit.sol#L16)
 
 Calls EIP-2612 `IERC20Permit(token).permit(msg.sender, address(this), value, deadline, v, r, s)`.
 The spender is hard-coded to `address(this)`, so a signature harvested from the
@@ -301,19 +301,19 @@ mempool cannot be redirected to another spender.
 
 - **Gotcha:** reverts if someone front-runs the same permit (nonce consumed).
 
-#### `selfPermitIfNecessary(...) external payable` — `base/SelfPermit.sol:28`
+#### `selfPermitIfNecessary(...) external payable` — [`base/SelfPermit.sol:28`](v3-periphery/contracts/base/SelfPermit.sol#L28)
 
 Calls `selfPermit` only `if (IERC20(token).allowance(msg.sender, address(this)) < value)`.
 This is the front-running fix: if an attacker already submitted your permit, the
 allowance is set and this is a no-op instead of a revert.
 
-#### `selfPermitAllowed(address token, uint256 nonce, uint256 expiry, uint8 v, bytes32 r, bytes32 s) public payable` — `base/SelfPermit.sol:40`
+#### `selfPermitAllowed(address token, uint256 nonce, uint256 expiry, uint8 v, bytes32 r, bytes32 s) public payable` — [`base/SelfPermit.sol:40`](v3-periphery/contracts/base/SelfPermit.sol#L40)
 
-The DAI/CHAI permit variant (`IERC20PermitAllowed`, `interfaces/external/IERC20PermitAllowed.sol:17`):
+The DAI/CHAI permit variant (`IERC20PermitAllowed`, [`interfaces/external/IERC20PermitAllowed.sol:17`](v3-periphery/contracts/interfaces/external/IERC20PermitAllowed.sol#L17)):
 no `value`, instead a boolean `allowed` which is passed as `true`, granting
 **infinite** allowance.
 
-#### `selfPermitAllowedIfNecessary(...) external payable` — `base/SelfPermit.sol:52`
+#### `selfPermitAllowedIfNecessary(...) external payable` — [`base/SelfPermit.sol:52`](v3-periphery/contracts/base/SelfPermit.sol#L52)
 
 Same guard, but the condition is `allowance < type(uint256).max` — because
 `selfPermitAllowed` always grants infinite, anything less means the permit has not
@@ -327,7 +327,7 @@ run.
 `base/PeripheryPayments.sol` — abstract, 70 lines, `is IPeripheryPayments, PeripheryImmutableState`.
 The ETH/WETH/ERC-20 payment layer.
 
-#### `receive() external payable` — `base/PeripheryPayments.sol:14`
+#### `receive() external payable` — [`base/PeripheryPayments.sol:14`](v3-periphery/contracts/base/PeripheryPayments.sol#L14)
 
 ```solidity
 receive() external payable { require(msg.sender == WETH9, 'Not WETH9'); }
@@ -338,7 +338,7 @@ on a `payable` function, never by a bare transfer.
 
 - **Revert:** `'Not WETH9'`.
 
-#### `unwrapWETH9(uint256 amountMinimum, address recipient) public payable` — `base/PeripheryPayments.sol:19`
+#### `unwrapWETH9(uint256 amountMinimum, address recipient) public payable` — [`base/PeripheryPayments.sol:19`](v3-periphery/contracts/base/PeripheryPayments.sol#L19)
 
 Unwraps the router's **entire** WETH9 balance and forwards it as ETH.
 
@@ -351,20 +351,20 @@ Unwraps the router's **entire** WETH9 balance and forwards it as ETH.
   The router is *not* meant to hold funds between transactions; treat any residual
   balance as up for grabs.
 
-#### `sweepToken(address token, uint256 amountMinimum, address recipient) public payable` — `base/PeripheryPayments.sol:30`
+#### `sweepToken(address token, uint256 amountMinimum, address recipient) public payable` — [`base/PeripheryPayments.sol:30`](v3-periphery/contracts/base/PeripheryPayments.sol#L30)
 
 The ERC-20 twin of `unwrapWETH9`. `require(balanceToken >= amountMinimum, 'Insufficient token')`,
 then transfers the full balance. Used to collect the output of a swap whose
 `recipient` was `address(0)` (i.e. the router itself).
 
-#### `refundETH() external payable` — `base/PeripheryPayments.sol:44`
+#### `refundETH() external payable` — [`base/PeripheryPayments.sol:44`](v3-periphery/contracts/base/PeripheryPayments.sol#L44)
 
 `if (address(this).balance > 0) TransferHelper.safeTransferETH(msg.sender, address(this).balance);`
 Returns leftover ETH to `msg.sender`. Must be the last call in any ETH multicall.
 
 - **Gotcha:** sends the whole contract balance to `msg.sender`.
 
-#### `pay(address token, address payer, address recipient, uint256 value) internal` — `base/PeripheryPayments.sol:52`
+#### `pay(address token, address payer, address recipient, uint256 value) internal` — [`base/PeripheryPayments.sol:52`](v3-periphery/contracts/base/PeripheryPayments.sol#L52)
 
 The three-way payment router used by both callbacks.
 
@@ -393,14 +393,14 @@ Branch 1 = user sent ETH, wrap it. Branch 2 = the router already holds the token
 Adds an integrator fee cut. Inherited by `SwapRouter` (`:26`) but **not** by
 `NonfungiblePositionManager`.
 
-#### `unwrapWETH9WithFee(uint256 amountMinimum, address recipient, uint256 feeBips, address feeRecipient) public payable` — `base/PeripheryPaymentsWithFee.sol:17`
+#### `unwrapWETH9WithFee(uint256 amountMinimum, address recipient, uint256 feeBips, address feeRecipient) public payable` — [`base/PeripheryPaymentsWithFee.sol:17`](v3-periphery/contracts/base/PeripheryPaymentsWithFee.sol#L17)
 
 - **Checks:** `require(feeBips > 0 && feeBips <= 100)` (bare, no message) — the
   cap is **100 bips = 1%**; `require(balanceWETH9 >= amountMinimum, 'Insufficient WETH9')`.
 - **Math:** `feeAmount = balanceWETH9 * feeBips / 10_000`, fee to `feeRecipient`,
   remainder to `recipient`.
 
-#### `sweepTokenWithFee(address token, uint256 amountMinimum, address recipient, uint256 feeBips, address feeRecipient) public payable` — `base/PeripheryPaymentsWithFee.sol:37`
+#### `sweepTokenWithFee(address token, uint256 amountMinimum, address recipient, uint256 feeBips, address feeRecipient) public payable` — [`base/PeripheryPaymentsWithFee.sol:37`](v3-periphery/contracts/base/PeripheryPaymentsWithFee.sol#L37)
 
 Identical shape for ERC-20s: same `feeBips` bounds, same `'Insufficient token'`
 check, `safeTransfer` to fee recipient then to recipient.
@@ -412,7 +412,7 @@ check, `safeTransfer` to fee recipient then to recipient.
 
 `base/PoolInitializer.sol` — abstract, 32 lines, `is IPoolInitializer, PeripheryImmutableState`.
 
-#### `createAndInitializePoolIfNecessary(address token0, address token1, uint24 fee, uint160 sqrtPriceX96) external payable returns (address pool)` — `base/PoolInitializer.sol:13`
+#### `createAndInitializePoolIfNecessary(address token0, address token1, uint24 fee, uint160 sqrtPriceX96) external payable returns (address pool)` — [`base/PoolInitializer.sol:13`](v3-periphery/contracts/base/PoolInitializer.sol#L13)
 
 Idempotent "make sure this pool exists and has a price".
 
@@ -443,24 +443,24 @@ EIP-712 signature approvals for NFTs.
 `PERMIT_TYPEHASH = 0x49ecf333e5b8c95c40fdafc95c1ad136e8914a8fb55e9dc8bb01eaa83a2df9ad`
 = `keccak256("Permit(address spender,uint256 tokenId,uint256 nonce,uint256 deadline)")`.
 
-#### `_getAndIncrementNonce(uint256 tokenId) internal virtual returns (uint256)` — `base/ERC721Permit.sol:16`
+#### `_getAndIncrementNonce(uint256 tokenId) internal virtual returns (uint256)` — [`base/ERC721Permit.sol:16`](v3-periphery/contracts/base/ERC721Permit.sol#L16)
 
 Abstract. Implemented by `NonfungiblePositionManager` (`:384`) as
 `_positions[tokenId].nonce++`, packing the nonce into the position struct instead
 of a separate mapping.
 
-#### `constructor(string name_, string symbol_, string version_)` — `base/ERC721Permit.sol:25`
+#### `constructor(string name_, string symbol_, string version_)` — [`base/ERC721Permit.sol:25`](v3-periphery/contracts/base/ERC721Permit.sol#L25)
 
 Stores `keccak256(bytes(name_))` and `keccak256(bytes(version_))` as immutables so
 `DOMAIN_SEPARATOR()` can be recomputed cheaply per call.
 
-#### `DOMAIN_SEPARATOR() public view returns (bytes32)` — `base/ERC721Permit.sol:35`
+#### `DOMAIN_SEPARATOR() public view returns (bytes32)` — [`base/ERC721Permit.sol:35`](v3-periphery/contracts/base/ERC721Permit.sol#L35)
 
 Recomputed on **every call** using `ChainId.get()` rather than cached at
 construction. That is the fix for the post-fork replay bug: if the chain forks,
 the separator changes automatically and old signatures die.
 
-#### `permit(address spender, uint256 tokenId, uint256 deadline, uint8 v, bytes32 r, bytes32 s) external payable` — `base/ERC721Permit.sol:55`
+#### `permit(address spender, uint256 tokenId, uint256 deadline, uint8 v, bytes32 r, bytes32 s) external payable` — [`base/ERC721Permit.sol:55`](v3-periphery/contracts/base/ERC721Permit.sol#L55)
 
 Approves `spender` for `tokenId` from an off-chain signature.
 
@@ -477,7 +477,7 @@ Approves `spender` for `tokenId` from an off-chain signature.
    `_positions[tokenId].operator`.
 
 - **State writes:** nonce increment (step 2, via `_getAndIncrementNonce`), operator (step 6).
-- **Event:** `Approval(owner, spender, tokenId)` from the overridden `_approve` (`NonfungiblePositionManager.sol:398`).
+- **Event:** `Approval(owner, spender, tokenId)` from the overridden `_approve` ([`NonfungiblePositionManager.sol:398`](v3-periphery/contracts/NonfungiblePositionManager.sol#L398)).
 - **Gotcha:** the nonce is consumed at digest-build time, *before* signature
   verification.
 - **Gotcha:** the signature is `abi.encodePacked(r, s, v)` for ERC-1271, which is
@@ -500,7 +500,7 @@ struct AddLiquidityParams {                                              // :37
 }
 ```
 
-#### `uniswapV3MintCallback(uint256 amount0Owed, uint256 amount1Owed, bytes calldata data) external` — `base/LiquidityManagement.sol:25`
+#### `uniswapV3MintCallback(uint256 amount0Owed, uint256 amount1Owed, bytes calldata data) external` — [`base/LiquidityManagement.sol:25`](v3-periphery/contracts/base/LiquidityManagement.sol#L25)
 
 Called **by the pool**, mid-`mint`, demanding payment.
 
@@ -519,7 +519,7 @@ if (amount1Owed > 0) pay(decoded.poolKey.token1, decoded.payer, msg.sender, amou
 - **Payer:** always `msg.sender` of the outer `addLiquidity` (`:85`), so a user
   can only ever spend their own approval.
 
-#### `addLiquidity(AddLiquidityParams memory params) internal returns (uint128 liquidity, uint256 amount0, uint256 amount1, IUniswapV3Pool pool)` — `base/LiquidityManagement.sol:51`
+#### `addLiquidity(AddLiquidityParams memory params) internal returns (uint128 liquidity, uint256 amount0, uint256 amount1, IUniswapV3Pool pool)` — [`base/LiquidityManagement.sol:51`](v3-periphery/contracts/base/LiquidityManagement.sol#L51)
 
 1. Build the `PoolKey`, `pool = PoolAddress.computeAddress(factory, poolKey)` (`:63`).
    No existence check — a nonexistent pool just makes the next call revert.
@@ -555,11 +555,11 @@ if (amount1Owed > 0) pay(decoded.poolKey.token1, decoded.payer, msg.sender, amou
 struct PoolKey { address token0; address token1; uint24 fee; }   // :9
 ```
 
-#### `getPoolKey(address tokenA, address tokenB, uint24 fee) internal pure returns (PoolKey memory)` — `libraries/PoolAddress.sol:20`
+#### `getPoolKey(address tokenA, address tokenB, uint24 fee) internal pure returns (PoolKey memory)` — [`libraries/PoolAddress.sol:20`](v3-periphery/contracts/libraries/PoolAddress.sol#L20)
 
 Sorts: `if (tokenA > tokenB) (tokenA, tokenB) = (tokenB, tokenA)`.
 
-#### `computeAddress(address factory, PoolKey memory key) internal pure returns (address pool)` — `libraries/PoolAddress.sol:33`
+#### `computeAddress(address factory, PoolKey memory key) internal pure returns (address pool)` — [`libraries/PoolAddress.sol:33`](v3-periphery/contracts/libraries/PoolAddress.sol#L33)
 
 ```solidity
 require(key.token0 < key.token1);
@@ -587,11 +587,11 @@ while the outer hash uses `abi.encodePacked` — mixing these up is the classic
 
 `libraries/CallbackValidation.sol` — 36 lines. The security keystone.
 
-#### `verifyCallback(address factory, address tokenA, address tokenB, uint24 fee) internal view returns (IUniswapV3Pool pool)` — `libraries/CallbackValidation.sol:15`
+#### `verifyCallback(address factory, address tokenA, address tokenB, uint24 fee) internal view returns (IUniswapV3Pool pool)` — [`libraries/CallbackValidation.sol:15`](v3-periphery/contracts/libraries/CallbackValidation.sol#L15)
 
 Sugar: `verifyCallback(factory, PoolAddress.getPoolKey(tokenA, tokenB, fee))`.
 
-#### `verifyCallback(address factory, PoolAddress.PoolKey memory poolKey) internal view returns (IUniswapV3Pool pool)` — `libraries/CallbackValidation.sol:28`
+#### `verifyCallback(address factory, PoolAddress.PoolKey memory poolKey) internal view returns (IUniswapV3Pool pool)` — [`libraries/CallbackValidation.sol:28`](v3-periphery/contracts/libraries/CallbackValidation.sol#L28)
 
 ```solidity
 pool = IUniswapV3Pool(PoolAddress.computeAddress(factory, poolKey));
@@ -612,7 +612,7 @@ router's users and anyone who calls `uniswapV3SwapCallback` directly.
 
 `libraries/PositionKey.sol` — 13 lines.
 
-#### `compute(address owner, int24 tickLower, int24 tickUpper) internal pure returns (bytes32)` — `libraries/PositionKey.sol:6`
+#### `compute(address owner, int24 tickLower, int24 tickUpper) internal pure returns (bytes32)` — [`libraries/PositionKey.sol:6`](v3-periphery/contracts/libraries/PositionKey.sol#L6)
 
 `keccak256(abi.encodePacked(owner, tickLower, tickUpper))` — the key under which
 core stores positions.
@@ -647,25 +647,25 @@ Layout — tokens and fees tightly packed, no ABI padding:
 
 Build with `abi.encodePacked(tokenA, fee1, tokenB, fee2, tokenC)`.
 
-#### `hasMultiplePools(bytes memory path) internal pure returns (bool)` — `libraries/Path.sol:25`
+#### `hasMultiplePools(bytes memory path) internal pure returns (bool)` — [`libraries/Path.sol:25`](v3-periphery/contracts/libraries/Path.sol#L25)
 
 `path.length >= 66`.
 
-#### `numPools(bytes memory path) internal pure returns (uint256)` — `libraries/Path.sol:32`
+#### `numPools(bytes memory path) internal pure returns (uint256)` — [`libraries/Path.sol:32`](v3-periphery/contracts/libraries/Path.sol#L32)
 
 `(path.length - 20) / 23`. Used only by QuoterV2 to size its result arrays.
 
-#### `decodeFirstPool(bytes memory path) internal pure returns (address tokenA, address tokenB, uint24 fee)` — `libraries/Path.sol:42`
+#### `decodeFirstPool(bytes memory path) internal pure returns (address tokenA, address tokenB, uint24 fee)` — [`libraries/Path.sol:42`](v3-periphery/contracts/libraries/Path.sol#L42)
 
 Reads `toAddress(0)`, `toUint24(20)`, `toAddress(23)`. Note the **return order is
 `(tokenA, tokenB, fee)` but the encoding order is `token, fee, token`** — a
 frequent source of confusion when reading call sites.
 
-#### `getFirstPool(bytes memory path) internal pure returns (bytes memory)` — `libraries/Path.sol:59`
+#### `getFirstPool(bytes memory path) internal pure returns (bytes memory)` — [`libraries/Path.sol:59`](v3-periphery/contracts/libraries/Path.sol#L59)
 
 `path.slice(0, 43)` — the first hop only, to pass as callback data.
 
-#### `skipToken(bytes memory path) internal pure returns (bytes memory)` — `libraries/Path.sol:66`
+#### `skipToken(bytes memory path) internal pure returns (bytes memory)` — [`libraries/Path.sol:66`](v3-periphery/contracts/libraries/Path.sol#L66)
 
 `path.slice(23, path.length - 23)` — drops the leading `[token][fee]`, leaving a
 path that starts at the next token.
@@ -674,7 +674,7 @@ path that starts at the next token.
   `BytesLib` with `'slice_outOfBounds'` / `'toAddress_outOfBounds'`.
 - **Gotcha:** for **exact-output** the path is encoded **backwards**: output token
   first. `SwapRouter.exactOutputSingle` builds `abi.encodePacked(tokenOut, fee, tokenIn)`
-  (`SwapRouter.sol:215`), and `exactOutputInternal` destructures it as
+  ([`SwapRouter.sol:215`](v3-periphery/contracts/SwapRouter.sol#L215)), and `exactOutputInternal` destructures it as
   `(tokenOut, tokenIn, fee)` (`:178`).
 - **Test double:** `test/PathTest.sol`.
 
@@ -683,7 +683,7 @@ path that starts at the next token.
 `libraries/BytesLib.sol` — 101 lines. Gonçalo Sá's library, trimmed to three
 functions. All are assembly.
 
-#### `slice(bytes memory _bytes, uint256 _start, uint256 _length) internal pure returns (bytes memory)` — `libraries/BytesLib.sol:12`
+#### `slice(bytes memory _bytes, uint256 _start, uint256 _length) internal pure returns (bytes memory)` — [`libraries/BytesLib.sol:12`](v3-periphery/contracts/libraries/BytesLib.sol#L12)
 
 - **Checks:** `require(_length + 31 >= _length, 'slice_overflow')`,
   `require(_start + _length >= _start, 'slice_overflow')`,
@@ -692,13 +692,13 @@ functions. All are assembly.
   32-byte boundary. The zero-length case returns an empty `bytes` and still bumps
   the pointer.
 
-#### `toAddress(bytes memory _bytes, uint256 _start) internal pure returns (address)` — `libraries/BytesLib.sol:78`
+#### `toAddress(bytes memory _bytes, uint256 _start) internal pure returns (address)` — [`libraries/BytesLib.sol:78`](v3-periphery/contracts/libraries/BytesLib.sol#L78)
 
 `require(_start + 20 >= _start, 'toAddress_overflow')`,
 `require(_bytes.length >= _start + 20, 'toAddress_outOfBounds')`, then
 `mload(add(_bytes, add(0x20, _start)))` shifted right by 96 bits.
 
-#### `toUint24(bytes memory _bytes, uint256 _start) internal pure returns (uint24)` — `libraries/BytesLib.sol:90`
+#### `toUint24(bytes memory _bytes, uint256 _start) internal pure returns (uint24)` — [`libraries/BytesLib.sol:90`](v3-periphery/contracts/libraries/BytesLib.sol#L90)
 
 Same shape with `'toUint24_overflow'` / `'toUint24_outOfBounds'` and a 3-byte load.
 
@@ -734,7 +734,7 @@ Empty return data counts as success.
 
 `libraries/ChainId.sol` — 13 lines.
 
-#### `get() internal pure returns (uint256 chainId)` — `libraries/ChainId.sol:8`
+#### `get() internal pure returns (uint256 chainId)` — [`libraries/ChainId.sol:8`](v3-periphery/contracts/libraries/ChainId.sol#L8)
 
 `assembly { chainId := chainid() }`. Marked `pure` while reading an opcode — legal
 because the compiler cannot see inside assembly, and a lie that lets
@@ -758,7 +758,7 @@ amount1 = L * (√P − √Pa)          (token1 is held when price is above Pa)
 Solving each for `L` gives the two "ForAmount" functions; substituting `P` gives
 the two "ForLiquidity" functions.
 
-#### `toUint128(uint256 x) private pure returns (uint128 y)` — `libraries/LiquidityAmounts.sol:13`
+#### `toUint128(uint256 x) private pure returns (uint128 y)` — [`libraries/LiquidityAmounts.sol:13`](v3-periphery/contracts/libraries/LiquidityAmounts.sol#L13)
 
 `require((y = uint128(x)) == x)` — bare revert on overflow.
 
@@ -1094,7 +1094,7 @@ so that `poolId == 0` reliably means "no such position" — the check in `positi
 
 ### 3.3 `constructor`
 
-`constructor(address _factory, address _WETH9, address _tokenDescriptor_)` — `NonfungiblePositionManager.sol:71`
+`constructor(address _factory, address _WETH9, address _tokenDescriptor_)` — [`NonfungiblePositionManager.sol:71`](v3-periphery/contracts/NonfungiblePositionManager.sol#L71)
 
 ```solidity
 ERC721Permit('Uniswap V3 Positions NFT-V1', 'UNI-V3-POS', '1')
@@ -1565,7 +1565,7 @@ require(amountOut >= params.amountOutMinimum, 'Too little received');
 ```
 
 Forward iteration, no recursion. Intermediate outputs land on the router, and
-`pay`'s `payer == address(this)` branch (`PeripheryPayments.sol:62`) forwards them
+`pay`'s `payer == address(this)` branch ([`PeripheryPayments.sol:62`](v3-periphery/contracts/base/PeripheryPayments.sol#L62)) forwards them
 without an allowance.
 
 - `sqrtPriceLimitX96` is hard-coded to 0 per hop; only the final
@@ -1952,7 +1952,7 @@ user ── approve LP ──► V3Migrator.migrate
   position — the rest comes back as loose tokens, not V2 LP.
 - **Gotcha:** `amount0Min`/`amount1Min` must already be discounted by
   `percentageToMigrate`; the contract does not do it for you. The interface comment
-  at `interfaces/IV3Migrator.sol:21-22` says so.
+  at [`interfaces/IV3Migrator.sol:21-22`](v3-periphery/contracts/interfaces/IV3Migrator.sol#L21-L22) says so.
 - **Gotcha:** an out-of-range V3 target needs only one token. The other token's
   entire amount is refunded, and `amountNMin` should be 0 — the interface comment
   (`:29-30`) notes this enforces that the position stays out of range.
@@ -2642,7 +2642,7 @@ worth stating plainly.
 |---|---|---|---|---|
 | 0 | `uint256` | `amountInCached` | `:38` | Initialised to `type(uint256).max` (`DEFAULT_AMOUNT_IN_CACHED`, `:35`) |
 
-`factory` and `WETH9` are `immutable` (`base/PeripheryImmutableState.sol:10-12`),
+`factory` and `WETH9` are `immutable` ([`base/PeripheryImmutableState.sol:10-12`](v3-periphery/contracts/base/PeripheryImmutableState.sol#L10-L12)),
 so they live in code, not storage. `DEFAULT_AMOUNT_IN_CACHED` is `constant`.
 
 The single slot is a *transient* value: set before an exact-output swap, read
@@ -2656,7 +2656,7 @@ the obvious `0`.
 Inherited layout comes first: `ERC721` and `ERC721Enumerable` from OZ 3.4.2
 (name, symbol, holder token enumerations, owner/approval maps, base URI), then
 `ERC721Permit`, which adds no mutable slots — `nameHash` and `versionHash` are
-`immutable` (`base/ERC721Permit.sol:19`, `:22`) and `PERMIT_TYPEHASH` is
+`immutable` ([`base/ERC721Permit.sol:19`](v3-periphery/contracts/base/ERC721Permit.sol#L19), `:22`) and `PERMIT_TYPEHASH` is
 `constant` (`:51`).
 
 The contract's own declarations, in order:
@@ -2766,7 +2766,7 @@ by topic alone across all contracts will pick up both; disambiguate by address,
 or by the fact that ERC-721 indexes three fields where ERC-20 indexes two.
 
 Note that `Approval` here is *not* what `permit` produces a log for — `permit`
-(`base/ERC721Permit.sol:55`) calls `_approve` internally, which emits the normal
+([`base/ERC721Permit.sol:55`](v3-periphery/contracts/base/ERC721Permit.sol#L55)) calls `_approve` internally, which emits the normal
 `Approval`. There is no distinct permit event, so an off-chain observer cannot
 tell a signed approval from an on-chain one.
 
@@ -2798,25 +2798,25 @@ dropped messages from conditions users should never hit.
 
 | String | Where | Cause |
 |---|---|---|
-| `Transaction too old` | `base/PeripheryValidation.sol:8` | `block.timestamp > deadline`. The single most common periphery revert. Every user-facing entry point carries `checkDeadline`. |
-| `Price slippage check` | `base/LiquidityManagement.sol:88`, `NonfungiblePositionManager.sol:275` | Received `amount0`/`amount1` below `amount{0,1}Min`. Fires on `mint`, `increaseLiquidity` and `decreaseLiquidity`. |
-| `Too little received` | `SwapRouter.sol:128`, `:165` | Exact-input swap produced less than `amountOutMinimum`. |
-| `Too much requested` | `SwapRouter.sol:218`, `:241` | Exact-output swap needed more than `amountInMaximum`. |
-| `Not approved` | `NonfungiblePositionManager.sol:185` | `isAuthorizedForToken` modifier; caller is neither owner nor approved. Guards `increaseLiquidity`, `decreaseLiquidity`, `collect`, `burn`. |
-| `Invalid token ID` | `NonfungiblePositionManager.sol:100` | `positions()` on a `tokenId` that was never minted or has been burned (`poolId == 0`). |
-| `Not cleared` | `NonfungiblePositionManager.sol:379` | `burn` with liquidity or uncollected tokens remaining. You must `decreaseLiquidity` to zero **and** `collect` before burning. |
-| `Insufficient WETH9` | `base/PeripheryPayments.sol:21`, `base/PeripheryPaymentsWithFee.sol:26` | `unwrapWETH9` when the contract's WETH balance is below `amountMinimum`. |
-| `Insufficient token` | `base/PeripheryPayments.sol:36`, `base/PeripheryPaymentsWithFee.sol:47` | Same for `sweepToken`. |
-| `Not WETH9` | `base/PeripheryPayments.sol:15`, `V3Migrator.sol:34` | ETH sent to the contract by anyone other than the WETH9 contract. Stops accidental ETH donations. |
+| `Transaction too old` | [`base/PeripheryValidation.sol:8`](v3-periphery/contracts/base/PeripheryValidation.sol#L8) | `block.timestamp > deadline`. The single most common periphery revert. Every user-facing entry point carries `checkDeadline`. |
+| `Price slippage check` | [`base/LiquidityManagement.sol:88`](v3-periphery/contracts/base/LiquidityManagement.sol#L88), [`NonfungiblePositionManager.sol:275`](v3-periphery/contracts/NonfungiblePositionManager.sol#L275) | Received `amount0`/`amount1` below `amount{0,1}Min`. Fires on `mint`, `increaseLiquidity` and `decreaseLiquidity`. |
+| `Too little received` | [`SwapRouter.sol:128`](v3-periphery/contracts/SwapRouter.sol#L128), `:165` | Exact-input swap produced less than `amountOutMinimum`. |
+| `Too much requested` | [`SwapRouter.sol:218`](v3-periphery/contracts/SwapRouter.sol#L218), `:241` | Exact-output swap needed more than `amountInMaximum`. |
+| `Not approved` | [`NonfungiblePositionManager.sol:185`](v3-periphery/contracts/NonfungiblePositionManager.sol#L185) | `isAuthorizedForToken` modifier; caller is neither owner nor approved. Guards `increaseLiquidity`, `decreaseLiquidity`, `collect`, `burn`. |
+| `Invalid token ID` | [`NonfungiblePositionManager.sol:100`](v3-periphery/contracts/NonfungiblePositionManager.sol#L100) | `positions()` on a `tokenId` that was never minted or has been burned (`poolId == 0`). |
+| `Not cleared` | [`NonfungiblePositionManager.sol:379`](v3-periphery/contracts/NonfungiblePositionManager.sol#L379) | `burn` with liquidity or uncollected tokens remaining. You must `decreaseLiquidity` to zero **and** `collect` before burning. |
+| `Insufficient WETH9` | [`base/PeripheryPayments.sol:21`](v3-periphery/contracts/base/PeripheryPayments.sol#L21), [`base/PeripheryPaymentsWithFee.sol:26`](v3-periphery/contracts/base/PeripheryPaymentsWithFee.sol#L26) | `unwrapWETH9` when the contract's WETH balance is below `amountMinimum`. |
+| `Insufficient token` | [`base/PeripheryPayments.sol:36`](v3-periphery/contracts/base/PeripheryPayments.sol#L36), [`base/PeripheryPaymentsWithFee.sol:47`](v3-periphery/contracts/base/PeripheryPaymentsWithFee.sol#L47) | Same for `sweepToken`. |
+| `Not WETH9` | [`base/PeripheryPayments.sol:15`](v3-periphery/contracts/base/PeripheryPayments.sol#L15), [`V3Migrator.sol:34`](v3-periphery/contracts/V3Migrator.sol#L34) | ETH sent to the contract by anyone other than the WETH9 contract. Stops accidental ETH donations. |
 
 ### 14.2 Token-transfer failures
 
 | String | Where | Meaning |
 |---|---|---|
-| `STF` | `libraries/TransferHelper.sol:21` | `safeTransferFrom` failed — usually missing allowance or balance |
-| `ST` | `libraries/TransferHelper.sol:35` | `safeTransfer` failed |
-| `SA` | `libraries/TransferHelper.sol:49` | `safeApprove` failed |
-| `STE` | `libraries/TransferHelper.sol:58` | `safeTransferETH` failed — the recipient rejected ETH or ran out of gas |
+| `STF` | [`libraries/TransferHelper.sol:21`](v3-periphery/contracts/libraries/TransferHelper.sol#L21) | `safeTransferFrom` failed — usually missing allowance or balance |
+| `ST` | [`libraries/TransferHelper.sol:35`](v3-periphery/contracts/libraries/TransferHelper.sol#L35) | `safeTransfer` failed |
+| `SA` | [`libraries/TransferHelper.sol:49`](v3-periphery/contracts/libraries/TransferHelper.sol#L49) | `safeApprove` failed |
+| `STE` | [`libraries/TransferHelper.sol:58`](v3-periphery/contracts/libraries/TransferHelper.sol#L58) | `safeTransferETH` failed — the recipient rejected ETH or ran out of gas |
 
 `STF` is the one you meet first: it is what a missing `approve` to the position
 manager or router looks like from the outside.
@@ -2825,10 +2825,10 @@ manager or router looks like from the outside.
 
 | String | Where | Meaning |
 |---|---|---|
-| `BP` | `libraries/OracleLibrary.sol:21` | "Bad period" — `consult` called with `secondsAgo == 0` |
-| `NI` | `libraries/OracleLibrary.sol:76` | "Not initialized" — pool has zero observation cardinality |
-| `NEO` | `libraries/OracleLibrary.sol:97` | "Not enough observations" — cardinality of 1; call `increaseObservationCardinalityNext` on the pool first |
-| `ONI` | `libraries/OracleLibrary.sol:116` | "Oldest not initialized" — the ring buffer has grown but not yet been filled |
+| `BP` | [`libraries/OracleLibrary.sol:21`](v3-periphery/contracts/libraries/OracleLibrary.sol#L21) | "Bad period" — `consult` called with `secondsAgo == 0` |
+| `NI` | [`libraries/OracleLibrary.sol:76`](v3-periphery/contracts/libraries/OracleLibrary.sol#L76) | "Not initialized" — pool has zero observation cardinality |
+| `NEO` | [`libraries/OracleLibrary.sol:97`](v3-periphery/contracts/libraries/OracleLibrary.sol#L97) | "Not enough observations" — cardinality of 1; call `increaseObservationCardinalityNext` on the pool first |
+| `ONI` | [`libraries/OracleLibrary.sol:116`](v3-periphery/contracts/libraries/OracleLibrary.sol#L116) | "Oldest not initialized" — the ring buffer has grown but not yet been filled |
 
 These four are the entire failure surface of reading a TWAP, and three of them
 mean "this pool is not ready to be used as an oracle yet".
@@ -2837,11 +2837,11 @@ mean "this pool is not ready to be used as an oracle yet".
 
 | String | Where | Cause |
 |---|---|---|
-| `Permit expired` | `base/ERC721Permit.sol:63` | Signature deadline passed |
-| `Invalid signature` | `base/ERC721Permit.sol:80` | `ecrecover` returned the zero address — malformed `v`/`r`/`s` |
-| `Unauthorized` | `base/ERC721Permit.sol:77`, `:81` | Recovered signer is not the owner (`:81`), or the ERC-1271 contract owner rejected the signature (`:77`) |
-| `ERC721Permit: approval to current owner` | `base/ERC721Permit.sol:74` | Permitting the owner to themselves |
-| `ERC721: approved query for nonexistent token` | `NonfungiblePositionManager.sol:390` | `getApproved` on a burned or unminted id |
+| `Permit expired` | [`base/ERC721Permit.sol:63`](v3-periphery/contracts/base/ERC721Permit.sol#L63) | Signature deadline passed |
+| `Invalid signature` | [`base/ERC721Permit.sol:80`](v3-periphery/contracts/base/ERC721Permit.sol#L80) | `ecrecover` returned the zero address — malformed `v`/`r`/`s` |
+| `Unauthorized` | [`base/ERC721Permit.sol:77`](v3-periphery/contracts/base/ERC721Permit.sol#L77), `:81` | Recovered signer is not the owner (`:81`), or the ERC-1271 contract owner rejected the signature (`:77`) |
+| `ERC721Permit: approval to current owner` | [`base/ERC721Permit.sol:74`](v3-periphery/contracts/base/ERC721Permit.sol#L74) | Permitting the owner to themselves |
+| `ERC721: approved query for nonexistent token` | [`NonfungiblePositionManager.sol:390`](v3-periphery/contracts/NonfungiblePositionManager.sol#L390) | `getApproved` on a burned or unminted id |
 
 ### 14.5 Byte-slicing
 
@@ -2860,7 +2860,7 @@ malformed `path`:
 A path of the wrong length produces one of these rather than a clean "bad path"
 error, which makes malformed-path bugs harder to diagnose than they should be.
 
-`Strings: hex length insufficient` (`libraries/HexStrings.sol:17`) is only
+`Strings: hex length insufficient` ([`libraries/HexStrings.sol:17`](v3-periphery/contracts/libraries/HexStrings.sol#L17)) is only
 reachable from the NFT-artwork path and indicates a value too large for the
 requested hex width.
 
@@ -2872,21 +2872,21 @@ one of these nineteen, grouped below by condition.
 
 | Where | Condition | Why bare |
 |---|---|---|
-| `NonfungiblePositionManager.sol:190` | `_exists(tokenId)` in `tokenURI` | Unreachable through normal use |
-| `NonfungiblePositionManager.sol:265` | `params.liquidity > 0` in `decreaseLiquidity` | |
-| `NonfungiblePositionManager.sol:269` | `positionLiquidity >= params.liquidity` | Burning more than you have |
-| `NonfungiblePositionManager.sol:316` | `amount0Max > 0 \|\| amount1Max > 0` in `collect` | Collecting nothing |
-| `SwapRouter.sol:62`, `lens/Quoter.sol:43`, `lens/QuoterV2.sol:46` | `amount0Delta > 0 \|\| amount1Delta > 0` | "Swaps entirely within 0-liquidity regions are not supported" — the comment is in the source |
-| `SwapRouter.sol:199` | `amountOutReceived == amountOut` when `sqrtPriceLimitX96 == 0` | Exact-output partial fill |
-| `lens/Quoter.sol:59`, `lens/QuoterV2.sol:68` | `amountReceived == amountOutCached` | Same check inside the quoter's simulated swap |
-| `libraries/PoolAddress.sol:34` | `key.token0 < key.token1` | Unsorted pool key — a caller error, not a user one |
-| `base/PoolInitializer.sol:19` | `token0 < token1` | Same |
-| `libraries/CallbackValidation.sol:34` | `msg.sender == address(pool)` | **The security-critical one.** A forged callback reverts with no message. |
-| `libraries/LiquidityAmounts.sol:14` | `uint128(x) == x` | Downcast overflow |
-| `libraries/SqrtPriceMathPartial.sol:31` | `sqrtRatioAX96 > 0` | |
-| `base/PeripheryPaymentsWithFee.sol:23`, `:44` | `feeBips > 0 && feeBips <= 100` | Fee capped at 1% |
+| [`NonfungiblePositionManager.sol:190`](v3-periphery/contracts/NonfungiblePositionManager.sol#L190) | `_exists(tokenId)` in `tokenURI` | Unreachable through normal use |
+| [`NonfungiblePositionManager.sol:265`](v3-periphery/contracts/NonfungiblePositionManager.sol#L265) | `params.liquidity > 0` in `decreaseLiquidity` | |
+| [`NonfungiblePositionManager.sol:269`](v3-periphery/contracts/NonfungiblePositionManager.sol#L269) | `positionLiquidity >= params.liquidity` | Burning more than you have |
+| [`NonfungiblePositionManager.sol:316`](v3-periphery/contracts/NonfungiblePositionManager.sol#L316) | `amount0Max > 0 \|\| amount1Max > 0` in `collect` | Collecting nothing |
+| [`SwapRouter.sol:62`](v3-periphery/contracts/SwapRouter.sol#L62), [`lens/Quoter.sol:43`](v3-periphery/contracts/lens/Quoter.sol#L43), [`lens/QuoterV2.sol:46`](v3-periphery/contracts/lens/QuoterV2.sol#L46) | `amount0Delta > 0 \|\| amount1Delta > 0` | "Swaps entirely within 0-liquidity regions are not supported" — the comment is in the source |
+| [`SwapRouter.sol:199`](v3-periphery/contracts/SwapRouter.sol#L199) | `amountOutReceived == amountOut` when `sqrtPriceLimitX96 == 0` | Exact-output partial fill |
+| [`lens/Quoter.sol:59`](v3-periphery/contracts/lens/Quoter.sol#L59), [`lens/QuoterV2.sol:68`](v3-periphery/contracts/lens/QuoterV2.sol#L68) | `amountReceived == amountOutCached` | Same check inside the quoter's simulated swap |
+| [`libraries/PoolAddress.sol:34`](v3-periphery/contracts/libraries/PoolAddress.sol#L34) | `key.token0 < key.token1` | Unsorted pool key — a caller error, not a user one |
+| [`base/PoolInitializer.sol:19`](v3-periphery/contracts/base/PoolInitializer.sol#L19) | `token0 < token1` | Same |
+| [`libraries/CallbackValidation.sol:34`](v3-periphery/contracts/libraries/CallbackValidation.sol#L34) | `msg.sender == address(pool)` | **The security-critical one.** A forged callback reverts with no message. |
+| [`libraries/LiquidityAmounts.sol:14`](v3-periphery/contracts/libraries/LiquidityAmounts.sol#L14) | `uint128(x) == x` | Downcast overflow |
+| [`libraries/SqrtPriceMathPartial.sol:31`](v3-periphery/contracts/libraries/SqrtPriceMathPartial.sol#L31) | `sqrtRatioAX96 > 0` | |
+| [`base/PeripheryPaymentsWithFee.sol:23`](v3-periphery/contracts/base/PeripheryPaymentsWithFee.sol#L23), `:44` | `feeBips > 0 && feeBips <= 100` | Fee capped at 1% |
 
-The `CallbackValidation.sol:34` entry deserves emphasis: if you write a contract
+The [`CallbackValidation.sol:34`](v3-periphery/contracts/libraries/CallbackValidation.sol#L34) entry deserves emphasis: if you write a contract
 that implements `uniswapV3SwapCallback` and forget this check, anyone can call
 your callback directly and drain you. The bare revert is what a correct
 implementation produces when attacked.
@@ -2987,7 +2987,7 @@ Three calls, and they must be in this order:
 ```
 
 Skip step 2 and step 3 reverts with `Not cleared`. In practice all three are
-bundled into one `multicall` (`base/Multicall.sol:11`).
+bundled into one `multicall` ([`base/Multicall.sol:11`](v3-periphery/contracts/base/Multicall.sol#L11)).
 
 ### 15.5 Swap, exact input, single hop
 
@@ -3102,10 +3102,10 @@ NonfungiblePositionManager.multicall([                base/Multicall.sol:11
 `multicall` `delegatecall`s into `address(this)`, so `msg.sender` is preserved
 across all three — which is exactly why `selfPermit` can grant an allowance *from
 the caller* to the contract. Use the `IfNecessary` variants: a plain `selfPermit`
-can be front-run, and its revert would take the whole batch down (`ISelfPermit.sol:26`).
+can be front-run, and its revert would take the whole batch down ([`ISelfPermit.sol:26`](v3-periphery/contracts/interfaces/ISelfPermit.sol#L26)).
 
 For DAI-style tokens substitute `selfPermitAllowedIfNecessary`
-(`base/SelfPermit.sol:52`).
+([`base/SelfPermit.sol:52`](v3-periphery/contracts/base/SelfPermit.sol#L52)).
 
 ### 15.12 Migrate a V2 position to V3
 
@@ -3121,7 +3121,7 @@ EOA → V3Migrator.migrate(MigrateParams)                             :37
 ```
 
 Typically preceded by `createAndInitializePoolIfNecessary`
-(`base/PoolInitializer.sol:13`) in the same `multicall`, since the destination
+([`base/PoolInitializer.sol:13`](v3-periphery/contracts/base/PoolInitializer.sol#L13)) in the same `multicall`, since the destination
 V3 pool may not exist yet.
 
 ---
@@ -3145,7 +3145,7 @@ Everything in this document that will cost you money or hours, in one place.
 8. Multi-hop hard-codes `sqrtPriceLimitX96 = 0` on every hop. Your only protection is `amountOutMinimum` / `amountInMaximum`.
 9. Intermediate hops pay out to the router, not the user. A token stuck at the router between hops is normal mid-transaction; a token stuck *after* the transaction means someone forgot `sweepToken`.
 10. `amountInCached` is reset to `type(uint256).max`, never `0`, to avoid the 20,000-gas cost of refilling a zeroed slot (§12.1).
-11. `SwapRouter.sol:199` requires an exact-output swap to fill completely when no price limit is set. A partial fill reverts with no message.
+11. [`SwapRouter.sol:199`](v3-periphery/contracts/SwapRouter.sol#L199) requires an exact-output swap to fill completely when no price limit is set. A partial fill reverts with no message.
 
 **Quoters**
 
@@ -3155,15 +3155,15 @@ Everything in this document that will cost you money or hours, in one place.
 
 **Callbacks**
 
-15. If you implement `uniswapV3SwapCallback` or `uniswapV3MintCallback`, you **must** call `CallbackValidation.verifyCallback` (`libraries/CallbackValidation.sol:15`, `:28`). Without it anyone calls your callback directly and drains you. It reverts bare, so an empty revert here is the guard working.
-16. `PoolAddress.POOL_INIT_CODE_HASH` (`libraries/PoolAddress.sol:6`) is chain-agnostic only if the factory deployed identical bytecode. On a chain with a modified pool, every computed address is wrong and `verifyCallback` rejects everything.
+15. If you implement `uniswapV3SwapCallback` or `uniswapV3MintCallback`, you **must** call `CallbackValidation.verifyCallback` ([`libraries/CallbackValidation.sol:15`](v3-periphery/contracts/libraries/CallbackValidation.sol#L15), `:28`). Without it anyone calls your callback directly and drains you. It reverts bare, so an empty revert here is the guard working.
+16. `PoolAddress.POOL_INIT_CODE_HASH` ([`libraries/PoolAddress.sol:6`](v3-periphery/contracts/libraries/PoolAddress.sol#L6)) is chain-agnostic only if the factory deployed identical bytecode. On a chain with a modified pool, every computed address is wrong and `verifyCallback` rejects everything.
 
 **Payments and ETH**
 
-17. Only WETH9 may send ETH to these contracts (`base/PeripheryPayments.sol:15`). Direct transfers revert with `Not WETH9`.
+17. Only WETH9 may send ETH to these contracts ([`base/PeripheryPayments.sol:15`](v3-periphery/contracts/base/PeripheryPayments.sol#L15)). Direct transfers revert with `Not WETH9`.
 18. ETH-denominated flows need `refundETH` appended to the multicall, or the dust stays in the contract and is claimable by anyone.
 19. `unwrapWETH9`/`sweepToken` check a **minimum**, not an exact amount — they sweep the entire balance, whoever put it there.
-20. The fee variants cap `feeBips` at 100 (1%) with a bare require (`base/PeripheryPaymentsWithFee.sol:23`, `:44`).
+20. The fee variants cap `feeBips` at 100 (1%) with a bare require ([`base/PeripheryPaymentsWithFee.sol:23`](v3-periphery/contracts/base/PeripheryPaymentsWithFee.sol#L23), `:44`).
 
 **Oracles**
 
