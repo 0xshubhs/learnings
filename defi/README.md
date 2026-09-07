@@ -1,14 +1,14 @@
-# DeFi Deep Dives — Uniswap, Curve, Aave, LI.FI, Morpho, Liquity
+# DeFi Deep Dives
 
-Source-first study notes on six protocols covering five primitives of on-chain
-finance: **exchange** (Uniswap, Curve), **credit** (Aave), **routing across
-chains** (LI.FI), **minimal lending** (Morpho Blue) and **CDP stablecoins**
-(Liquity).
+Source-first study notes on eight protocols covering the major primitives of
+on-chain finance: **exchange** (Uniswap, Curve), **credit** (Aave, Morpho Blue),
+**CDP stablecoins** (Liquity), **liquid staking** (Lido), **cross-chain
+messaging** (Wormhole) and **routing** (LI.FI).
 
 Every protocol's real source is cloned into this folder with its `.git` removed,
 so the tree is one flat, greppable corpus.
 
-**Every citation is a working link.** All 2,553 of them are clickable and jump
+**Every citation is a working link.** All 3,886 of them are clickable and jump
 to the exact line, on GitHub and in most editors. Each was verified twice: that
 the target file exists and the line is in range, and that the line actually says
 what the surrounding prose claims. Open the code next to the prose — the notes
@@ -37,6 +37,8 @@ understand a protocol; read its reference to have seen all of it.
 | [`lifi/LIFI-DEEP-DIVE.md`](lifi/LIFI-DEEP-DIVE.md) | LI.FI: EIP-2535 Diamond, bridge facets, Executor/Receivers, DEX aggregator |
 | [`morpho/MORPHO-DEEP-DIVE.md`](morpho/MORPHO-DEEP-DIVE.md) | Morpho Blue, written as a sustained comparison against Aave |
 | [`liquity/LIQUITY-DEEP-DIVE.md`](liquity/LIQUITY-DEEP-DIVE.md) | Liquity v1 and v2: immutable CDP stablecoin, stability pool, redistribution |
+| [`lido/LIDO-DEEP-DIVE.md`](lido/LIDO-DEEP-DIVE.md) | Lido: stETH rebasing shares, the oracle rebase, withdrawals, stVaults |
+| [`wormhole/WORMHOLE-DEEP-DIVE.md`](wormhole/WORMHOLE-DEEP-DIVE.md) | Wormhole: VAAs and the token bridge, in Solidity and in Rust |
 
 ### Complete references — every contract, every function
 
@@ -57,8 +59,10 @@ understand a protocol; read its reference to have seen all of it.
 | [`lifi/LIBRARIES-PERIPHERY-COMPLETE-REFERENCE.md`](lifi/LIBRARIES-PERIPHERY-COMPLETE-REFERENCE.md) | Diamond internals, LibSwap/LibAsset/allowlists, Executor, receivers |
 | [`morpho/MORPHO-COMPLETE-REFERENCE.md`](morpho/MORPHO-COMPLETE-REFERENCE.md) | All 102 files: Blue, MetaMorpho, oracles, bundlers |
 | [`liquity/LIQUITY-COMPLETE-REFERENCE.md`](liquity/LIQUITY-COMPLETE-REFERENCE.md) | Liquity v1 and v2 in full, plus a v1 to v2 migration map |
+| [`lido/LIDO-COMPLETE-REFERENCE.md`](lido/LIDO-COMPLETE-REFERENCE.md) | All 155 Lido files across four compiler versions |
+| [`wormhole/WORMHOLE-EVM-COMPLETE-REFERENCE.md`](wormhole/WORMHOLE-EVM-COMPLETE-REFERENCE.md) | All 61 EVM contracts, with byte-level payload layouts |
 
-All twenty-four documents are complete and have had a citation sweep. See
+All twenty-eight documents are complete and have had a citation sweep. See
 [`SESSION-LOG.md`](SESSION-LOG.md) for coverage counts and the defects the
 exhaustive pass turned up in shipped code.
 
@@ -79,6 +83,8 @@ Uniswap v4 and Aave v3 suites executable.
 uni/     v1-contracts/  v2-core/  v2-periphery/  v3-core/  v3-periphery/  v4-core/
 morpho/  morpho-blue/  metamorpho/  morpho-blue-oracles/  morpho-blue-bundlers/
 liquity/ v1-dev/  v2-bold/
+lido/    core/
+wormhole/ wormhole/   (ethereum/ is Solidity, solana/ and svm/ are Rust)
 curve/   curve-contract/  stableswap-ng/  curve-dao-contracts/
 aave/    v1-aave-protocol/  v2-protocol/  v3-core-original/  aave-v3-origin/ (v3.6)  v4-aave/
 lifi/    contracts/
@@ -124,7 +130,14 @@ If you read these front to back you will build each idea on the previous one.
 9. **`liquity/LIQUITY-DEEP-DIVE.md`** — a CDP stablecoin with no governance and
    no admin keys, and a liquidation design unlike anything else here: the
    stability pool absorbs first, then debt is redistributed to survivors in O(1).
-10. **`lifi/LIFI-DEEP-DIVE.md`** — the integration layer. Everything above is a
+10. **`lido/LIDO-DEEP-DIVE.md`** — liquid staking, the largest category in DeFi
+    and the fifth appearance of shares-versus-assets. A connected stVault turns
+    out to be a CDP, so most of section 6 is renaming what you already know.
+11. **`wormhole/WORMHOLE-DEEP-DIVE.md`** — one layer below LI.FI. What a bridge
+    actually is: a signed message and a set of guardians. Also the same protocol
+    written twice, in Solidity and in Rust, which is the cheapest way into
+    reading Solana.
+12. **`lifi/LIFI-DEEP-DIVE.md`** — the integration layer. Everything above is a
    callee here. This is also where you see what production infrastructure code
    actually looks like: allowlists, upgrade governance, emergency pauses.
 

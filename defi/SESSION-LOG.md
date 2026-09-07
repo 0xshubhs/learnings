@@ -5,7 +5,7 @@ planned was completed; nothing is outstanding.
 
 ## What was set up
 
-Nineteen protocol repositories were shallow-cloned and their `.git` directories
+Twenty-two protocol repositories were shallow-cloned and their `.git` directories
 removed, giving one flat greppable corpus:
 
 ```
@@ -15,6 +15,8 @@ aave/    v1-aave-protocol  v2-protocol  v3-core-original  aave-v3-origin  v4-aav
 lifi/    contracts
 morpho/  morpho-blue  metamorpho  morpho-blue-oracles  morpho-blue-bundlers
 liquity/ v1-dev  v2-bold
+lido/    core
+wormhole/ wormhole
 ```
 
 Aave v4 turned out to be public at `aave/aave-v4`, with audits dated through
@@ -38,7 +40,7 @@ mid-write. Wave three briefs required chunked appends and none hit it.
 
 ## The documents
 
-All twenty-four are complete. Deep dives first, then references.
+All twenty-eight are complete. Deep dives first, then references.
 
 | Document | Lines | Coverage |
 |---|---|---|
@@ -157,3 +159,42 @@ that check in the finish criteria.
 - **Liquity v2's price feed returns two different prices**, the max of market and
   canonical for redemptions and the min for everything else, so an oracle
   discrepancy always prices against whoever is acting.
+
+
+## Round three: Lido and Wormhole
+
+Chosen from DefiLlama category TVL rather than taste. Liquid staking was the
+largest category with no coverage at all ($52.4B), and bridges the second
+($52.9B), where LI.FI had shown only the calling side. Wormhole was picked over
+alternatives because it implements one protocol in both Solidity and Rust, making
+it the cheapest entry into reading Solana.
+
+The per-section commit pattern was applied from the start this round. No work was
+lost, and every document passed a NUL-byte check before being reported done.
+
+### What round three found
+
+- **The Lido tree is not v3, despite `package.json`.** `Lido.sol` contains
+  `finalizeUpgrade_v4` and `_migrateStorage_v3_to_v4`, so it is mid-migration to
+  v4. `handleOracleReport` has also moved out of `Lido.sol` into `Accounting.sol`.
+- **`totalShares` is no longer a plain `uint256`.** v3 packs total shares into the
+  low 128 bits and external (vault-backed) shares into the high 128, at the same
+  slot v2 used. The constant is named `TOTAL_SHARES_POSITION_LOW128` and the
+  getter masks. Any tool still reading that slot whole returns garbage silently.
+- **Lido's share rate deliberately excludes vault shares**, because external ether
+  is itself derived from the ratio and dividing by totals would apply the same
+  division twice. Mathematically equal, not equal in integer arithmetic.
+- **The February 2022 Wormhole bug is still legible in the current source.** The
+  `instruction_acc` field is typed `Info<'b>`, a type carrying no constraint. The
+  fix is the `_checked` suffixes below it, and the scar tissue is a hardcoded
+  16-entry blocklist of signature accounts banned from posting VAAs.
+- **EVM and Solana compute guardian quorum with different integer expressions.**
+  `(n*2)/3 + 1` versus `((n*10/3)*2)/10 + 1`. Both give 13 at n=19, but two
+  non-identical formulations of one consensus threshold is a differential-testing
+  target.
+- **Wormhole's NFT bridge parser abandons its own framing**, reading fields
+  backwards from the end of the buffer with its closing length assertion
+  commented out. It is the only parser in that repo that does so.
+- **`GuardianSetAdded` is declared in the public interface and never emitted.**
+- **`TokenImplementation.transferFrom` transfers before checking the allowance**,
+  so it emits `Transfer` before `Approval`, unlike any standard ERC-20.
