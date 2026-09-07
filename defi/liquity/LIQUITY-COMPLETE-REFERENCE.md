@@ -1439,3 +1439,98 @@ incentives.
 
 ---
 
+## 2.4 `BorrowerOperations` — [`v2-bold/contracts/src/BorrowerOperations.sol:1-1616`](v2-bold/contracts/src/BorrowerOperations.sol#L1-L1616)
+
+1,616 lines, up from 666 in v1. Almost all of the growth is interest-rate
+management and batch delegation.
+
+### 2.4.1 Opening
+
+| Function | Line | Notes |
+|---|---|---|
+| `openTrove` | [`v2-bold/contracts/src/BorrowerOperations.sol:201`](v2-bold/contracts/src/BorrowerOperations.sol#L201) | Takes `_annualInterestRate` and `_maxUpfrontFee` |
+| `openTroveAndJoinInterestBatchManager` | [`v2-bold/contracts/src/BorrowerOperations.sol:242`](v2-bold/contracts/src/BorrowerOperations.sol#L242) | Opens and delegates rate-setting in one call |
+| `_openTrove` | [`v2-bold/contracts/src/BorrowerOperations.sol:297`](v2-bold/contracts/src/BorrowerOperations.sol#L297) | Shared implementation |
+
+`openTrove` takes an `_ownerIndex`, which is hashed with the owner address to
+derive the `troveId`. That is how one address can hold many Troves: the NFT
+tokenId is `keccak256(owner, ownerIndex)` rather than the address itself.
+
+### 2.4.2 Adjusting
+
+| Function | Line | Purpose |
+|---|---|---|
+| `addColl` | [`v2-bold/contracts/src/BorrowerOperations.sol:382`](v2-bold/contracts/src/BorrowerOperations.sol#L382) | |
+| `withdrawColl` | [`v2-bold/contracts/src/BorrowerOperations.sol:398`](v2-bold/contracts/src/BorrowerOperations.sol#L398) | |
+| `withdrawBold` | [`v2-bold/contracts/src/BorrowerOperations.sol:414`](v2-bold/contracts/src/BorrowerOperations.sol#L414) | Takes `_maxUpfrontFee` |
+| `repayBold` | [`v2-bold/contracts/src/BorrowerOperations.sol:424`](v2-bold/contracts/src/BorrowerOperations.sol#L424) | |
+| `adjustTrove` | [`v2-bold/contracts/src/BorrowerOperations.sol:459`](v2-bold/contracts/src/BorrowerOperations.sol#L459) | Combined |
+| `adjustZombieTrove` | [`v2-bold/contracts/src/BorrowerOperations.sol:475`](v2-bold/contracts/src/BorrowerOperations.sol#L475) | Special path for partially-redeemed Troves |
+| `adjustTroveInterestRate` | [`v2-bold/contracts/src/BorrowerOperations.sol:510`](v2-bold/contracts/src/BorrowerOperations.sol#L510) | Change your own rate |
+| `_adjustTrove` | [`v2-bold/contracts/src/BorrowerOperations.sol:557`](v2-bold/contracts/src/BorrowerOperations.sol#L557) | Shared implementation |
+| `closeTrove` | [`v2-bold/contracts/src/BorrowerOperations.sol:682`](v2-bold/contracts/src/BorrowerOperations.sol#L682) | |
+| `applyPendingDebt` | [`v2-bold/contracts/src/BorrowerOperations.sol:751`](v2-bold/contracts/src/BorrowerOperations.sol#L751) | Materialise accrued interest and redistribution |
+
+**Zombie Troves** are new in v2. When a redemption pushes a Trove below
+`MIN_DEBT` it is not closed, as v1 would; it is marked a zombie, removed from the
+sorted list so it cannot be redeemed again, and left for the owner to top up or
+close. `adjustZombieTrove` at [`v2-bold/contracts/src/BorrowerOperations.sol:475`](v2-bold/contracts/src/BorrowerOperations.sol#L475) is the only way to bring one back. This
+avoids v1's behaviour of force-closing a borrower's position and dumping the
+remainder into `CollSurplusPool`.
+
+### 2.4.3 Interest delegation
+
+Two mechanisms, both new.
+
+**Individual delegates** — [`v2-bold/contracts/src/BorrowerOperations.sol:802`](v2-bold/contracts/src/BorrowerOperations.sol#L802), [`v2-bold/contracts/src/BorrowerOperations.sol:810`](v2-bold/contracts/src/BorrowerOperations.sol#L810), [`v2-bold/contracts/src/BorrowerOperations.sol:840`](v2-bold/contracts/src/BorrowerOperations.sol#L840). A borrower nominates an
+address that may set their rate within a `[minInterestRate, maxInterestRate]`
+band. The delegate cannot touch collateral or debt.
+
+**Batch managers** — a delegate that manages many Troves at once with a single
+shared rate.
+
+| Function | Line | Purpose |
+|---|---|---|
+| `registerBatchManager` | [`v2-bold/contracts/src/BorrowerOperations.sol:849`](v2-bold/contracts/src/BorrowerOperations.sol#L849) | Declares rate bounds and a management fee |
+| `lowerBatchManagementFee` | [`v2-bold/contracts/src/BorrowerOperations.sol:874`](v2-bold/contracts/src/BorrowerOperations.sol#L874) | Fee can only ever decrease |
+| `setBatchManagerAnnualInterestRate` | [`v2-bold/contracts/src/BorrowerOperations.sol:905`](v2-bold/contracts/src/BorrowerOperations.sol#L905) | Moves every Trove in the batch |
+| `setInterestBatchManager` | [`v2-bold/contracts/src/BorrowerOperations.sol:967`](v2-bold/contracts/src/BorrowerOperations.sol#L967) | A borrower joins a batch |
+| `kickFromBatch` | [`v2-bold/contracts/src/BorrowerOperations.sol:1035`](v2-bold/contracts/src/BorrowerOperations.sol#L1035) | Remove a Trove that no longer qualifies |
+| `removeFromBatch` / `_removeFromBatch` | [`v2-bold/contracts/src/BorrowerOperations.sol:1046`](v2-bold/contracts/src/BorrowerOperations.sol#L1046) / [`v2-bold/contracts/src/BorrowerOperations.sol:1063`](v2-bold/contracts/src/BorrowerOperations.sol#L1063) | Borrower leaves |
+| `switchBatchManager` | [`v2-bold/contracts/src/BorrowerOperations.sol:1145`](v2-bold/contracts/src/BorrowerOperations.sol#L1145) | Leave one and join another atomically |
+
+Batches use a **shares** model: a batch tracks total debt and total shares, and
+each member holds shares. `MAX_BATCH_SHARES_RATIO` ([`v2-bold/contracts/src/Dependencies/Constants.sol:60`](v2-bold/contracts/src/Dependencies/Constants.sol#L60))
+bounds the debt-per-share so a manager cannot inflate the ratio and round members
+out of their position. `lowerBatchManagementFee` being one-directional means a
+manager can never raise fees on members who already joined.
+
+`BCR_ALL` (10%) requires a Trove to sit 10 points above MCR to join a batch,
+because a batch manager raising the shared rate increases everyone's debt at
+once and could otherwise push members straight into liquidation.
+
+### 2.4.4 Fees and shutdown
+
+| Function | Line | Purpose |
+|---|---|---|
+| `_applyUpfrontFee` | [`v2-bold/contracts/src/BorrowerOperations.sol:1163`](v2-bold/contracts/src/BorrowerOperations.sol#L1163) | Adds the fee to debt, checks `_maxUpfrontFee` |
+| `_calcUpfrontFee` | [`v2-bold/contracts/src/BorrowerOperations.sol:1194`](v2-bold/contracts/src/BorrowerOperations.sol#L1194) | 7 days of interest at the average rate |
+| `onLiquidateTrove` | [`v2-bold/contracts/src/BorrowerOperations.sol:1199`](v2-bold/contracts/src/BorrowerOperations.sol#L1199) | Hook from `TroveManager` |
+| `_wipeTroveMappings` | [`v2-bold/contracts/src/BorrowerOperations.sol:1205`](v2-bold/contracts/src/BorrowerOperations.sol#L1205) | Clears delegate and batch state |
+| `claimCollateral` | [`v2-bold/contracts/src/BorrowerOperations.sol:1214`](v2-bold/contracts/src/BorrowerOperations.sol#L1214) | From `CollSurplusPool` |
+| `shutdown` | [`v2-bold/contracts/src/BorrowerOperations.sol:1219`](v2-bold/contracts/src/BorrowerOperations.sol#L1219) | Permissionless once TCR < SCR |
+| `shutdownFromOracleFailure` | [`v2-bold/contracts/src/BorrowerOperations.sol:1238`](v2-bold/contracts/src/BorrowerOperations.sol#L1238) | Called by the price feed |
+| `_applyShutdown` | [`v2-bold/contracts/src/BorrowerOperations.sol:1248`](v2-bold/contracts/src/BorrowerOperations.sol#L1248) | |
+
+**Shutdown** is entirely new. A branch whose TCR falls below its SCR, or whose
+oracle fails, can be shut down by anyone. After shutdown, borrowing stops and
+**urgent redemption** opens: anyone may redeem against any Trove in that branch
+at a 2% bonus ([`v2-bold/contracts/src/Dependencies/Constants.sol:73`](v2-bold/contracts/src/Dependencies/Constants.sol#L73)), ignoring the interest-rate
+ordering. This unwinds a broken branch without touching the others.
+
+Note the comment at [`v2-bold/contracts/src/BorrowerOperations.sol:1241`](v2-bold/contracts/src/BorrowerOperations.sol#L1241): `shutdownFromOracleFailure` is a no-op rather than
+a revert, "so that the outer function call which fetches the price does not
+revert." A failing oracle must not brick the whole system.
+
+---
+
