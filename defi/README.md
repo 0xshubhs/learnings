@@ -61,6 +61,13 @@ Each reference ends with an ABI/selector table, a storage-layout table, an event
 reference, a revert-string decoder, and a use-case index that maps "I want to do
 X" to the exact function and its full internal call chain.
 
+## Practice
+
+Reading will not make it stick. [`PRACTICE.md`](PRACTICE.md) is a seven-week plan
+built on the 58 tracing exercises already in the deep dives, plus hands-on labs
+against test suites that actually run. Run `./setup-labs.sh` first to make the
+Uniswap v4 and Aave v3 suites executable.
+
 ## The source tree
 
 ```

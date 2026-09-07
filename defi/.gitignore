@@ -1,0 +1,6 @@
+# Fetched Foundry dependencies and build output — recreate with ./setup-labs.sh
+*/*/lib/*/
+*/*/out/
+*/*/cache/
+*/*/node_modules/
+*/*/.forge-snapshots/
