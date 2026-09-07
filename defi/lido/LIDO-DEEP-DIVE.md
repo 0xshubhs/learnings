@@ -280,3 +280,153 @@ Aave made the opposite call with aTokens, which also rebase, and then shipped
 protocols.
 
 ---
+
+## 2. The deposit path
+
+Your ETH does not go to a validator when you call `submit`. It sits in a buffer
+until someone assembles a deposit, and the gap between those two events is where
+the interesting security problem lives.
+
+```
+  user
+   |  submit{value}                                   Lido.sol:508
+   v
+ Lido  ------------------------------ buffered ether stored, shares minted
+   ^                                                  Lido.sol:1253-1267
+   |  withdrawDepositableEther                        Lido.sol:869
+   |
+ StakingRouter.deposit  <---- only callable by the DSM   StakingRouter.sol:942
+   |      |
+   |      |  obtainDepositData(maxDepositsCount)     -> a staking module
+   |      v                                             returns pubkeys+sigs
+   |  makeBeaconChainDeposits32ETH                      StakingRouter.sol:985
+   v
+ beacon chain deposit contract
+   ^
+   |  depositBufferedEther(blockNumber, blockHash,      DepositSecurityModule
+   |                       depositRoot, moduleId,       .sol:460
+   |                       nonce, guardianSignatures)
+ anyone (a bot), carrying a guardian quorum
+```
+
+### 2.1 Buffering
+
+`_submit` adds to `bufferedEther` and stops
+([`Lido.sol:1263`](core/contracts/0.4.24/Lido.sol#L1263)). Buffered ether serves
+two masters: it is the pool of capital waiting to be staked, and it is the first
+place withdrawals are paid from. v3 splits it explicitly through
+`_getBufferedEtherAllocation` ([`Lido.sol:605`](core/contracts/0.4.24/Lido.sol#L605))
+into a deposits reserve and a withdrawals reserve, with
+`getDepositableEther` ([`:823`](core/contracts/0.4.24/Lido.sol#L823)) reporting
+only the portion that may actually be staked.
+
+### 2.2 The attack the DSM exists to stop
+
+This is the part worth understanding properly, because it is a genuinely subtle
+vulnerability and the mitigation is unusual.
+
+A node operator submits validator public keys and, crucially, **signatures over
+their own deposit data**. The beacon chain deposit contract does not verify that
+a deposit's withdrawal credentials match any earlier deposit for the same public
+key. It only checks the BLS signature over the message the depositor supplies.
+
+So: a malicious operator can pre-deposit 1 ETH for a public key, setting the
+withdrawal credentials to **their own address**. Later, Lido deposits 32 ETH for
+that same public key with Lido's withdrawal credentials. The beacon chain honours
+the *first* credentials it ever saw for that key. Lido's 32 ETH is now withdrawable
+by the attacker. This is the "deposit front-running" attack, and it was disclosed
+against Lido in 2021.
+
+The fix cannot be purely on-chain, because the EVM cannot see the beacon chain
+deposit history for a key. So Lido added an off-chain guardian committee that
+watches the deposit contract and signs an attestation that a given deposit is
+safe to make right now.
+
+### 2.3 The guardian attestation
+
+```solidity
+function depositBufferedEther(
+    uint256 blockNumber,
+    bytes32 blockHash,
+    bytes32 depositRoot,
+    uint256 stakingModuleId,
+    uint256 nonce,
+    Signature[] calldata sortedGuardianSignatures
+) external {
+    bytes32 onchainDepositRoot = DEPOSIT_CONTRACT.get_deposit_root();
+    if (depositRoot != onchainDepositRoot) revert DepositRootChanged();
+
+    uint256 onchainNonce = STAKING_ROUTER.getStakingModuleNonce(stakingModuleId);
+    if (nonce != onchainNonce) revert ModuleNonceChanged();
+    ...
+```
+
+[`core/contracts/0.8.9/DepositSecurityModule.sol:460-488`](core/contracts/0.8.9/DepositSecurityModule.sol#L460-L488)
+
+Every check exists for a reason:
+
+| Check | Line | Defends against |
+|---|---|---|
+| `depositRoot` matches on-chain | [`:468`](core/contracts/0.8.9/DepositSecurityModule.sol#L468) | any new deposit landing between signing and execution, including the attacker's |
+| module `nonce` matches | [`:473`](core/contracts/0.8.9/DepositSecurityModule.sol#L473) | the key set changing after guardians vetted it |
+| quorum of signatures | [`:476`](core/contracts/0.8.9/DepositSecurityModule.sol#L476) | a single compromised guardian |
+| min deposit block distance | [`:477`](core/contracts/0.8.9/DepositSecurityModule.sol#L477) | rapid repeated deposits outrunning guardian review |
+| `blockhash(blockNumber) == blockHash` | [`:478`](core/contracts/0.8.9/DepositSecurityModule.sol#L478) | reorgs, and signatures older than 256 blocks |
+| `isDepositsPaused` | [`:479`](core/contracts/0.8.9/DepositSecurityModule.sol#L479) | the emergency stop |
+
+The deposit root check is the load-bearing one. `get_deposit_root()` is a
+Merkle root over *every* deposit ever made to the beacon deposit contract. If the
+attacker front-runs with their 1 ETH pre-deposit, the root changes, and the
+guardian signatures no longer validate. The transaction reverts rather than
+handing over 32 ETH.
+
+Signatures are checked in `_verifyAttestSignatures`
+([`:490-520`](core/contracts/0.8.9/DepositSecurityModule.sol#L490-L520)) over the
+packed message `ATTEST_MESSAGE_PREFIX | blockNumber | blockHash | depositRoot |
+stakingModuleId | nonce`. Note the ascending-address sort requirement at
+[`:513`](core/contracts/0.8.9/DepositSecurityModule.sol#L513): it makes duplicate
+signatures from one guardian impossible to sneak past the quorum count, in one
+comparison rather than a nested loop.
+
+A single guardian can also pause deposits unilaterally via `pauseDeposits`
+([`:368`](core/contracts/0.8.9/DepositSecurityModule.sol#L368)), with only one
+signature required. Asymmetric on purpose: stopping is cheap, starting needs
+quorum.
+
+### 2.4 Handing off to the module
+
+`StakingRouter.deposit` is gated to the DSM alone
+([`StakingRouter.sol:943`](core/contracts/0.8.25/sr/StakingRouter.sol#L943)) and
+does the actual work:
+
+```solidity
+(bytes memory publicKeysBatch, bytes memory signaturesBatch) =
+    IStakingModule(stakingModuleAddress).obtainDepositData(maxDepositsCount, _depositCalldata);
+...
+/// @dev Update the local state of the contract to prevent a reentrancy attack
+/// even though the staking modules are trusted contracts.
+_updateModuleLastDepositState(_stakingModuleId, depositsValue);
+...
+LIDO.withdrawDepositableEther(depositsValue, actualDepositsCount);
+BeaconChainDepositor.makeBeaconChainDeposits32ETH(...);
+```
+
+[`StakingRouter.sol:961-991`](core/contracts/0.8.25/sr/StakingRouter.sol#L961-L991)
+
+Three details worth noticing. The module may return **fewer** keys than asked
+for, so the ETH pulled from Lido is computed from `actualDepositsCount` rather
+than the request ([`:971-973`](core/contracts/0.8.25/sr/StakingRouter.sol#L971-L973)).
+State is updated before the external call even though modules are trusted
+([`:975-976`](core/contracts/0.8.25/sr/StakingRouter.sol#L975-L976)), the same
+checks-effects-interactions discipline Morpho relies on. And the function closes
+with a hard assertion that its own balance is unchanged
+([`:996`](core/contracts/0.8.25/sr/StakingRouter.sol#L996)):
+
+```solidity
+assert(etherBalanceBeforeDeposits == etherBalanceAfterDeposits);
+```
+
+Every wei pulled from Lido must reach the deposit contract. Nothing may stick to
+the router.
+
+---
