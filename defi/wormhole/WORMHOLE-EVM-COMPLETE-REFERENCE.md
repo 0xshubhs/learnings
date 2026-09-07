@@ -423,3 +423,225 @@ of 19 guardians: `(19*2)/3 + 1 = 12 + 1 = 13`. The `< 256` bound exists because
 | 255 | 171 |
 
 ---
+
+## 5. Core: `GovernanceStructs.sol`
+
+Five payload parsers, one per governance action. Every one follows the same
+shape: read fields sequentially, assert the action byte, and finish with
+`require(encoded.length == index, ...)` so trailing bytes are rejected.
+
+The governance header is `module(32) | action(1) | chain(2)` for actions 1–4.
+**Action 5 has no `chain` field** — see below.
+
+### Payload layouts
+
+**`ContractUpgrade`, action 1** — parser [`:64`](wormhole/ethereum/contracts/GovernanceStructs.sol#L64), total 67 bytes
+
+| Offset | Size | Field |
+|---|---|---|
+| `0` | 32 | `module` |
+| `32` | 1 | `action` = 1, asserted [`:73`](wormhole/ethereum/contracts/GovernanceStructs.sol#L73) |
+| `33` | 2 | `chain` |
+| `35` | 32 | `newContract`, truncated to `address` at [`:78`](wormhole/ethereum/contracts/GovernanceStructs.sol#L78) |
+
+The truncation at `:78` is `address(uint160(uint256(...)))` — a **silent** truncation.
+Unlike the token bridge's `_truncateAddress`, it does not reject non-zero high
+bytes. A malformed governance VAA would upgrade to a wrong address rather than
+revert. That is tolerable only because the payload is guardian-signed.
+
+**`GuardianSetUpgrade`, action 2** — parser [`:85`](wormhole/ethereum/contracts/GovernanceStructs.sol#L85), total `40 + 20n` bytes
+
+| Offset | Size | Field |
+|---|---|---|
+| `0` | 32 | `module` |
+| `32` | 1 | `action` = 2, asserted [`:94`](wormhole/ethereum/contracts/GovernanceStructs.sol#L94) |
+| `33` | 2 | `chain` |
+| `35` | 4 | `newGuardianSetIndex` |
+| `39` | 1 | `guardianLength` (n) |
+| `40` | 20·n | guardian addresses, read via `toAddress` [`:111`](wormhole/ethereum/contracts/GovernanceStructs.sol#L111) |
+
+Note guardians are **20 bytes each**, not 32. `expirationTime` is hardcoded to 0
+at [`:107`](wormhole/ethereum/contracts/GovernanceStructs.sol#L107); expiry is set
+later by `expireGuardianSet` on the *outgoing* set.
+
+**`SetMessageFee`, action 3** — parser [`:119`](wormhole/ethereum/contracts/GovernanceStructs.sol#L119), total 67 bytes
+
+| Offset | Size | Field |
+|---|---|---|
+| `0` | 32 | `module` |
+| `32` | 1 | `action` = 3 |
+| `33` | 2 | `chain` |
+| `35` | 32 | `messageFee` |
+
+**`TransferFees`, action 4** — parser [`:140`](wormhole/ethereum/contracts/GovernanceStructs.sol#L140), total 99 bytes
+
+| Offset | Size | Field |
+|---|---|---|
+| `0` | 32 | `module` |
+| `32` | 1 | `action` = 4 |
+| `33` | 2 | `chain` |
+| `35` | 32 | `amount` |
+| `67` | 32 | `recipient` |
+
+**`RecoverChainId`, action 5** — parser [`:164`](wormhole/ethereum/contracts/GovernanceStructs.sol#L164), total 67 bytes
+
+| Offset | Size | Field |
+|---|---|---|
+| `0` | 32 | `module` |
+| `32` | 1 | `action` = 5 |
+| `33` | 32 | `evmChainId` |
+| `65` | 2 | `newChainId` |
+
+**This one breaks the header pattern**: there is no `chain` field, because the
+whole point is that the contract's stored `chainId` is currently wrong. The
+struct at [`:55-61`](wormhole/ethereum/contracts/GovernanceStructs.sol#L55-L61)
+declares only `module` and `action` in its header. Targeting is done instead by
+matching `evmChainId` against `block.chainid`.
+
+The `GovernanceAction` enum at
+[`:16-19`](wormhole/ethereum/contracts/GovernanceStructs.sol#L16-L19) lists only
+two of the five actions and is not used by any parser. Dead code.
+
+---
+
+## 6. Core: `Governance.sol`
+
+Abstract, inherits `GovernanceStructs`, `Messages`, `Setters`, `ERC1967Upgrade`.
+
+Module constant at [`:22`](wormhole/ethereum/contracts/Governance.sol#L22):
+
+```solidity
+bytes32 constant module = 0x00000000000000000000000000000000000000000000000000000000436f7265;
+```
+
+`0x436f7265` is ASCII `"Core"`, left-padded to 32 bytes.
+
+### `verifyGovernanceVM(VM memory) internal view` — [`:190`](wormhole/ethereum/contracts/Governance.sol#L190)
+
+The gate every handler passes through. Four checks after `verifyVM`:
+
+| Check | Line | Reason |
+|---|---|---|
+| VAA is valid | [`:192-195`](wormhole/ethereum/contracts/Governance.sol#L192-L195) | forwarded |
+| Signed by the **current** guardian set, not merely an unexpired one | [`:198-200`](wormhole/ethereum/contracts/Governance.sol#L198-L200) | `"not signed by current guardian set"` |
+| `emitterChainId == governanceChainId()` | [`:203-205`](wormhole/ethereum/contracts/Governance.sol#L203-L205) | `"wrong governance chain"` |
+| `emitterAddress == governanceContract()` | [`:208-210`](wormhole/ethereum/contracts/Governance.sol#L208-L210) | `"wrong governance contract"` |
+| Not already consumed | [`:214-216`](wormhole/ethereum/contracts/Governance.sol#L214-L216) | `"governance action already consumed"` |
+
+The stricter current-set requirement is deliberate. A normal transfer VAA stays
+valid for 24 hours after a guardian rotation; a governance VAA does not.
+
+### The five handlers
+
+All are `public` and permissionless — anyone may submit a validly signed VAA.
+
+| Function | Line | Fork guard | Chain check |
+|---|---|---|---|
+| `submitContractUpgrade` | [`:27`](wormhole/ethereum/contracts/Governance.sol#L27) | `require(!isFork(), "invalid fork")` [`:28`](wormhole/ethereum/contracts/Governance.sol#L28) | `chain == chainId()` |
+| `submitSetMessageFee` | [`:54`](wormhole/ethereum/contracts/Governance.sol#L54) | inline `&& !isFork()` [`:67`](wormhole/ethereum/contracts/Governance.sol#L67) | `chain == chainId()` |
+| `submitNewGuardianSet` | [`:79`](wormhole/ethereum/contracts/Governance.sol#L79) | inline [`:92`](wormhole/ethereum/contracts/Governance.sol#L92) | `chain == chainId()` **or `chain == 0`** |
+| `submitTransferFees` | [`:117`](wormhole/ethereum/contracts/Governance.sol#L117) | inline [`:131`](wormhole/ethereum/contracts/Governance.sol#L131) | `chain == chainId()` **or `chain == 0`** |
+| `submitRecoverChainId` | [`:146`](wormhole/ethereum/contracts/Governance.sol#L146) | `require(isFork(), "not a fork")` [`:147`](wormhole/ethereum/contracts/Governance.sol#L147) — **inverted** | `evmChainId == block.chainid` |
+
+`chain == 0` means "all chains", used for guardian rotations and fee sweeps that
+should apply everywhere from one signed payload.
+
+Each handler sets `setGovernanceActionConsumed(vm.hash)` **before** acting, which
+is the replay and reentrancy guard. In `submitTransferFees` that ordering matters
+concretely: [`:134`](wormhole/ethereum/contracts/Governance.sol#L134) marks
+consumed, then [`:140`](wormhole/ethereum/contracts/Governance.sol#L140) does
+`recipient.transfer(transfer.amount)`. The `.transfer` caps gas at 2300, and the
+consumed flag is already written, so a reentrant recipient gains nothing.
+
+`submitNewGuardianSet` carries two extra invariants:
+
+```solidity
+require(upgrade.newGuardianSet.keys.length > 0, "new guardian set is empty");
+require(upgrade.newGuardianSetIndex == getCurrentGuardianSetIndex() + 1,
+        "index must increase in steps of 1");
+```
+
+[`:96`](wormhole/ethereum/contracts/Governance.sol#L96) and
+[`:99`](wormhole/ethereum/contracts/Governance.sol#L99). The strict `+1` prevents
+gaps in the index space, so an old VAA referencing an unset index can never
+resolve. The order of operations then matters: expire the outgoing set
+[`:105`](wormhole/ethereum/contracts/Governance.sol#L105), store the new one
+[`:108`](wormhole/ethereum/contracts/Governance.sol#L108), and only then make it
+current [`:111`](wormhole/ethereum/contracts/Governance.sol#L111).
+
+### `upgradeImplementation(address) internal` — [`:174`](wormhole/ethereum/contracts/Governance.sol#L174)
+
+`_upgradeTo`, then `delegatecall` into `initialize()` on the new implementation,
+`require(success, string(reason))`, then emit `ContractUpgraded`. The delegatecall
+is why every implementation must expose an `initialize()` even when it does
+nothing — see `Shutdown` below.
+
+---
+
+## 7. Core: `Implementation`, `Setup`, `Wormhole`, `Shutdown`
+
+### `Implementation.sol` — the outbound surface
+
+`publishMessage(uint32 nonce, bytes payload, uint8 consistencyLevel) public payable`
+at [`:15`](wormhole/ethereum/contracts/Implementation.sol#L15) is the entire
+sending API of Wormhole.
+
+1. `require(msg.value == messageFee(), "invalid fee")` — [`:21`](wormhole/ethereum/contracts/Implementation.sol#L21). Exact equality, not `>=`. Overpaying reverts.
+2. `sequence = useSequence(msg.sender)` — reads then increments the per-emitter counter, [`:28-31`](wormhole/ethereum/contracts/Implementation.sol#L28-L31).
+3. Emit `LogMessagePublished(msg.sender, sequence, nonce, payload, consistencyLevel)` — [`:25`](wormhole/ethereum/contracts/Implementation.sol#L25).
+
+That is all. No storage of the message, no verification, no callback. The
+guardians watch the log. Note that `sequence` is returned *before* increment, so
+the first message from any emitter is sequence 0.
+
+`initialize()` at [`:33`](wormhole/ethereum/contracts/Implementation.sol#L33) is a
+one-time backfill that maps Wormhole chain ids to EIP-155 ids for 16 chains
+([`:40-58`](wormhole/ethereum/contracts/Implementation.sol#L40-L58)), reverting
+`"Unknown chain id."` otherwise. It only runs when `evmChainId() == 0`.
+
+The `initializer` modifier at
+[`:64-75`](wormhole/ethereum/contracts/Implementation.sol#L64-L75) keys off
+`isInitialized(_getImplementation())`, so each implementation address can
+initialize exactly once.
+
+Both `fallback` and `receive` revert:
+[`:77`](wormhole/ethereum/contracts/Implementation.sol#L77) with `"unsupported"`,
+[`:79`](wormhole/ethereum/contracts/Implementation.sol#L79) with
+`"the Wormhole contract does not accept assets"`. The core contract holds ETH only
+from message fees, and there is no way to send it any other way.
+
+### `Setup.sol` — [`setup(...)`](wormhole/ethereum/contracts/Setup.sol#L12)
+
+Called once through the proxy constructor. Stores the initial guardian set at
+index 0, the chain ids, the governance emitter, then `_upgradeTo(implementation)`
+and `setInitialized`.
+
+`require(initialGuardians.length > 0, "no guardians specified")` at
+[`:20`](wormhole/ethereum/contracts/Setup.sol#L20). **`setup` is otherwise
+unprotected** — it has no access control at all. It is safe only because it runs
+inside `ERC1967Proxy`'s constructor with the setup contract as the initial
+implementation, and afterwards the proxy points elsewhere. Calling `setup` on the
+bare Setup contract affects only that contract's own useless storage.
+
+### `Wormhole.sol` — [`ERC1967Proxy`](wormhole/ethereum/contracts/Wormhole.sol#L8-L12)
+
+Twelve lines. Constructor takes `(address setup, bytes initData)` and hands both
+to OpenZeppelin. This is the address integrators hold.
+
+### `Shutdown.sol` — the kill switch
+
+Inherits `Governance` but adds nothing. Because it does not inherit
+`Implementation`, `publishMessage` **does not exist** on it — calls hit the
+`fallback` and revert. Governance still works, so the DAO can upgrade back out.
+
+`initialize()` at [`:22-30`](wormhole/ethereum/contracts/Shutdown.sol#L22-L30)
+deliberately omits the `initializer` modifier. The comment at
+[`:27-29`](wormhole/ethereum/contracts/Shutdown.sol#L27-L29) explains: the chain
+may need to be shut down more than once, and each upgrade calls `initialize`.
+
+### `Migrations.sol`
+
+Truffle scaffolding: an `owner`, a `last_completed_migration`, and a `restricted`
+modifier. Not part of the protocol.
+
+---
