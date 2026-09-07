@@ -645,3 +645,216 @@ Truffle scaffolding: an `owner`, a `last_completed_migration`, and a `restricted
 modifier. Not part of the protocol.
 
 ---
+
+## 8. Token bridge: storage and roles
+
+### `BridgeState.sol` — [`BridgeStorage.State`](wormhole/ethereum/contracts/bridge/BridgeState.sol#L28-L57)
+
+| Slot | Field | Notes |
+|---|---|---|
+| 0 | `wormhole` | `address payable` |
+| 1 | `tokenImplementation` | beacon target for wrapped tokens |
+| 2–4 | `provider` | see below |
+| 5 | `consumedGovernanceActions` | `bytes32 => bool` |
+| 6 | `completedTransfers` | `bytes32 => bool`, keyed by VAA hash |
+| 7 | `initializedImplementations` | |
+| 8 | `wrappedAssets` | `uint16 => bytes32 => address` |
+| 9 | `isWrappedAsset` | `address => bool` |
+| 10 | `outstandingBridged` | `address => uint256` |
+| 11 | `bridgeImplementations` | `uint16 => bytes32`, the peer registry |
+| 12 | `evmChainId` | |
+| 13 | `_status` | inherited from `ReentrancyGuard` |
+
+The `Provider` struct at
+[`:9-21`](wormhole/ethereum/contracts/bridge/BridgeState.sol#L9-L21) packs
+`chainId(16) | governanceChainId(16) | finality(8) | paused(bool)` into one slot,
+then `governanceContract(32)` and `WETH(address)`. The comment at
+[`:14-17`](wormhole/ethereum/contracts/bridge/BridgeState.sol#L14-L17) explains
+why `paused` lives here rather than with the other pause fields: the
+`notPaused` check then rides along on the `SLOAD` that already fetches `chainId`
+on every entry point.
+
+### `BridgePauserStorage.sol` — ERC-7201 namespaced
+
+The pauser roles live in their own namespace rather than in `State`, so adding
+them did not shift `_status` at slot 13 on an in-place upgrade. That reasoning is
+written out at
+[`:5-12`](wormhole/ethereum/contracts/bridge/BridgePauserStorage.sol#L5-L12).
+
+```solidity
+bytes32 internal constant LAYOUT_SLOT =
+    0x685f7dd8ace9c4fb94a4997fcd733e0d769273ee87b95731641e14d0cc4a6700;
+```
+
+[`:38-39`](wormhole/ethereum/contracts/bridge/BridgePauserStorage.sol#L38-L39),
+derived per ERC-7201 from `"wormhole.tokenbridge.pauser.storage"`.
+
+Layout: `pauser`, `unpauser`, `freezer`, `uint64 pauseExpiry`. The comment at
+[`:22-25`](wormhole/ethereum/contracts/bridge/BridgePauserStorage.sol#L22-L25)
+flags that `freezer` and `pauseExpiry` were **appended**, so the struct field
+order deliberately differs from the wire order in the governance payload
+(`pauser, freezer, unpauser`).
+
+### The three-role pause system
+
+| Role | Function | Effect | Idempotent |
+|---|---|---|---|
+| `pauser` | [`pause()`](wormhole/ethereum/contracts/bridge/Bridge.sol#L156) | `pauseExpiry = now + 5 days` | No — each call extends |
+| `freezer` | [`freeze()`](wormhole/ethereum/contracts/bridge/Bridge.sol#L176) | `pauseExpiry = type(uint64).max` | Yes |
+| `unpauser` | [`unpause()`](wormhole/ethereum/contracts/bridge/Bridge.sol#L191) | clears, sets expiry to now | — |
+| anyone | [`unpauseExpired()`](wormhole/ethereum/contracts/bridge/Bridge.sol#L212) | clears, only after expiry | — |
+
+`PAUSE_DURATION` is 5 days at
+[`:127`](wormhole/ethereum/contracts/bridge/Bridge.sol#L127). The design is a
+dead-man's switch: a `pause` lapses on its own unless the pauser keeps renewing
+it, and anyone can then call `unpauseExpired`. A `freeze` sets expiry to the
+`uint64` maximum, so in practice only the unpauser can lift it.
+
+`_requireRole(address role, bytes4 err)` at
+[`:134-141`](wormhole/ethereum/contracts/bridge/Bridge.sol#L134-L141) checks
+`role == address(0) || msg.sender != role` and reverts via raw assembly. The
+zero-check comes **first** so an unassigned role is never authorized — otherwise
+a caller from `address(0)` would pass, which matters more than it sounds given
+how many chains have odd precompile behaviour.
+
+`pause()` also refuses to *shorten* an existing hold:
+
+```solidity
+if (newExpiry <= pauseExpiry()) revert PauseNotExtended();
+```
+
+[`:162`](wormhole/ethereum/contracts/bridge/Bridge.sol#L162). A lower-trust pauser
+cannot curtail a freezer's hold, and a no-op call fails loudly instead of
+emitting a misleading `Paused` event.
+
+Both `pause` and `freeze` intentionally skip the `isFork()` check. The rationale
+at [`:152-155`](wormhole/ethereum/contracts/bridge/Bridge.sol#L152-L155): on a
+forked chain you want the key-holder to be able to shut the bridge immediately,
+without first waiting for a chain-id recovery VAA.
+
+### Getters and setters
+
+`BridgeGetters` ([98 lines](wormhole/ethereum/contracts/bridge/BridgeGetters.sol))
+exposes 18 readers, including the four pause readers at
+[`:79-97`](wormhole/ethereum/contracts/bridge/BridgeGetters.sol#L79-L97) which
+reach into the namespaced storage. `isFork()` at
+[`:39-41`](wormhole/ethereum/contracts/bridge/BridgeGetters.sol#L39-L41) mirrors
+the core.
+
+`BridgeSetters` ([91 lines](wormhole/ethereum/contracts/bridge/BridgeSetters.sol))
+has 16 writers. Two carry checks: `setTokenImplementation` rejects the zero
+address with `InvalidImplementationAddress` at
+[`:42`](wormhole/ethereum/contracts/bridge/BridgeSetters.sol#L42), and
+`setEvmChainId` requires equality with `block.chainid` at
+[`:68`](wormhole/ethereum/contracts/bridge/BridgeSetters.sol#L68).
+
+`setWrappedAsset` at
+[`:54-57`](wormhole/ethereum/contracts/bridge/BridgeSetters.sol#L54-L57) writes
+**both** the forward mapping and the `isWrappedAsset` flag, which is what lets
+`_transferTokens` distinguish burn-side from lock-side tokens in one `SLOAD`.
+
+---
+
+## 9. Token bridge: `Bridge.sol` outbound
+
+### `attestToken(address, uint32) public payable notPaused` — [`:222`](wormhole/ethereum/contracts/bridge/Bridge.sol#L222)
+
+Publishes an `AssetMeta` (payload 2) so other chains can create a wrapper.
+
+Reads `decimals()`, `symbol()` and `name()` by `staticcall` at
+[`:224-226`](wormhole/ethereum/contracts/bridge/Bridge.sol#L224-L226) rather than
+by interface call, because none of the three is in the core ERC-20 standard. It
+then grabs the first 32 bytes of each string via assembly at
+[`:235-239`](wormhole/ethereum/contracts/bridge/Bridge.sol#L235-L239):
+
+```solidity
+assembly {
+    // first 32 bytes hold string length
+    symbol := mload(add(symbolString, 32))
+    name := mload(add(nameString, 32))
+}
+```
+
+**Names and symbols longer than 32 bytes are silently truncated.** There is no
+check. A token called something long crosses the bridge with a clipped name.
+
+Note the return values of the three staticcalls are discarded — only the data is
+kept. A token without `decimals()` produces empty returndata and the
+`abi.decode` at [`:228`](wormhole/ethereum/contracts/bridge/Bridge.sol#L228)
+reverts, which is the intended outcome but arrives as a decode failure rather than
+a clear error.
+
+### `normalizeAmount` / `deNormalizeAmount` — [`:472`](wormhole/ethereum/contracts/bridge/Bridge.sol#L472), [`:479`](wormhole/ethereum/contracts/bridge/Bridge.sol#L479)
+
+```solidity
+function normalizeAmount(uint256 amount, uint8 decimals) internal pure returns(uint256){
+    if (decimals > 8) { amount /= 10 ** (decimals - 8); }
+    return amount;
+}
+```
+
+Every amount on the wire is capped at **8 decimals**. The reason is that Wormhole
+must interoperate with chains whose native token amounts are `u64` — Solana in
+particular — and 8 decimals keeps values inside that range.
+
+The consequence is dust. For an 18-decimal token the last 10 digits are
+unrepresentable. Two places handle it:
+
+- **`_transferTokens`** [`:432`](wormhole/ethereum/contracts/bridge/Bridge.sol#L432) does `amount = deNormalizeAmount(normalizeAmount(amount, decimals), decimals)` *before* pulling funds. The round trip floors the amount, so dust is never taken from the user in the first place.
+- **`_wrapAndTransferETH`** [`:325-328`](wormhole/ethereum/contracts/bridge/Bridge.sol#L325-L328) computes `dust = amount - deNormalizeAmount(normalizedAmount, 18)` and refunds it with `payable(msg.sender).transfer(dust)`, because ETH already arrived as `msg.value` and cannot be un-sent.
+
+The asymmetry is worth noting: ERC-20 dust is *avoided*, ETH dust is *refunded*.
+
+### `_transferTokens(address, uint256, uint256) internal` — [`:415`](wormhole/ethereum/contracts/bridge/Bridge.sol#L415)
+
+The core outbound path.
+
+1. Classify the token at [`:419-425`](wormhole/ethereum/contracts/bridge/Bridge.sol#L419-L425). If `isWrappedAsset(token)`, read origin chain and address off the wrapper; otherwise it is native here.
+2. Query decimals, floor the amount to 8-decimal precision.
+3. **Native branch** [`:434-447`](wormhole/ethereum/contracts/bridge/Bridge.sol#L434-L447): snapshot `balanceOf(this)`, `safeTransferFrom`, snapshot again, and set `amount = balanceAfter - balanceBefore`. This is explicit fee-on-transfer support — the amount bridged is what actually arrived, not what was requested.
+4. **Wrapped branch** [`:448-452`](wormhole/ethereum/contracts/bridge/Bridge.sol#L448-L452): `safeTransferFrom` into the bridge, then `burn`. Two steps rather than a direct burn-from, so the wrapper needs no special allowance semantics.
+5. Normalize amount and arbiter fee.
+6. Native tokens only: `bridgeOut(token, normalizedAmount)`.
+
+`bridgeOut` at [`:764-768`](wormhole/ethereum/contracts/bridge/Bridge.sol#L764-L768)
+enforces `outstanding + normalizedAmount <= type(uint64).max`, reverting
+`OutstandingExceedsMax`. That is the `u64` ceiling showing up again: the protocol
+refuses to let more of a token leave than a 64-bit counter can track.
+
+### The four public senders
+
+| Function | Line | Guards | Payload |
+|---|---|---|---|
+| `transferTokens` | [`:350`](wormhole/ethereum/contracts/bridge/Bridge.sol#L350) | `nonReentrant notPaused` | 1 |
+| `transferTokensWithPayload` | [`:387`](wormhole/ethereum/contracts/bridge/Bridge.sol#L387) | `nonReentrant notPaused` | 3 |
+| `wrapAndTransferETH` | [`:260`](wormhole/ethereum/contracts/bridge/Bridge.sol#L260) | `notPaused` only | 1 |
+| `wrapAndTransferETHWithPayload` | [`:292`](wormhole/ethereum/contracts/bridge/Bridge.sol#L292) | `notPaused` only | 3 |
+
+**The ETH paths are not `nonReentrant`.** They are safe because
+`_wrapAndTransferETH` only interacts with WETH and refunds dust via a
+2300-gas `.transfer`, but the asymmetry is a real difference worth knowing when
+auditing an integration.
+
+Both payload-3 variants pass `arbiterFee = 0` — see
+[`:299`](wormhole/ethereum/contracts/bridge/Bridge.sol#L299) and
+[`:398`](wormhole/ethereum/contracts/bridge/Bridge.sol#L398) — because contract-
+controlled transfers have no relayer fee field at all.
+
+`_wrapAndTransferETH` requires `wormholeFee < msg.value` strictly at
+[`:315`](wormhole/ethereum/contracts/bridge/Bridge.sol#L315), so a zero-value
+bridge of ETH is impossible even when the message fee is zero.
+
+### `logTransfer` / `logTransferWithPayload` — [`:486`](wormhole/ethereum/contracts/bridge/Bridge.sol#L486), [`:520`](wormhole/ethereum/contracts/bridge/Bridge.sol#L520)
+
+Build the struct, encode, and call `wormhole().publishMessage{value: callValue}`.
+`logTransfer` re-checks `fee > amount` at
+[`:496`](wormhole/ethereum/contracts/bridge/Bridge.sol#L496) — a second time,
+after `_transferTokens` already checked, because the normalization in between
+could in principle change the relationship.
+
+`logTransferWithPayload` stamps `fromAddress = bytes32(uint256(uint160(msg.sender)))`
+at [`:538`](wormhole/ethereum/contracts/bridge/Bridge.sol#L538). That is the
+sender identity a destination contract can trust, and it is why payload-3 is the
+basis for cross-chain composability.
+
+---

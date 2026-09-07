@@ -702,3 +702,90 @@ individual users. Compare
 entirely by capping liquidation penalties instead.
 
 ---
+
+## 5. Node operators and the staking router
+
+### 5.1 The module abstraction
+
+Lido does not run validators. It routes stake to **staking modules**, each of
+which is a contract implementing `IStakingModule`
+([`core/contracts/common/interfaces/IStakingModule.sol`](core/contracts/common/interfaces/IStakingModule.sol#L1))
+and each of which manages a different population of operators: the original
+curated set, community stakers, institutional providers.
+
+`StakingRouter` allocates deposits across them subject to per-module limits
+declared in `ModuleStateConfig`
+([`SRTypes.sol:118-128`](core/contracts/0.8.25/sr/SRTypes.sol#L118-L128)):
+
+| Field | Meaning |
+|---|---|
+| `stakeShareLimit` | maximum fraction of total stake this module may hold |
+| `priorityExitShareThreshold` | above this share, the module's validators are exited first |
+| `status` | `Active` / `DepositsPaused` / `Stopped` |
+
+The share limit is the concentration control. No single module, and therefore no
+single operator population, can grow past its cap regardless of demand.
+
+### 5.2 Keys, vetting, and the deposit allocation
+
+`NodeOperatorsRegistry` is the curated module. Operators upload signing keys, and
+those keys are useless until the DAO **vets** them:
+
+```solidity
+function setNodeOperatorStakingLimit(uint256 _nodeOperatorId, uint64 _vettedSigningKeysCount) external {
+    ...
+    _authP(SET_NODE_OPERATOR_LIMIT_ROLE, arr(uint256(_nodeOperatorId), uint256(_vettedSigningKeysCount)));
+```
+
+[`NodeOperatorsRegistry.sol:384-386`](core/contracts/0.4.24/nos/NodeOperatorsRegistry.sol#L384-L386)
+
+Only vetted keys are eligible. When the router asks for deposit data, the
+registry allocates across operators and asserts it produced exactly what was
+requested:
+
+```solidity
+require(allocatedKeysCount == _depositsCount, "INVALID_ALLOCATED_KEYS_COUNT");
+```
+
+[`:711`](core/contracts/0.4.24/nos/NodeOperatorsRegistry.sol#L711)
+
+Allocation is deliberately spread rather than filled greedily, so that stake
+distributes across operators instead of concentrating in whoever uploaded keys
+first.
+
+The DSM can also **unvet** keys in an emergency
+([`DepositSecurityModule.sol:520`](core/contracts/0.8.9/DepositSecurityModule.sol#L520) onward),
+which is the fast path for pulling an operator's keys out of rotation without
+waiting for a DAO vote.
+
+### 5.3 Exits
+
+Withdrawals need validators to exit, and the protocol cannot force that on-chain:
+exiting requires the validator's own signature. `ValidatorsExitBus` is the
+signalling channel. The oracle publishes which validators should exit, operators
+watch the event stream and comply.
+
+That is a purely social guarantee, which is why post-Pectra Lido also supports
+**triggerable withdrawals**: `triggerExits`
+([`ValidatorsExitBus.sol:391`](core/contracts/0.8.9/oracle/ValidatorsExitBus.sol#L391))
+and `TriggerableWithdrawalsGateway`
+([`contracts/0.8.9/TriggerableWithdrawalsGateway.sol`](core/contracts/0.8.9/TriggerableWithdrawalsGateway.sol#L1)),
+which use the execution-layer trigger introduced by EIP-7002 to force an exit
+from the withdrawal credentials rather than the validator key. This closes the
+one gap where an uncooperative operator could previously stall withdrawals.
+
+### 5.4 The trust model, stated plainly
+
+| Party | Can do | Cannot do |
+|---|---|---|
+| Node operator | attest, propose, get slashed, refuse to exit (mitigated by EIP-7002) | move user funds, redirect withdrawals |
+| Oracle quorum | set reported balances within sanity bounds, trigger bunker mode | mint arbitrary shares |
+| DSM guardians | pause deposits, unvet keys | move funds, deposit without quorum |
+| DAO | vet operators, set limits, upgrade contracts | bypass the deposit or oracle paths |
+
+The recurring theme: **every party can degrade the protocol, none can drain it**,
+because withdrawal credentials point at protocol contracts and the deposit path
+requires a guardian quorum. That is the structural reason liquid staking with
+unknown operators is viable at all.
+
+---
