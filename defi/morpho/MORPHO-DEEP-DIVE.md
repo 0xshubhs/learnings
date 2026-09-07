@@ -1039,3 +1039,109 @@ IRM, or to the user's own judgement. The genuine deletions are cross-collateral,
 caps, and the pause switch.
 
 ---
+
+## 8. Security notes
+
+### Why there is no reentrancy guard
+
+`grep -rn "nonReentrant\|ReentrancyGuard" morpho-blue/src/` returns nothing. Yet
+five functions hand control to `msg.sender` mid-execution (§4). Three properties
+make that sound, and it is worth being precise because copying the pattern
+without them is dangerous.
+
+**One. State is written before the callback, never after.** Look at the shape of
+every callback site — `supply` at
+[`:186-192`](morpho-blue/src/Morpho.sol#L186-L192) updates
+`position.supplyShares`, `market.totalSupplyShares` and `market.totalSupplyAssets`,
+emits, *then* calls out. A reentrant call therefore observes fully consistent
+state. This is checks-effects-interactions applied strictly, and it is the whole
+defence.
+
+**Two. The only thing after the callback is a transfer of a pre-computed amount.**
+Nothing is recomputed from state that reentrancy could have moved. In `supply`
+the trailing line pulls exactly the `assets` decided before the callback fired.
+
+**Three. Health is checked at the end of the functions that can worsen it.**
+`borrow` ([`:264`](morpho-blue/src/Morpho.sol#L264)) and `withdrawCollateral`
+([`:341`](morpho-blue/src/Morpho.sol#L341)) both assert `_isHealthy` *after* all
+state changes, and `borrow`/`withdraw` additionally assert
+`totalBorrowAssets <= totalSupplyAssets`. So a reentrant borrow-inside-a-callback
+still has to leave the position healthy when the outer frame finishes.
+
+The lesson generalises badly, though: this works because Morpho's post-callback
+work is trivial. Aave's `executeLiquidationCall` does substantial work after its
+external calls and needs its guards.
+
+### The assumptions Morpho does not check
+
+[`IMorpho.sol:104-125`](morpho-blue/src/interfaces/IMorpho.sol#L104-L125) is the
+most important comment block in the codebase. It lists what must be true of a
+market's token, IRM and oracle for the protocol to behave, and **none of it is
+enforced in code**:
+
+- Tokens must not re-enter, must not have transfer fees, must not have burn
+  functions that reduce Morpho's balance.
+- The IRM must not re-enter Morpho.
+- The oracle must return correctly scaled prices, and — the subtle one — *"the
+  oracle price should not be able to change instantly such that the new price is
+  less than the old price multiplied by LLTV·LIF"*.
+
+That last condition is the solvency criterion. If a price can gap by more than
+the buffer between LLTV and full collateralisation, liquidators cannot act in
+time and bad debt is created. Morpho states it and delegates it. The same comment
+warns that if the loan asset is a vault that can receive donations, its shares
+must not be priced by AUM — precisely the manipulation the virtual-shares offset
+protects Morpho's *own* accounting against, reappearing one layer out.
+
+**The practical takeaway.** In Aave, "is this asset safe?" was answered by
+governance before you arrived. In Morpho, it is answered by whoever created the
+market, and you inherit their judgement silently. `id` is a hash — two markets
+that look identical in a UI can differ in oracle. Always resolve the full
+`MarketParams`.
+
+### Oracle risk is total and unmitigated
+
+`price()` is one unvalidated `view` call. There is no staleness check, no
+circuit breaker, no fallback, no deviation bound — not in core, and not
+necessarily in the oracle either. The wstETH adapter in §5 returns literal zeros
+for every Chainlink freshness field
+([`WstEthStEthExchangeRateChainlinkAdapter.sol:26-29`](morpho-blue-oracles/src/wsteth-exchange-rate-adapter/WstEthStEthExchangeRateChainlinkAdapter.sol#L26-L29))
+and Morpho accepts it happily.
+
+Compare Aave, which at least routes everything through `AaveOracle` with a
+fallback oracle. Even that is weaker than people assume — Aave **v2**'s oracle
+calls `latestAnswer()` with no staleness check at all
+([`aave/v2-protocol/contracts/misc/AaveOracle.sol:96`](../aave/v2-protocol/contracts/misc/AaveOracle.sol#L96)),
+a finding from the v2 reference in this repo. So the honest framing is that
+Morpho makes explicit a risk Aave partially obscures.
+
+### Immutability cuts both ways
+
+No proxy, no upgrade path, no pause. A bug in `Morpho.sol` cannot be patched, and
+funds cannot be frozen while you think. The mitigations are the formal
+verification in [`morpho-blue/certora/`](morpho-blue/certora/) and the fact that
+557 lines is small enough to actually verify. But the risk is asymmetric: Aave's
+upgradeability is itself a risk (a compromised admin can drain), whereas Morpho's
+immutability is a risk only in the tail.
+
+### Authorization and the signature path
+
+`setAuthorization` ([`:437`](morpho-blue/src/Morpho.sol#L437)) grants another
+address full power over your position — borrow, withdraw, withdraw collateral.
+It is all-or-nothing, with no per-action or per-market scoping. The signature
+variant ([`:446-460`](morpho-blue/src/Morpho.sol#L446-L460)) checks deadline and
+a per-authorizer nonce, so replay is handled, but a signed authorization is a
+blank cheque over every market you hold.
+
+### Where the residual risk actually sits
+
+Not in `Morpho.sol`. It sits in the market parameters, and therefore in
+MetaMorpho's curators, who choose markets on depositors' behalf. The role split
+(§5) is well designed — adding risk is timelocked and vetoable, removing it is
+instant — but a curator can still allocate to a market with a bad oracle, and the
+timelock only delays it by 1 to 14 days
+([`metamorpho/src/libraries/ConstantsLib.sol:10-13`](metamorpho/src/libraries/ConstantsLib.sol#L10-L13)).
+"Governance-minimised" describes the core accurately; it does not describe the
+system a depositor actually faces.
+
+---
