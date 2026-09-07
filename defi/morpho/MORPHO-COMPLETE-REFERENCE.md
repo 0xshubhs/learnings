@@ -679,3 +679,54 @@ Two subtleties:
   `_accrueInterest` short-circuits on the same condition at
   [`:487`](morpho-blue/src/Morpho.sol#L487).
 
+### 3.9 `supply(marketParams, assets, shares, onBehalf, data)`
+
+[`:169-197`](morpho-blue/src/Morpho.sol#L169-L197) · returns `(assets, shares)`.
+
+| | |
+|---|---|
+| **Checks** | market exists; `exactlyOneZero(assets, shares)`; `onBehalf != address(0)` |
+| **Accrues** | `_accrueInterest` at [`:181`](morpho-blue/src/Morpho.sol#L181) |
+| **Converts** | `toSharesDown` if assets given, `toAssetsUp` if shares given ([`:183-184`](morpho-blue/src/Morpho.sol#L183-L184)) |
+| **Writes** | `position[id][onBehalf].supplyShares +=`, `totalSupplyShares +=`, `totalSupplyAssets +=` |
+| **Emits** | `Supply(id, msg.sender, onBehalf, assets, shares)` |
+| **Callback** | `IMorphoSupplyCallback(msg.sender).onMorphoSupply(assets, data)` if `data.length > 0` |
+| **Transfer** | `safeTransferFrom(msg.sender, address(this), assets)` **last** |
+
+**No authorization check.** Anyone may supply on anyone's behalf, because doing so is a gift.
+Contrast `withdraw`, which requires it.
+
+**Ordering is the security property.** State is fully updated ([`:186-188`](morpho-blue/src/Morpho.sol#L186-L188)),
+then the event fires, then the untrusted callback runs, then the token is pulled. A reentrant
+call from `onMorphoSupply` sees consistent, already-written state — it cannot mint shares twice —
+and if the final `transferFrom` fails the whole transaction reverts. This is
+checks-effects-interactions with a deliberate callback slot, and it is what makes flash-supply
+patterns possible without a reentrancy guard anywhere in the contract.
+
+### 3.10 `withdraw(marketParams, assets, shares, onBehalf, receiver)`
+
+[`:200-230`](morpho-blue/src/Morpho.sol#L200-L230) · returns `(assets, shares)`.
+
+| | |
+|---|---|
+| **Checks** | market exists; `exactlyOneZero`; `receiver != address(0)`; `_isSenderAuthorized(onBehalf)` → `UNAUTHORIZED` |
+| **Accrues** | yes |
+| **Converts** | `toSharesUp` / `toAssetsDown` ([`:216-217`](morpho-blue/src/Morpho.sol#L216-L217)) |
+| **Writes** | subtracts from `supplyShares`, `totalSupplyShares`, `totalSupplyAssets` |
+| **Post-check** | `totalBorrowAssets <= totalSupplyAssets` → `INSUFFICIENT_LIQUIDITY` ([`:223`](morpho-blue/src/Morpho.sol#L223)) |
+| **Emits** | `Withdraw` |
+| **Transfer** | `safeTransfer(receiver, assets)` last |
+
+The comment at [`:211`](morpho-blue/src/Morpho.sol#L211) explains why `onBehalf != address(0)` is
+not checked: `_isSenderAuthorized(address(0))` can only pass if `msg.sender == address(0)`, which
+is unreachable.
+
+The liquidity check is a single comparison of two accumulators — no per-user available-liquidity
+computation, no interest-bearing receipt token to burn. Note it uses **internal accounting**, not
+`balanceOf`, so a market whose loan token has been drained by a broken token still reports
+consistent state.
+
+`supplyShares -=` will underflow-revert (Solidity 0.8 checked arithmetic) if the user asks for
+more than they own. There is no explicit error for that case; the revert is a panic, not
+`ErrorsLib`.
+
