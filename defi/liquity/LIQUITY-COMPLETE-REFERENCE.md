@@ -1041,7 +1041,7 @@ or a full redemption.
 | `accountSurplus` | [`v1-dev/packages/contracts/contracts/CollSurplusPool.sol:73`](v1-dev/packages/contracts/contracts/CollSurplusPool.sol#L73) | TroveManager |
 | `claimColl` | [`v1-dev/packages/contracts/contracts/CollSurplusPool.sol:82`](v1-dev/packages/contracts/contracts/CollSurplusPool.sol#L82) | BorrowerOperations |
 
-### `GasPool` — [`v1-dev/packages/contracts/contracts/GasPool.sol:16-20`](v1-dev/packages/contracts/contracts/GasPool.sol#L16-L20)
+### `GasPool` — [`v1-dev/packages/contracts/contracts/GasPool.sol:16-18`](v1-dev/packages/contracts/contracts/GasPool.sol#L16-L18)
 
 Four lines of code and no functions. It holds the 200 LUSD gas compensation for
 every open Trove. `LUSDToken` mints to it on open and burns from it on close.
@@ -1350,7 +1350,7 @@ redemptions hit the lowest rates first. Paying more buys redemption protection.
 The market clears without a governance vote and without an oracle for the rate
 itself.
 
-## 2.2 Constants — [`v2-bold/contracts/src/Dependencies/Constants.sol:1-90`](v2-bold/contracts/src/Dependencies/Constants.sol#L1-L90)
+## 2.2 Constants — [`v2-bold/contracts/src/Dependencies/Constants.sol:1-89`](v2-bold/contracts/src/Dependencies/Constants.sol#L1-L89)
 
 | Constant | Line | Value |
 |---|---|---|

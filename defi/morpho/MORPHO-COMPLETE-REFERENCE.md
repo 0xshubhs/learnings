@@ -1453,3 +1453,190 @@ permanently, since `totalAssets()` only sums the withdraw queue.
 already be zero ([`:295`](metamorpho/src/MetaMorpho.sol#L295)), forcing a two-step
 lower-cap-then-remove sequence.
 
+---
+
+<a id="8-metamorphosol--every-function"></a>
+## 8. `MetaMorpho.sol` — every function
+
+### 8.1 Constructor
+
+[`:117-134`](metamorpho/src/MetaMorpho.sol#L117-L134). Sets `MORPHO`, computes `DECIMALS_OFFSET`,
+checks and sets the initial timelock, then:
+
+```solidity
+IERC20(_asset).forceApprove(morpho, type(uint256).max);
+```
+
+[`:133`](metamorpho/src/MetaMorpho.sol#L133) — an **infinite, permanent approval to Blue**, granted
+once at construction. Acceptable only because Blue is immutable and cannot be upgraded to abuse it.
+
+```solidity
+DECIMALS_OFFSET = uint8(uint256(18).zeroFloorSub(IERC20Metadata(_asset).decimals()));
+```
+
+[`:128`](metamorpho/src/MetaMorpho.sol#L128). For USDC (6 decimals) the offset is 12, so shares
+carry 12 extra decimals of precision. For an 18-decimal asset the offset is **0**, which is why the
+`deposit` NatSpec at [`:532-534`](metamorpho/src/MetaMorpho.sol#L532-L534) warns that inflation
+protection is weak for 18-decimal assets and tells deployers to seed the vault. Blue's own virtual
+shares (§2.1) do not help here, because this is the *vault's* share price, not a market's.
+
+### 8.2 Owner functions
+
+| Function | Line | Effect |
+|---|---|---|
+| `setCurator` | [`:186-193`](metamorpho/src/MetaMorpho.sol#L186-L193) | immediate |
+| `setIsAllocator` | [`:195-202`](metamorpho/src/MetaMorpho.sol#L195-L202) | immediate |
+| `setSkimRecipient` | [`:204-211`](metamorpho/src/MetaMorpho.sol#L204-L211) | immediate |
+| `submitTimelock` | [`:213-227`](metamorpho/src/MetaMorpho.sol#L213-L227) | immediate if longer, queued if shorter |
+| `setFee` | [`:229-242`](metamorpho/src/MetaMorpho.sol#L229-L242) | immediate, accrues first |
+| `setFeeRecipient` | [`:244-255`](metamorpho/src/MetaMorpho.sol#L244-L255) | immediate, accrues first |
+| `submitGuardian` | [`:257-271`](metamorpho/src/MetaMorpho.sol#L257-L271) | immediate if unset, queued if replacing |
+
+`setFee` refuses a non-zero fee with no recipient
+([`:232`](metamorpho/src/MetaMorpho.sol#L232), `ZeroFeeRecipient`) and accrues under the old fee
+first ([`:235`](metamorpho/src/MetaMorpho.sol#L235)) — the same discipline as Blue's `setFee`
+(§3.6). `MAX_FEE` here is `0.5e18`
+([`ConstantsLib.sol:19`](metamorpho/src/libraries/ConstantsLib.sol#L19)), double Blue's 25%.
+
+`submitGuardian` applies immediately when there is no guardian yet
+([`:265-266`](metamorpho/src/MetaMorpho.sol#L265-L266)) — adding a veto-holder reduces risk — but
+queues a *replacement*, since swapping guardians could neutralise the veto.
+
+### 8.3 `reallocate(MarketAllocation[] allocations)`
+
+[`:366-415`](metamorpho/src/MetaMorpho.sol#L366-L415) · `onlyAllocatorRole`. The vault's core
+rebalancing operation.
+
+It walks the allocations, treating each as a **target** absolute position. For each market it
+computes `withdrawn = supplyAssets.zeroFloorSub(allocation.assets)`
+([`:374`](metamorpho/src/MetaMorpho.sol#L374)) and branches:
+
+- **Withdraw branch** ([`:376-391`](metamorpho/src/MetaMorpho.sol#L376-L391)): requires the market
+  be enabled. `allocation.assets == 0` is special-cased to withdraw by **shares** rather than
+  assets ([`:381-384`](metamorpho/src/MetaMorpho.sol#L381-L384)), with the comment *"Guarantees
+  that unknown frontrunning donations can be withdrawn, in order to disable a market."* Withdrawing
+  a computed asset amount could leave dust behind if someone donated shares; withdrawing the full
+  share balance cannot.
+- **Supply branch** ([`:392-411`](metamorpho/src/MetaMorpho.sol#L392-L411)): `type(uint256).max`
+  means "absorb everything withdrawn so far"
+  ([`:393-394`](metamorpho/src/MetaMorpho.sol#L393-L394)). Enforces a non-zero cap
+  ([`:400`](metamorpho/src/MetaMorpho.sol#L400)) and the cap itself
+  ([`:402`](metamorpho/src/MetaMorpho.sol#L402)).
+
+The closing invariant is the safety property:
+
+```solidity
+if (totalWithdrawn != totalSupplied) revert ErrorsLib.InconsistentReallocation();
+```
+
+[`:414`](metamorpho/src/MetaMorpho.sol#L414). **A reallocation must be asset-neutral.** An
+allocator can move funds between approved markets but can never move funds *out* of the vault.
+Combined with caps being curator-controlled, this bounds what a compromised allocator can do to
+"shuffle within the approved set" — real damage is possible (moving everything into the riskiest
+approved market) but outright theft is not.
+
+### 8.4 Guardian revocations
+
+Four functions, all trivially short, all `onlyGuardianRole` or `onlyCuratorOrGuardianRole`:
+`revokePendingTimelock` [`:420-425`](metamorpho/src/MetaMorpho.sol#L420-L425),
+`revokePendingGuardian` [`:427-432`](metamorpho/src/MetaMorpho.sol#L427-L432),
+`revokePendingCap` [`:434-439`](metamorpho/src/MetaMorpho.sol#L434-L439),
+`revokePendingMarketRemoval` [`:441-447`](metamorpho/src/MetaMorpho.sol#L441-L447).
+Each `delete`s the pending struct and emits.
+
+### 8.5 Accept functions
+
+`acceptTimelock` [`:460-463`](metamorpho/src/MetaMorpho.sol#L460-L463),
+`acceptGuardian` [`:465-468`](metamorpho/src/MetaMorpho.sol#L465-L468),
+`acceptCap` [`:470-476`](metamorpho/src/MetaMorpho.sol#L470-L476) — all gated by
+`afterTimelock(...)` and **callable by anyone**. Enacting an already-vetted, already-waited change
+needs no privilege.
+
+### 8.6 `skim(address token)`
+
+[`:478-488`](metamorpho/src/MetaMorpho.sol#L478-L488). Sweeps stray tokens to `skimRecipient`.
+Cannot be used on the vault asset in a harmful way because vault assets live on Blue, not in the
+vault contract.
+
+### 8.7 ERC-4626 entry points
+
+All four accrue the fee first and update `lastTotalAssets`:
+
+| Function | Line | Conversion | Rounding |
+|---|---|---|---|
+| `deposit` | [`:535-545`](metamorpho/src/MetaMorpho.sol#L535-L545) | assets → shares | Floor |
+| `mint` | [`:548-558`](metamorpho/src/MetaMorpho.sol#L548-L558) | shares → assets | Ceil |
+| `withdraw` | [`:561-572`](metamorpho/src/MetaMorpho.sol#L561-L572) | assets → shares | Ceil |
+| `redeem` | [`:575-586`](metamorpho/src/MetaMorpho.sol#L575-L586) | shares → assets | Floor |
+
+Every rounding favours the vault, matching Blue's discipline (§2.1).
+
+The comment at [`:538-539`](metamorpho/src/MetaMorpho.sol#L538-L539) — *"Update `lastTotalAssets`
+to avoid an inconsistent state in a re-entrant context"* — marks a real hazard. `_deposit` calls
+into Blue, which may call an ERC-777-style token, which may reenter the vault. Writing
+`lastTotalAssets` eagerly at [`:540`](metamorpho/src/MetaMorpho.sol#L540) means a reentrant call
+sees a consistent value rather than one that would mint phantom fee shares. The repo ships an
+[`ERC777Mock`](metamorpho/src/mocks/ERC777Mock.sol) and an
+[`ERC1820Registry`](metamorpho/src/mocks/ERC1820Registry.sol) specifically to test this.
+
+`withdraw` and `redeem` deliberately skip the expensive `maxWithdraw` precheck
+([`:564`](metamorpho/src/MetaMorpho.sol#L564), [`:578`](metamorpho/src/MetaMorpho.sol#L578)) and
+let `_withdrawMorpho` revert instead.
+
+### 8.8 `totalAssets()` and the max-* views
+
+```solidity
+function totalAssets() public view override returns (uint256 assets) {
+    for (uint256 i; i < withdrawQueue.length; ++i) {
+        assets += MORPHO.expectedSupplyAssets(_marketParams(withdrawQueue[i]), address(this));
+    }
+}
+```
+
+[`:589-593`](metamorpho/src/MetaMorpho.sol#L589-L593). Up to 30 markets, each doing a full
+accrual simulation including an external `borrowRateView` call. **This is not a cheap view**, and
+every `convertToShares`/`convertToAssets` pays it.
+
+Only the **withdraw** queue is summed, never the supply queue. That is why dropping a funded market
+from the withdraw queue is so tightly guarded (§7.3): it would erase those assets from the vault's
+own accounting.
+
+`maxDeposit`/`maxMint` ([`:497-507`](metamorpho/src/MetaMorpho.sol#L497-L507)) sum remaining cap
+headroom via `_maxDeposit` ([`:618-632`](metamorpho/src/MetaMorpho.sol#L618-L632)). The NatSpec at
+[`:502`](metamorpho/src/MetaMorpho.sol#L502) admits it over-reports if the supply queue contains
+duplicates — which `setSupplyQueue` does not forbid.
+
+`maxWithdraw`/`maxRedeem` ([`:515-529`](metamorpho/src/MetaMorpho.sol#L515-L529)) carry an honest
+two-part warning at [`:510-514`](metamorpho/src/MetaMorpho.sol#L510-L514): they may over-report
+inside a Blue callback, because `_simulateWithdrawMorpho` counts Blue's loan-token balance once
+per market rather than once globally.
+
+### 8.9 Internal machinery
+
+| Function | Line | Notes |
+|---|---|---|
+| `_supplyMorpho` | [`:775-804`](metamorpho/src/MetaMorpho.sol#L775-L804) | walks supply queue, `try/catch` per market, reverts `AllCapsReached` if anything is left |
+| `_withdrawMorpho` | [`:807-828`](metamorpho/src/MetaMorpho.sol#L807-L828) | walks withdraw queue, `try/catch`, reverts `NotEnoughLiquidity` |
+| `_simulateWithdrawMorpho` | [`:832-858`](metamorpho/src/MetaMorpho.sol#L832-L858) | view twin of the above |
+| `_withdrawable` | [`:862-874`](metamorpho/src/MetaMorpho.sol#L862-L874) | `min(supplyAssets, min(totalSupply − totalBorrow, loanToken.balanceOf(MORPHO)))` |
+| `_setCap` | [`:745-770`](metamorpho/src/MetaMorpho.sol#L745-L770) | pushes to withdraw queue on first enable |
+| `_accrueFee` / `_accruedFeeShares` | [`:887-910`](metamorpho/src/MetaMorpho.sol#L887-L910) | performance fee on interest only |
+
+The `try/catch` in both loops
+([`:795`](metamorpho/src/MetaMorpho.sol#L795), [`:819`](metamorpho/src/MetaMorpho.sol#L819)) is
+important: one broken Blue market — a reverting oracle, say — must not brick the entire vault. The
+loop skips it and continues.
+
+`_withdrawable` includes `ERC20(marketParams.loanToken).balanceOf(address(MORPHO))` in its `min`
+([`:869-871`](metamorpho/src/MetaMorpho.sol#L869-L871)) with the comment *"Inside a flashloan
+callback, liquidity on Morpho Blue may be limited to the singleton's balance."* This is the
+MetaMorpho-side consequence of Blue's fee-free flash loan (§3.16), and a good example of a
+composability edge that only appears when you read both contracts together.
+
+`_accruedFeeShares` ([`:898-910`](metamorpho/src/MetaMorpho.sol#L898-L910)) charges the fee on
+`totalAssets() − lastTotalAssets`, i.e. **interest only, never principal**, and applies the same
+`newTotalAssets - feeAssets` denominator compensation as Blue
+([`:908`](metamorpho/src/MetaMorpho.sol#L908), cf. §3.20). The comment at
+[`:903`](metamorpho/src/MetaMorpho.sol#L903) acknowledges the fee rounds to zero when
+`totalInterest * fee < WAD`.
+
