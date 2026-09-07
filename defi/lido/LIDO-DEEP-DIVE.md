@@ -754,7 +754,7 @@ distributes across operators instead of concentrating in whoever uploaded keys
 first.
 
 The DSM can also **unvet** keys in an emergency
-([`DepositSecurityModule.sol:520`](core/contracts/0.8.9/DepositSecurityModule.sol#L520) onward),
+([`DepositSecurityModule.sol:545`](core/contracts/0.8.9/DepositSecurityModule.sol#L545)),
 which is the fast path for pulling an operator's keys out of rotation without
 waiting for a DAO vote.
 
