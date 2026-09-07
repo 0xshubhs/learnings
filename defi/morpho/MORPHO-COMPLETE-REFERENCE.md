@@ -2176,3 +2176,123 @@ Twenty-eight entries, and that is the complete external surface of the protocol.
 Note `deposit`, `mint`, `withdraw` and `redeem` carry the standard ERC-4626 selectors, so any
 4626-aware integration works against a MetaMorpho vault unmodified.
 
+---
+
+<a id="14-events-reference"></a>
+## 14. Events reference
+
+### 14.1 Morpho Blue
+
+All 16 events live in
+[`EventsLib.sol`](morpho-blue/src/libraries/EventsLib.sol) and are emitted as
+`emit EventsLib.X(...)` from `Morpho.sol`.
+
+| Event | Indexed | Line | Emitted by |
+|---|---|---|---|
+| `SetOwner(address newOwner)` | `newOwner` | [`:13`](morpho-blue/src/libraries/EventsLib.sol#L13) | constructor, `setOwner` |
+| `SetFee(Id id, uint256 newFee)` | `id` | [`:18`](morpho-blue/src/libraries/EventsLib.sol#L18) | `setFee` |
+| `SetFeeRecipient(address)` | yes | [`:22`](morpho-blue/src/libraries/EventsLib.sol#L22) | `setFeeRecipient` |
+| `EnableIrm(address irm)` | `irm` | [`:26`](morpho-blue/src/libraries/EventsLib.sol#L26) | `enableIrm` |
+| `EnableLltv(uint256 lltv)` | none | [`:30`](morpho-blue/src/libraries/EventsLib.sol#L30) | `enableLltv` |
+| `CreateMarket(Id id, MarketParams)` | `id` | [`:35`](morpho-blue/src/libraries/EventsLib.sol#L35) | `createMarket` |
+| `Supply(Id, caller, onBehalf, assets, shares)` | all three addresses/id | [`:44`](morpho-blue/src/libraries/EventsLib.sol#L44) | `supply` |
+| `Withdraw(...)` | `id`, `caller`, `onBehalf` | [`:53`](morpho-blue/src/libraries/EventsLib.sol#L53) | `withdraw` |
+| `Borrow(...)` | `id`, `caller`, `onBehalf` | [`:69`](morpho-blue/src/libraries/EventsLib.sol#L69) | `borrow` |
+| `Repay(...)` | `id`, `caller`, `onBehalf` | [`:84`](morpho-blue/src/libraries/EventsLib.sol#L84) | `repay` |
+| `SupplyCollateral(...)` | `id`, `caller`, `onBehalf` | [`:91`](morpho-blue/src/libraries/EventsLib.sol#L91) | `supplyCollateral` |
+| `WithdrawCollateral(...)` | `id`, `caller`, `onBehalf` | [`:99`](morpho-blue/src/libraries/EventsLib.sol#L99) | `withdrawCollateral` |
+| `Liquidate(...)` | `id`, `caller`, `borrower` | [`:112`](morpho-blue/src/libraries/EventsLib.sol#L112) | `liquidate` |
+| `FlashLoan(caller, token, assets)` | `caller`, `token` | [`:127`](morpho-blue/src/libraries/EventsLib.sol#L127) | `flashLoan` |
+| `SetAuthorization(...)` | `caller`, `authorizer`, `authorized` | [`:134`](morpho-blue/src/libraries/EventsLib.sol#L134) | both auth setters |
+| `IncrementNonce(caller, authorizer, usedNonce)` | `caller`, `authorizer` | [`:142`](morpho-blue/src/libraries/EventsLib.sol#L142) | `setAuthorizationWithSig` |
+| `AccrueInterest(Id, prevBorrowRate, interest, feeShares)` | `id` | [`:149`](morpho-blue/src/libraries/EventsLib.sol#L149) | `_accrueInterest` |
+
+**The indexer trap** is documented in the source itself, at
+[`EventsLib.sol:38`](morpho-blue/src/libraries/EventsLib.sol#L38):
+
+> Warning: `feeRecipient` receives some shares during interest accrual without any supply event emitted.
+
+An indexer reconstructing balances from `Supply`/`Withdraw` events alone will under-count the fee
+recipient's position. The `feeShares` field on `AccrueInterest` is the only record of those
+mints, and it must be attributed to whoever `feeRecipient` was *at that block*.
+
+`Liquidate` carries `badDebtAssets` and `badDebtShares`
+([`:112`](morpho-blue/src/libraries/EventsLib.sol#L112)), so a socialisation event (§3.15) is
+observable off-chain without diffing state — the only place bad debt is ever reported.
+
+`AccrueInterest` emits `prevBorrowRate`, the rate used for the period just closed, not the new
+one. Naming it `prevBorrowRate` rather than `borrowRate` is a small kindness to indexers.
+
+### 14.2 MetaMorpho
+
+[`metamorpho/src/libraries/EventsLib.sol`](metamorpho/src/libraries/EventsLib.sol), 109 lines.
+Covers the submit/accept/revoke lifecycle (`SubmitCap`, `SetCap`, `SubmitTimelock`,
+`SetTimelock`, `SubmitGuardian`, `SetGuardian`, `SubmitMarketRemoval`, `RevokePendingCap`,
+`RevokePendingTimelock`, `RevokePendingGuardian`, `RevokePendingMarketRemoval`), the role setters,
+the queues (`SetSupplyQueue`, `SetWithdrawQueue`), reallocation (`ReallocateSupply`,
+`ReallocateWithdraw`), and accounting (`AccrueInterest`, `UpdateLastTotalAssets`, `Skim`).
+
+Every governance action emits on both submit and accept, so the full pending-change history is
+reconstructible from logs alone — which is what a vault-monitoring dashboard needs in order to
+warn depositors before a timelock elapses.
+
+---
+
+<a id="15-errors-reference"></a>
+## 15. Errors reference
+
+### 15.1 Morpho Blue — 24 revert strings
+
+[`ErrorsLib.sol`](morpho-blue/src/libraries/ErrorsLib.sol). These are **strings**, not custom
+errors, so they appear in revert data as `Error(string)`.
+
+| Constant | String | Line | Thrown when |
+|---|---|---|---|
+| `NOT_OWNER` | `not owner` | [`:10`](morpho-blue/src/libraries/ErrorsLib.sol#L10) | any `onlyOwner` function, non-owner caller |
+| `MAX_LLTV_EXCEEDED` | `max LLTV exceeded` | [`:13`](morpho-blue/src/libraries/ErrorsLib.sol#L13) | `enableLltv` with `lltv >= 1e18` |
+| `MAX_FEE_EXCEEDED` | `max fee exceeded` | [`:16`](morpho-blue/src/libraries/ErrorsLib.sol#L16) | `setFee` above 25% |
+| `ALREADY_SET` | `already set` | [`:19`](morpho-blue/src/libraries/ErrorsLib.sol#L19) | any setter given its current value |
+| `IRM_NOT_ENABLED` | `IRM not enabled` | [`:22`](morpho-blue/src/libraries/ErrorsLib.sol#L22) | `createMarket` with unlisted IRM |
+| `LLTV_NOT_ENABLED` | `LLTV not enabled` | [`:25`](morpho-blue/src/libraries/ErrorsLib.sol#L25) | `createMarket` with unlisted LLTV |
+| `MARKET_ALREADY_CREATED` | `market already created` | [`:28`](morpho-blue/src/libraries/ErrorsLib.sol#L28) | duplicate `createMarket` |
+| `NO_CODE` | `no code` | [`:31`](morpho-blue/src/libraries/ErrorsLib.sol#L31) | `SafeTransferLib` against an EOA |
+| `MARKET_NOT_CREATED` | `market not created` | [`:34`](morpho-blue/src/libraries/ErrorsLib.sol#L34) | any action on an unknown `Id` |
+| `INCONSISTENT_INPUT` | `inconsistent input` | [`:37`](morpho-blue/src/libraries/ErrorsLib.sol#L37) | both or neither of assets/shares |
+| `ZERO_ASSETS` | `zero assets` | [`:40`](morpho-blue/src/libraries/ErrorsLib.sol#L40) | collateral ops and `flashLoan` with 0 |
+| `ZERO_ADDRESS` | `zero address` | [`:43`](morpho-blue/src/libraries/ErrorsLib.sol#L43) | zero `onBehalf`/`receiver`/`newOwner` |
+| `UNAUTHORIZED` | `unauthorized` | [`:46`](morpho-blue/src/libraries/ErrorsLib.sol#L46) | `withdraw`/`borrow`/`withdrawCollateral` without authorization |
+| `INSUFFICIENT_COLLATERAL` | `insufficient collateral` | [`:49`](morpho-blue/src/libraries/ErrorsLib.sol#L49) | `_isHealthy` false after borrow or collateral withdrawal |
+| `INSUFFICIENT_LIQUIDITY` | `insufficient liquidity` | [`:52`](morpho-blue/src/libraries/ErrorsLib.sol#L52) | `totalBorrowAssets > totalSupplyAssets` |
+| `HEALTHY_POSITION` | `position is healthy` | [`:55`](morpho-blue/src/libraries/ErrorsLib.sol#L55) | `liquidate` on a sound position |
+| `INVALID_SIGNATURE` | `invalid signature` | [`:58`](morpho-blue/src/libraries/ErrorsLib.sol#L58) | `ecrecover` mismatch |
+| `SIGNATURE_EXPIRED` | `signature expired` | [`:61`](morpho-blue/src/libraries/ErrorsLib.sol#L61) | past `deadline` |
+| `INVALID_NONCE` | `invalid nonce` | [`:64`](morpho-blue/src/libraries/ErrorsLib.sol#L64) | nonce mismatch |
+| `TRANSFER_REVERTED` | `transfer reverted` | [`:67`](morpho-blue/src/libraries/ErrorsLib.sol#L67) | token `transfer` reverted |
+| `TRANSFER_RETURNED_FALSE` | `transfer returned false` | [`:70`](morpho-blue/src/libraries/ErrorsLib.sol#L70) | token returned `false` |
+| `TRANSFER_FROM_REVERTED` | `transferFrom reverted` | [`:73`](morpho-blue/src/libraries/ErrorsLib.sol#L73) | `transferFrom` reverted |
+| `TRANSFER_FROM_RETURNED_FALSE` | `transferFrom returned false` | [`:76`](morpho-blue/src/libraries/ErrorsLib.sol#L76) | `transferFrom` returned `false` |
+| `MAX_UINT128_EXCEEDED` | `max uint128 exceeded` | [`:79`](morpho-blue/src/libraries/ErrorsLib.sol#L79) | `UtilsLib.toUint128` overflow |
+
+**Two failures have no `ErrorsLib` entry**, because they are native Solidity panics:
+withdrawing more supply shares than you own, and repaying more borrow shares than you owe. Both
+underflow on a checked subtraction
+([`Morpho.sol:219`](morpho-blue/src/Morpho.sol#L219),
+[`:286`](morpho-blue/src/Morpho.sol#L286)) and surface as `Panic(0x11)`. Integrators matching on
+revert strings must handle that case separately.
+
+### 15.2 MetaMorpho — custom errors
+
+[`metamorpho/src/libraries/ErrorsLib.sol`](metamorpho/src/libraries/ErrorsLib.sol), 98 lines,
+declared as `error X(...)` so several carry the offending `Id`:
+`InconsistentAsset(Id)`, `MarketNotCreated`, `MarketNotEnabled(Id)`, `UnauthorizedMarket(Id)`,
+`SupplyCapExceeded(Id)`, `PendingCap(Id)`, `PendingRemoval`, `NonZeroCap`,
+`InvalidMarketRemovalNonZeroCap(Id)`, `InvalidMarketRemovalNonZeroSupply(Id)`,
+`InvalidMarketRemovalTimelockNotElapsed(Id)`, `DuplicateMarket(Id)`,
+`MaxQueueLengthExceeded`, `MaxTimelockExceeded`, `BelowMinTimelock`, `AboveMaxTimelock`,
+`TimelockNotElapsed`, `NoPendingValue`, `AlreadyPending`, `AlreadySet`, `MaxFeeExceeded`,
+`ZeroFeeRecipient`, `ZeroAddress`, `NotCuratorRole`, `NotAllocatorRole`, `NotGuardianRole`,
+`NotCuratorNorGuardianRole`, `InconsistentReallocation`, `AllCapsReached`, `NotEnoughLiquidity`.
+
+The parameterised errors are a real usability gain over Blue's bare strings: a failing
+`updateWithdrawQueue` tells you *which* market blocked it.
+

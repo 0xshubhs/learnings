@@ -402,7 +402,9 @@ matters for front ends and for `_removeTroveOwner` bookkeeping.
 
 ### 1.4.2 Liquidation
 
-#### `liquidate(address _borrower)` — [`v1-dev/packages/contracts/contracts/TroveManager.sol:303`](v1-dev/packages/contracts/contracts/TroveManager.sol#L303)
+#### `liquidate(address _borrower)`
+
+[`v1-dev/packages/contracts/contracts/TroveManager.sol:303`](v1-dev/packages/contracts/contracts/TroveManager.sol#L303)
 
 **External, no access control.** Anyone may liquidate anyone. This is the entire
 enforcement mechanism of the protocol.
@@ -413,7 +415,9 @@ enforcement mechanism of the protocol.
   `batchLiquidateTroves`. [`v1-dev/packages/contracts/contracts/TroveManager.sol:303-309`](v1-dev/packages/contracts/contracts/TroveManager.sol#L303-L309). There is no separate single-liquidation
   path; the batch path is the only implementation.
 
-#### `batchLiquidateTroves(address[] _troveArray)` — [`v1-dev/packages/contracts/contracts/TroveManager.sol:643`](v1-dev/packages/contracts/contracts/TroveManager.sol#L643)
+#### `batchLiquidateTroves(address[] _troveArray)`
+
+[`v1-dev/packages/contracts/contracts/TroveManager.sol:643`](v1-dev/packages/contracts/contracts/TroveManager.sol#L643)
 
 **Public, no access control.** The real entry point.
 
@@ -428,7 +432,9 @@ enforcement mechanism of the protocol.
   `CollSurplusPool`, updates system snapshots, and pays the liquidator.
 - **Emits:** `Liquidation` at [`v1-dev/packages/contracts/contracts/TroveManager.sol:212`](v1-dev/packages/contracts/contracts/TroveManager.sol#L212).
 
-#### The offset / redistribution split — [`v1-dev/packages/contracts/contracts/TroveManager.sol:431-459`](v1-dev/packages/contracts/contracts/TroveManager.sol#L431-L459)
+#### The offset / redistribution split
+
+[`v1-dev/packages/contracts/contracts/TroveManager.sol:431-459`](v1-dev/packages/contracts/contracts/TroveManager.sol#L431-L459)
 
 The heart of Liquity's liquidation. Given a Trove's debt and collateral and the
 LUSD available in the Stability Pool:
@@ -451,14 +457,18 @@ standing bid at a known discount, and redistribution is the unconditional
 fallback. Contrast Aave, where liquidation depends on a third party choosing to
 act; see [`LIQUITY-DEEP-DIVE.md`](LIQUITY-DEEP-DIVE.md).
 
-#### `_liquidateNormalMode` — [`v1-dev/packages/contracts/contracts/TroveManager.sol:314`](v1-dev/packages/contracts/contracts/TroveManager.sol#L314)
+#### `_liquidateNormalMode`
+
+[`v1-dev/packages/contracts/contracts/TroveManager.sol:314`](v1-dev/packages/contracts/contracts/TroveManager.sol#L314)
 
 Applies pending rewards, removes the stake, computes gas compensation as
 `_getCollGasCompensation` (0.5%) plus the 200 LUSD from `GasPool`, splits the
 remainder via `_getOffsetAndRedistributionVals`, closes the Trove with status
 `closedByLiquidation`, and emits `TroveLiquidated` at [`v1-dev/packages/contracts/contracts/TroveManager.sol:215`](v1-dev/packages/contracts/contracts/TroveManager.sol#L215).
 
-#### `_liquidateRecoveryMode` — [`v1-dev/packages/contracts/contracts/TroveManager.sol:349`](v1-dev/packages/contracts/contracts/TroveManager.sol#L349)
+#### `_liquidateRecoveryMode`
+
+[`v1-dev/packages/contracts/contracts/TroveManager.sol:349`](v1-dev/packages/contracts/contracts/TroveManager.sol#L349)
 
 Four branches by ICR:
 
@@ -472,13 +482,17 @@ Four branches by ICR:
 The capped branch is why Recovery Mode is not confiscatory: a borrower liquidated
 while still above MCR keeps the collateral above the 110% line.
 
-#### `liquidateTroves(uint _n)` — [`v1-dev/packages/contracts/contracts/TroveManager.sol:495`](v1-dev/packages/contracts/contracts/TroveManager.sol#L495)
+#### `liquidateTroves(uint _n)`
+
+[`v1-dev/packages/contracts/contracts/TroveManager.sol:495`](v1-dev/packages/contracts/contracts/TroveManager.sol#L495)
 
 Walks the sorted list from the riskiest end, liquidating up to `_n` Troves.
 Recovery-mode variant at [`v1-dev/packages/contracts/contracts/TroveManager.sol:546`](v1-dev/packages/contracts/contracts/TroveManager.sol#L546), normal-mode at [`v1-dev/packages/contracts/contracts/TroveManager.sol:607`](v1-dev/packages/contracts/contracts/TroveManager.sol#L607). Both stop early when
 the next Trove is no longer liquidatable, since the list is ordered.
 
-### 1.4.3 Redistribution math — [`v1-dev/packages/contracts/contracts/TroveManager.sol:1203-1237`](v1-dev/packages/contracts/contracts/TroveManager.sol#L1203-L1237)
+### 1.4.3 Redistribution math
+
+[`v1-dev/packages/contracts/contracts/TroveManager.sol:1203-1237`](v1-dev/packages/contracts/contracts/TroveManager.sol#L1203-L1237)
 
 When debt cannot be offset it is spread over every remaining Trove in proportion
 to *stake*, using a running accumulator so that no per-Trove writes are needed.
@@ -528,7 +542,9 @@ retroactively receive them.
 
 ### 1.4.4 Redemption
 
-#### `redeemCollateral(...)` — [`v1-dev/packages/contracts/contracts/TroveManager.sol:925`](v1-dev/packages/contracts/contracts/TroveManager.sol#L925)
+#### `redeemCollateral(...)`
+
+[`v1-dev/packages/contracts/contracts/TroveManager.sol:925`](v1-dev/packages/contracts/contracts/TroveManager.sol#L925)
 
 Exchanges LUSD for collateral at face value, always from the *lowest-ICR* Troves
 first. This is the hard peg floor: whenever LUSD trades below $1, redeeming is
@@ -564,7 +580,9 @@ peg has stabilised.
 
 ### 1.4.5 The base rate and fees
 
-#### `_updateBaseRateFromRedemption` — [`v1-dev/packages/contracts/contracts/TroveManager.sol:1358-1377`](v1-dev/packages/contracts/contracts/TroveManager.sol#L1358-L1377)
+#### `_updateBaseRateFromRedemption`
+
+[`v1-dev/packages/contracts/contracts/TroveManager.sol:1358-1377`](v1-dev/packages/contracts/contracts/TroveManager.sol#L1358-L1377)
 
 ```solidity
 uint decayedBaseRate = _calcDecayedBaseRate();
@@ -577,7 +595,9 @@ Decay first, then add the redeemed fraction divided by `BETA = 2`, capped at
 100%. The `assert(newBaseRate > 0)` at [`v1-dev/packages/contracts/contracts/TroveManager.sol:1373`](v1-dev/packages/contracts/contracts/TroveManager.sol#L1373) encodes that a redemption always
 moves the rate.
 
-#### Decay — [`v1-dev/packages/contracts/contracts/TroveManager.sol:1463-1468`](v1-dev/packages/contracts/contracts/TroveManager.sol#L1463-L1468)
+#### Decay
+
+[`v1-dev/packages/contracts/contracts/TroveManager.sol:1463-1468`](v1-dev/packages/contracts/contracts/TroveManager.sol#L1463-L1468)
 
 ```solidity
 uint minutesPassed = _minutesPassedSinceLastFeeOp();
@@ -647,7 +667,9 @@ caches `troveManager`, `activePool` and `lusdToken` in memory so the hot path
 avoids repeated `SLOAD`s. `enum BorrowerOperation { openTrove, closeTrove,
 adjustTrove }` at [`v1-dev/packages/contracts/contracts/BorrowerOperations.sol:75-79`](v1-dev/packages/contracts/contracts/BorrowerOperations.sol#L75-L79) tags events.
 
-### 1.5.2 `openTrove(uint _maxFeePercentage, uint _LUSDAmount, address _upperHint, address _lowerHint)` — [`v1-dev/packages/contracts/contracts/BorrowerOperations.sol:156`](v1-dev/packages/contracts/contracts/BorrowerOperations.sol#L156)
+### 1.5.2 `openTrove(uint _maxFeePercentage, uint _LUSDAmount, address _upperHint, address _lowerHint)`
+
+[`v1-dev/packages/contracts/contracts/BorrowerOperations.sol:156`](v1-dev/packages/contracts/contracts/BorrowerOperations.sol#L156)
 
 **External, payable.** Collateral arrives as `msg.value`.
 
@@ -703,7 +725,9 @@ Five thin wrappers over one implementation:
 reverting `"BorrowerOps: Caller is not Stability Pool"`. It is how a depositor
 compounds an ETH gain straight back into their Trove.
 
-#### `_adjustTrove(...)` — [`v1-dev/packages/contracts/contracts/BorrowerOperations.sol:249`](v1-dev/packages/contracts/contracts/BorrowerOperations.sol#L249)
+#### `_adjustTrove(...)`
+
+[`v1-dev/packages/contracts/contracts/BorrowerOperations.sol:249`](v1-dev/packages/contracts/contracts/BorrowerOperations.sol#L249)
 
 The single mutation path. Checks in order:
 
@@ -731,7 +755,9 @@ fee on a debt increase, computes the new ICR, re-inserts into `SortedTroves`
 using `sortedTroves.reInsert`, then moves tokens through
 `_moveTokensAndETHfromAdjustment` at [`v1-dev/packages/contracts/contracts/BorrowerOperations.sol:419`](v1-dev/packages/contracts/contracts/BorrowerOperations.sol#L419).
 
-### 1.5.4 `closeTrove()` — [`v1-dev/packages/contracts/contracts/BorrowerOperations.sol:321`](v1-dev/packages/contracts/contracts/BorrowerOperations.sol#L321)
+### 1.5.4 `closeTrove()`
+
+[`v1-dev/packages/contracts/contracts/BorrowerOperations.sol:321`](v1-dev/packages/contracts/contracts/BorrowerOperations.sol#L321)
 
 - **Checks:** Trove active; not in Recovery Mode ([`v1-dev/packages/contracts/contracts/BorrowerOperations.sol:491`](v1-dev/packages/contracts/contracts/BorrowerOperations.sol#L491)); the caller holds
   enough LUSD to repay `debt - 200e18`.
@@ -741,7 +767,9 @@ using `sortedTroves.reInsert`, then moves tokens through
 - The 200 LUSD gas compensation is returned here, which is why the borrower only
   needs to repay the net debt.
 
-### 1.5.5 `claimCollateral()` — [`v1-dev/packages/contracts/contracts/BorrowerOperations.sol:356`](v1-dev/packages/contracts/contracts/BorrowerOperations.sol#L356)
+### 1.5.5 `claimCollateral()`
+
+[`v1-dev/packages/contracts/contracts/BorrowerOperations.sol:356`](v1-dev/packages/contracts/contracts/BorrowerOperations.sol#L356)
 
 Pulls the caller's balance out of `CollSurplusPool`. This is the money left over
 after a Recovery-Mode capped liquidation or a full redemption.
@@ -864,7 +892,9 @@ remains, so `_debtToOffset < _totalLUSDDeposits` holds, the `assert` at [`v1-dev
 never trips, and `P` stays strictly positive. A single constant replaces a whole
 epoch mechanism.
 
-### 1.6.3 `offset(uint _debtToOffset, uint _collToAdd)` — [`v1-dev/packages/contracts/contracts/StabilityPool.sol:514`](v1-dev/packages/contracts/contracts/StabilityPool.sol#L514)
+### 1.6.3 `offset(uint _debtToOffset, uint _collToAdd)`
+
+[`v1-dev/packages/contracts/contracts/StabilityPool.sol:514`](v1-dev/packages/contracts/contracts/StabilityPool.sol#L514)
 
 **Only callable by `TroveManager`** ([`v1-dev/packages/contracts/contracts/StabilityPool.sol:940`](v1-dev/packages/contracts/contracts/StabilityPool.sol#L940),
 `"StabilityPool: Caller is not TroveManager"`).
@@ -877,7 +907,9 @@ epoch mechanism.
 4. `_moveOffsetCollAndDebt` ([`v1-dev/packages/contracts/contracts/StabilityPool.sol:628`](v1-dev/packages/contracts/contracts/StabilityPool.sol#L628)) burns the LUSD and pulls the ETH from
    `ActivePool`.
 
-#### The rounding, and who it favours — [`v1-dev/packages/contracts/contracts/StabilityPool.sol:531-577`](v1-dev/packages/contracts/contracts/StabilityPool.sol#L531-L577)
+#### The rounding, and who it favours
+
+[`v1-dev/packages/contracts/contracts/StabilityPool.sol:531-577`](v1-dev/packages/contracts/contracts/StabilityPool.sol#L531-L577)
 
 Same four-step error feedback as redistribution, plus one deliberate asymmetry:
 
@@ -897,7 +929,9 @@ before deciding how much to offset.
 
 ### 1.6.4 Deposit lifecycle
 
-#### `provideToSP(uint _amount, address _frontEndTag)` — [`v1-dev/packages/contracts/contracts/StabilityPool.sol:316`](v1-dev/packages/contracts/contracts/StabilityPool.sol#L316)
+#### `provideToSP(uint _amount, address _frontEndTag)`
+
+[`v1-dev/packages/contracts/contracts/StabilityPool.sol:316`](v1-dev/packages/contracts/contracts/StabilityPool.sol#L316)
 
 - **Checks:** `_requireNonZeroAmount`; if the depositor is new,
   `_requireFrontEndNotRegistered` and `_requireValidFrontEndTag`.
@@ -907,14 +941,18 @@ before deciding how much to offset.
   depositor**.
 - **Emits:** `UserDepositChanged`, `ETHGainWithdrawn`.
 
-#### `withdrawFromSP(uint _amount)` — [`v1-dev/packages/contracts/contracts/StabilityPool.sol:363`](v1-dev/packages/contracts/contracts/StabilityPool.sol#L363)
+#### `withdrawFromSP(uint _amount)`
+
+[`v1-dev/packages/contracts/contracts/StabilityPool.sol:363`](v1-dev/packages/contracts/contracts/StabilityPool.sol#L363)
 
 - **Checks:** `_requireNoUnderCollateralizedTroves` ([`v1-dev/packages/contracts/contracts/StabilityPool.sol:957`](v1-dev/packages/contracts/contracts/StabilityPool.sol#L957)) blocks withdrawal
   while the riskiest Trove sits below MCR. This stops depositors from fleeing
   ahead of a liquidation they can see coming.
 - **Body:** mirror of `provideToSP`. Withdrawing `type(uint).max` exits fully.
 
-#### `withdrawETHGainToTrove(address _upperHint, address _lowerHint)` — [`v1-dev/packages/contracts/contracts/StabilityPool.sol:408`](v1-dev/packages/contracts/contracts/StabilityPool.sol#L408)
+#### `withdrawETHGainToTrove(address _upperHint, address _lowerHint)`
+
+[`v1-dev/packages/contracts/contracts/StabilityPool.sol:408`](v1-dev/packages/contracts/contracts/StabilityPool.sol#L408)
 
 Routes the ETH gain into the caller's Trove via
 `BorrowerOperations.moveETHGainToTrove` instead of to their wallet. Requires an
@@ -1015,7 +1053,9 @@ pushing search off-chain and verifying on-chain.
 Four contracts that hold funds. None contains logic beyond bookkeeping and caller
 checks.
 
-### `ActivePool` — [`v1-dev/packages/contracts/contracts/ActivePool.sol:18-130`](v1-dev/packages/contracts/contracts/ActivePool.sol#L18-L130)
+### `ActivePool`
+
+[`v1-dev/packages/contracts/contracts/ActivePool.sol:18-130`](v1-dev/packages/contracts/contracts/ActivePool.sol#L18-L130)
 
 Holds the ETH and tracks the LUSD debt of all **active** Troves.
 
@@ -1030,7 +1070,9 @@ Holds the ETH and tracks the LUSD debt of all **active** Troves.
 Guards at [`v1-dev/packages/contracts/contracts/ActivePool.sol:107`](v1-dev/packages/contracts/contracts/ActivePool.sol#L107), [`v1-dev/packages/contracts/contracts/ActivePool.sol:114`](v1-dev/packages/contracts/contracts/ActivePool.sol#L114), [`v1-dev/packages/contracts/contracts/ActivePool.sol:122`](v1-dev/packages/contracts/contracts/ActivePool.sol#L122). `receive()` accepts ETH only from
 BorrowerOperations or DefaultPool.
 
-### `DefaultPool` — [`v1-dev/packages/contracts/contracts/DefaultPool.sol:18-105`](v1-dev/packages/contracts/contracts/DefaultPool.sol#L18-L105)
+### `DefaultPool`
+
+[`v1-dev/packages/contracts/contracts/DefaultPool.sol:18-105`](v1-dev/packages/contracts/contracts/DefaultPool.sol#L18-L105)
 
 Holds ETH and debt that has been **redistributed** but not yet claimed by the
 receiving Troves. A Trove's share moves to `ActivePool` when
@@ -1045,7 +1087,9 @@ receiving Troves. A Trove's share moves to `ActivePool` when
 The split between Active and Default is what makes lazy redistribution work: the
 system's totals stay correct without touching individual Troves.
 
-### `CollSurplusPool` — [`v1-dev/packages/contracts/contracts/CollSurplusPool.sol:12-120`](v1-dev/packages/contracts/contracts/CollSurplusPool.sol#L12-L120)
+### `CollSurplusPool`
+
+[`v1-dev/packages/contracts/contracts/CollSurplusPool.sol:12-120`](v1-dev/packages/contracts/contracts/CollSurplusPool.sol#L12-L120)
 
 Holds collateral owed back to borrowers after a capped Recovery-Mode liquidation
 or a full redemption.
@@ -1057,7 +1101,9 @@ or a full redemption.
 | `accountSurplus` | [`v1-dev/packages/contracts/contracts/CollSurplusPool.sol:73`](v1-dev/packages/contracts/contracts/CollSurplusPool.sol#L73) | TroveManager |
 | `claimColl` | [`v1-dev/packages/contracts/contracts/CollSurplusPool.sol:82`](v1-dev/packages/contracts/contracts/CollSurplusPool.sol#L82) | BorrowerOperations |
 
-### `GasPool` — [`v1-dev/packages/contracts/contracts/GasPool.sol:16-18`](v1-dev/packages/contracts/contracts/GasPool.sol#L16-L18)
+### `GasPool`
+
+[`v1-dev/packages/contracts/contracts/GasPool.sol:16-18`](v1-dev/packages/contracts/contracts/GasPool.sol#L16-L18)
 
 Four lines of code and no functions. It holds the 200 LUSD gas compensation for
 every open Trove. `LUSDToken` mints to it on open and burns from it on close.
@@ -1069,7 +1115,9 @@ special-casing.
 
 ## 1.9 Tokens
 
-### `LUSDToken` — [`v1-dev/packages/contracts/contracts/LUSDToken.sol:27-306`](v1-dev/packages/contracts/contracts/LUSDToken.sol#L27-L306)
+### `LUSDToken`
+
+[`v1-dev/packages/contracts/contracts/LUSDToken.sol:27-306`](v1-dev/packages/contracts/contracts/LUSDToken.sol#L27-L306)
 
 A hand-rolled ERC-20 with EIP-2612 permit. It does **not** inherit OpenZeppelin;
 the whole implementation is inline.
@@ -1093,7 +1141,9 @@ address, to the token contract itself, or to the core protocol addresses. This
 prevents users from accidentally destroying funds by sending LUSD to a pool that
 has no way to return it.
 
-### `LQTYToken` — [`v1-dev/packages/contracts/contracts/LQTY/LQTYToken.sol:50-366`](v1-dev/packages/contracts/contracts/LQTY/LQTYToken.sol#L50-L366)
+### `LQTYToken`
+
+[`v1-dev/packages/contracts/contracts/LQTY/LQTYToken.sol:50-366`](v1-dev/packages/contracts/contracts/LQTY/LQTYToken.sol#L50-L366)
 
 Fixed supply of 100 million, all minted at deployment. No inflation, no minting
 function.
@@ -1112,7 +1162,9 @@ enforces the team lockup in code rather than by promise.
 
 ---
 
-## 1.10 `LQTYStaking` — [`v1-dev/packages/contracts/contracts/LQTY/LQTYStaking.sol:15-247`](v1-dev/packages/contracts/contracts/LQTY/LQTYStaking.sol#L15-L247)
+## 1.10 `LQTYStaking`
+
+[`v1-dev/packages/contracts/contracts/LQTY/LQTYStaking.sol:15-247`](v1-dev/packages/contracts/contracts/LQTY/LQTYStaking.sol#L15-L247)
 
 Stakers of LQTY receive the protocol's borrowing and redemption fees. Same
 accumulator pattern as the Stability Pool, but additive rather than
@@ -1138,7 +1190,9 @@ multiplicative, because a staker's principal never takes a haircut.
 The gain formula at [`v1-dev/packages/contracts/contracts/LQTY/LQTYStaking.sol:192-196`](v1-dev/packages/contracts/contracts/LQTY/LQTYStaking.sol#L192-L196) is the additive twin of the Stability Pool's
 `(S_now - S_snap) / P_snap`. No `P` is needed because nothing dilutes a staker.
 
-## 1.11 `CommunityIssuance` — [`v1-dev/packages/contracts/contracts/LQTY/CommunityIssuance.sol:14-132`](v1-dev/packages/contracts/contracts/LQTY/CommunityIssuance.sol#L14-L132)
+## 1.11 `CommunityIssuance`
+
+[`v1-dev/packages/contracts/contracts/LQTY/CommunityIssuance.sol:14-132`](v1-dev/packages/contracts/contracts/LQTY/CommunityIssuance.sol#L14-L132)
 
 Issues LQTY to Stability Pool depositors on a decaying schedule.
 
@@ -1156,7 +1210,9 @@ folds into `G`.
 
 ---
 
-## 1.12 `PriceFeed` — [`v1-dev/packages/contracts/contracts/PriceFeed.sol:23-572`](v1-dev/packages/contracts/contracts/PriceFeed.sol#L23-L572)
+## 1.12 `PriceFeed`
+
+[`v1-dev/packages/contracts/contracts/PriceFeed.sol:23-572`](v1-dev/packages/contracts/contracts/PriceFeed.sol#L23-L572)
 
 The most defensive contract in v1. Chainlink is primary, Tellor is the fallback,
 and the contract encodes an explicit state machine over their combined health.
@@ -1170,7 +1226,9 @@ and the contract encodes an explicit state machine over their combined health.
 | `MAX_PRICE_DEVIATION_FROM_PREVIOUS_ROUND` | [`v1-dev/packages/contracts/contracts/PriceFeed.sol:45`](v1-dev/packages/contracts/contracts/PriceFeed.sol#L45) | 50% |
 | `MAX_PRICE_DIFFERENCE_BETWEEN_ORACLES` | [`v1-dev/packages/contracts/contracts/PriceFeed.sol:51`](v1-dev/packages/contracts/contracts/PriceFeed.sol#L51) | 5% |
 
-### `fetchPrice()` — [`v1-dev/packages/contracts/contracts/PriceFeed.sol:129`](v1-dev/packages/contracts/contracts/PriceFeed.sol#L129)
+### `fetchPrice()`
+
+[`v1-dev/packages/contracts/contracts/PriceFeed.sol:129`](v1-dev/packages/contracts/contracts/PriceFeed.sol#L129)
 
 **Not a view.** It writes `lastGoodPrice` and `status`, so it is a state
 transition, not a read.
@@ -1204,7 +1262,9 @@ up front. Immutability forces defensive design.
 
 ## 1.13 Helper and peripheral contracts
 
-### `HintHelpers` — [`v1-dev/packages/contracts/contracts/HintHelpers.sol:11-171`](v1-dev/packages/contracts/contracts/HintHelpers.sol#L11-L171)
+### `HintHelpers`
+
+[`v1-dev/packages/contracts/contracts/HintHelpers.sol:11-171`](v1-dev/packages/contracts/contracts/HintHelpers.sol#L11-L171)
 
 Not part of the core system; front ends call it off-chain via `eth_call` to
 compute hints.
@@ -1220,13 +1280,17 @@ The comment at [`v1-dev/packages/contracts/contracts/HintHelpers.sol:123-127`](v
 worst-case O(n) positions away from correct, but with enough trials it is close
 enough that the on-chain walk is short.
 
-### `MultiTroveGetter` — [`v1-dev/packages/contracts/contracts/MultiTroveGetter.sol:10-120`](v1-dev/packages/contracts/contracts/MultiTroveGetter.sol#L10-L120)
+### `MultiTroveGetter`
+
+[`v1-dev/packages/contracts/contracts/MultiTroveGetter.sol:10-120`](v1-dev/packages/contracts/contracts/MultiTroveGetter.sol#L10-L120)
 
 Batch read for front ends. `getMultipleSortedTroves(int _startIdx, uint _count)`
 at [`v1-dev/packages/contracts/contracts/MultiTroveGetter.sol:30`](v1-dev/packages/contracts/contracts/MultiTroveGetter.sol#L30) walks from head or tail depending on the sign of `_startIdx`, via
 [`v1-dev/packages/contracts/contracts/MultiTroveGetter.sol:63`](v1-dev/packages/contracts/contracts/MultiTroveGetter.sol#L63) and [`v1-dev/packages/contracts/contracts/MultiTroveGetter.sol:92`](v1-dev/packages/contracts/contracts/MultiTroveGetter.sol#L92).
 
-### `Unipool` — [`v1-dev/packages/contracts/contracts/LPRewards/Unipool.sol:74-243`](v1-dev/packages/contracts/contracts/LPRewards/Unipool.sol#L74-L243)
+### `Unipool`
+
+[`v1-dev/packages/contracts/contracts/LPRewards/Unipool.sol:74-243`](v1-dev/packages/contracts/contracts/LPRewards/Unipool.sol#L74-L243)
 
 A Synthetix-style staking rewards contract for the Uniswap v2 LUSD/ETH LP token.
 `LPTokenWrapper` at [`v1-dev/packages/contracts/contracts/LPRewards/Unipool.sol:23-60`](v1-dev/packages/contracts/contracts/LPRewards/Unipool.sol#L23-L60) holds the stake accounting; `Unipool` adds the
@@ -1366,7 +1430,9 @@ redemptions hit the lowest rates first. Paying more buys redemption protection.
 The market clears without a governance vote and without an oracle for the rate
 itself.
 
-## 2.2 Constants — [`v2-bold/contracts/src/Dependencies/Constants.sol:1-89`](v2-bold/contracts/src/Dependencies/Constants.sol#L1-L89)
+## 2.2 Constants
+
+[`v2-bold/contracts/src/Dependencies/Constants.sol:1-89`](v2-bold/contracts/src/Dependencies/Constants.sol#L1-L89)
 
 | Constant | Line | Value |
 |---|---|---|
@@ -1424,7 +1490,9 @@ interest = debt * annualInterestRate * timeElapsed / (ONE_YEAR * 1e18)
 is no single system-wide index; interest is computed per Trove from its
 `lastDebtUpdateTime`.
 
-### The upfront fee — [`v2-bold/contracts/src/BorrowerOperations.sol:1195`](v2-bold/contracts/src/BorrowerOperations.sol#L1195)
+### The upfront fee
+
+[`v2-bold/contracts/src/BorrowerOperations.sol:1195`](v2-bold/contracts/src/BorrowerOperations.sol#L1195)
 
 ```solidity
 return _calcInterest(_debt * _avgInterestRate, UPFRONT_INTEREST_PERIOD);
@@ -1436,7 +1504,9 @@ borrower could open at a very low rate, sit in front of everyone in the
 redemption queue for free, and close before paying anything. Charging a week up
 front makes that round trip cost money.
 
-### The adjustment cooldown — [`v2-bold/contracts/src/BorrowerOperations.sol:539`](v2-bold/contracts/src/BorrowerOperations.sol#L539)
+### The adjustment cooldown
+
+[`v2-bold/contracts/src/BorrowerOperations.sol:539`](v2-bold/contracts/src/BorrowerOperations.sol#L539)
 
 Changing your rate within `INTEREST_RATE_ADJ_COOLDOWN` (7 days) of the last
 change costs another upfront fee. Outside the window it is free. This lets rates
@@ -1453,7 +1523,9 @@ incentives.
 
 ---
 
-## 2.4 `BorrowerOperations` — [`v2-bold/contracts/src/BorrowerOperations.sol:1-1616`](v2-bold/contracts/src/BorrowerOperations.sol#L1-L1616)
+## 2.4 `BorrowerOperations`
+
+[`v2-bold/contracts/src/BorrowerOperations.sol:1-1616`](v2-bold/contracts/src/BorrowerOperations.sol#L1-L1616)
 
 1,616 lines, up from 666 in v1. Almost all of the growth is interest-rate
 management and batch delegation.
@@ -1549,7 +1621,9 @@ revert." A failing oracle must not brick the whole system.
 ---
 
 
-## 2.5 `TroveManager` — [`v2-bold/contracts/src/TroveManager.sol:1-2006`](v2-bold/contracts/src/TroveManager.sol#L1-L2006)
+## 2.5 `TroveManager`
+
+[`v2-bold/contracts/src/TroveManager.sol:1-2006`](v2-bold/contracts/src/TroveManager.sol#L1-L2006)
 
 ### 2.5.1 Liquidation
 
@@ -1622,7 +1696,9 @@ into chunks across several transactions.
 accrued batch management fee, redistribution gains, and the resulting totals.
 Every read path materialises it, so callers never see stale debt.
 
-## 2.6 `CollateralRegistry` — [`v2-bold/contracts/src/CollateralRegistry.sol:1-316`](v2-bold/contracts/src/CollateralRegistry.sol#L1-L316)
+## 2.6 `CollateralRegistry`
+
+[`v2-bold/contracts/src/CollateralRegistry.sol:1-316`](v2-bold/contracts/src/CollateralRegistry.sol#L1-L316)
 
 New in v2. Coordinates redemption across every collateral branch and owns the
 system-wide base rate.
@@ -1655,7 +1731,9 @@ be global: one BOLD peg, one fee.
 ---
 
 
-## 2.7 `StabilityPool` — [`v2-bold/contracts/src/StabilityPool.sol:1-603`](v2-bold/contracts/src/StabilityPool.sol#L1-L603)
+## 2.7 `StabilityPool`
+
+[`v2-bold/contracts/src/StabilityPool.sol:1-603`](v2-bold/contracts/src/StabilityPool.sol#L1-L603)
 
 Same product-sum core as v1, plus a third revenue stream and a friendlier
 withdrawal model.
@@ -1728,7 +1806,9 @@ epoch machinery is needed here either.
 
 ## 2.8 Pools, registry, NFT and helpers
 
-### `ActivePool` — [`v2-bold/contracts/src/ActivePool.sol:1-345`](v2-bold/contracts/src/ActivePool.sol#L1-L345)
+### `ActivePool`
+
+[`v2-bold/contracts/src/ActivePool.sol:1-345`](v2-bold/contracts/src/ActivePool.sol#L1-L345)
 
 Larger than v1's because it now owns **aggregate interest accounting**. It tracks
 `aggRecordedDebt`, `aggWeightedDebtSum` and `lastAggUpdateTime`, so the system
@@ -1740,47 +1820,63 @@ The weighted sum is the trick: with per-Trove rates there is no single index, bu
 `aggWeightedDebtSum / aggRecordedDebt` gives the debt-weighted average rate,
 which is what `_calcUpfrontFee` charges against.
 
-### `DefaultPool` — [`v2-bold/contracts/src/DefaultPool.sol:1`](v2-bold/contracts/src/DefaultPool.sol#L1) and `CollSurplusPool` — [`v2-bold/contracts/src/CollSurplusPool.sol:1`](v2-bold/contracts/src/CollSurplusPool.sol#L1)
+### `DefaultPool`
+
+[`v2-bold/contracts/src/DefaultPool.sol:1`](v2-bold/contracts/src/DefaultPool.sol#L1) and `CollSurplusPool` — [`v2-bold/contracts/src/CollSurplusPool.sol:1`](v2-bold/contracts/src/CollSurplusPool.sol#L1)
 
 Same roles as v1. `CollSurplusPool` is busier in v2 because every liquidation
 above the penalty leaves a surplus.
 
-### `GasPool` — [`v2-bold/contracts/src/GasPool.sol:1`](v2-bold/contracts/src/GasPool.sol#L1)
+### `GasPool`
+
+[`v2-bold/contracts/src/GasPool.sol:1`](v2-bold/contracts/src/GasPool.sol#L1)
 
 Still trivial. v2 keeps a separate ETH gas compensation alongside the capped
 collateral share.
 
-### `AddressesRegistry` — [`v2-bold/contracts/src/AddressesRegistry.sol:1-137`](v2-bold/contracts/src/AddressesRegistry.sol#L1-L137)
+### `AddressesRegistry`
+
+[`v2-bold/contracts/src/AddressesRegistry.sol:1-137`](v2-bold/contracts/src/AddressesRegistry.sol#L1-L137)
 
 Replaces v1's per-contract `setAddresses`. One registry holds every address for a
 branch and is passed to each contract's constructor, so wiring is declared once
 instead of eleven times.
 
-### `BoldToken` — [`v2-bold/contracts/src/BoldToken.sol:1-131`](v2-bold/contracts/src/BoldToken.sol#L1-L131)
+### `BoldToken`
+
+[`v2-bold/contracts/src/BoldToken.sol:1-131`](v2-bold/contracts/src/BoldToken.sol#L1-L131)
 
 Same shape as `LUSDToken`, but minting is authorised per branch: each branch's
 `BorrowerOperations`, `TroveManager`, `ActivePool` and `StabilityPool` may mint.
 One token, many collateral branches.
 
-### `TroveNFT` — [`v2-bold/contracts/src/TroveNFT.sol:1-63`](v2-bold/contracts/src/TroveNFT.sol#L1-L63)
+### `TroveNFT`
+
+[`v2-bold/contracts/src/TroveNFT.sol:1-63`](v2-bold/contracts/src/TroveNFT.sol#L1-L63)
 
 ERC-721 over Troves. `tokenURI` delegates to the metadata contracts in
 `NFTMetadata/`, which render an on-chain SVG. The same on-chain-art pattern as
 Uniswap V3's position manager; see
 [`../uni/V3-PERIPHERY-COMPLETE-REFERENCE.md`](../uni/V3-PERIPHERY-COMPLETE-REFERENCE.md).
 
-### `RedemptionHelper` — [`v2-bold/contracts/src/RedemptionHelper.sol:1-173`](v2-bold/contracts/src/RedemptionHelper.sol#L1-L173) and `DebtInFrontHelper` — [`v2-bold/contracts/src/DebtInFrontHelper.sol:1-117`](v2-bold/contracts/src/DebtInFrontHelper.sol#L1-L117)
+### `RedemptionHelper`
+
+[`v2-bold/contracts/src/RedemptionHelper.sol:1-173`](v2-bold/contracts/src/RedemptionHelper.sol#L1-L173) and `DebtInFrontHelper` — [`v2-bold/contracts/src/DebtInFrontHelper.sol:1-117`](v2-bold/contracts/src/DebtInFrontHelper.sol#L1-L117)
 
 Off-chain read helpers. `DebtInFrontHelper` answers "how much debt sits ahead of
 me in the redemption queue", which is exactly the question a borrower needs to
 answer when choosing an interest rate.
 
-### `SortedTroves` — [`v2-bold/contracts/src/SortedTroves.sol:1-553`](v2-bold/contracts/src/SortedTroves.sol#L1-L553)
+### `SortedTroves`
+
+[`v2-bold/contracts/src/SortedTroves.sol:1-553`](v2-bold/contracts/src/SortedTroves.sol#L1-L553)
 
 Now ordered by **annual interest rate**, ascending, and it supports batch
 insertion so a batch manager's rate change can move many Troves at once.
 
-### `HintHelpers` — [`v2-bold/contracts/src/HintHelpers.sol:1-259`](v2-bold/contracts/src/HintHelpers.sol#L1-L259) and `MultiTroveGetter` — [`v2-bold/contracts/src/MultiTroveGetter.sol:1-154`](v2-bold/contracts/src/MultiTroveGetter.sol#L1-L154)
+### `HintHelpers`
+
+[`v2-bold/contracts/src/HintHelpers.sol:1-259`](v2-bold/contracts/src/HintHelpers.sol#L1-L259) and `MultiTroveGetter` — [`v2-bold/contracts/src/MultiTroveGetter.sol:1-154`](v2-bold/contracts/src/MultiTroveGetter.sol#L1-L154)
 
 Same purpose as v1, adapted to `troveId` and multi-branch.
 
@@ -1848,7 +1944,9 @@ core protocol; a borrower can do everything without them.
 | `LeftoversSweep` | Returns dust after a zap |
 | `Modules/Exchanges/*` | Curve, Uniswap V3 and a hybrid router |
 
-### Leverage via flash loan — [`v2-bold/contracts/src/Zappers/LeverageLSTZapper.sol:10-206`](v2-bold/contracts/src/Zappers/LeverageLSTZapper.sol#L10-L206)
+### Leverage via flash loan
+
+[`v2-bold/contracts/src/Zappers/LeverageLSTZapper.sol:10-206`](v2-bold/contracts/src/Zappers/LeverageLSTZapper.sol#L10-L206)
 
 | Function | Line | Flow |
 |---|---|---|
