@@ -1786,3 +1786,92 @@ Same purpose as v1, adapted to `troveId` and multi-branch.
 
 ---
 
+
+## 2.9 Price feeds
+
+Five contracts in `v2-bold/contracts/src/PriceFeeds/`, layered rather than v1's single switch
+statement.
+
+| Contract | Line | Role |
+|---|---|---|
+| `MainnetPriceFeedBase` | [`v2-bold/contracts/src/PriceFeeds/MainnetPriceFeedBase.sol:11-125`](v2-bold/contracts/src/PriceFeeds/MainnetPriceFeedBase.sol#L11-L125) | Chainlink plumbing and shutdown |
+| `CompositePriceFeed` | [`v2-bold/contracts/src/PriceFeeds/CompositePriceFeed.sol:12-118`](v2-bold/contracts/src/PriceFeeds/CompositePriceFeed.sol#L12-L118) | Two-oracle composition |
+| `WETHPriceFeed` | [`v2-bold/contracts/src/PriceFeeds/WETHPriceFeed.sol:9-40`](v2-bold/contracts/src/PriceFeeds/WETHPriceFeed.sol#L9-L40) | Direct ETH-USD |
+| `WSTETHPriceFeed` | [`v2-bold/contracts/src/PriceFeeds/WSTETHPriceFeed.sol:11-80`](v2-bold/contracts/src/PriceFeeds/WSTETHPriceFeed.sol#L11-L80) | ETH-USD × wstETH-stETH rate |
+| `RETHPriceFeed` | — | ETH-USD × rETH-ETH rate |
+
+### The key design change
+
+v1's `PriceFeed` had a Tellor fallback and five states. v2 drops the second
+oracle and instead **shuts the branch down**.
+
+| Function | Line | Behaviour |
+|---|---|---|
+| `_getOracleAnswer` | [`v2-bold/contracts/src/PriceFeeds/MainnetPriceFeedBase.sol:53`](v2-bold/contracts/src/PriceFeeds/MainnetPriceFeedBase.sol#L53) | Returns `(price, isDown)` |
+| `_shutDownAndSwitchToLastGoodPrice` | [`v2-bold/contracts/src/PriceFeeds/MainnetPriceFeedBase.sol:68`](v2-bold/contracts/src/PriceFeeds/MainnetPriceFeedBase.sol#L68) | Freezes at the last good price and shuts the branch |
+| `_getCurrentChainlinkResponse` | [`v2-bold/contracts/src/PriceFeeds/MainnetPriceFeedBase.sol:78`](v2-bold/contracts/src/PriceFeeds/MainnetPriceFeedBase.sol#L78) | |
+| `fetchPrice` | [`v2-bold/contracts/src/PriceFeeds/CompositePriceFeed.sol:30`](v2-bold/contracts/src/PriceFeeds/CompositePriceFeed.sol#L30) | |
+| `fetchRedemptionPrice` | [`v2-bold/contracts/src/PriceFeeds/CompositePriceFeed.sol:37`](v2-bold/contracts/src/PriceFeeds/CompositePriceFeed.sol#L37) | **Separate price for redemptions** |
+| `_shutDownAndSwitchToETHUSDxCanonical` | [`v2-bold/contracts/src/PriceFeeds/CompositePriceFeed.sol:44`](v2-bold/contracts/src/PriceFeeds/CompositePriceFeed.sol#L44) | Falls back to the canonical rate if the market oracle fails |
+| `_fetchPriceDuringShutdown` | [`v2-bold/contracts/src/PriceFeeds/CompositePriceFeed.sol:57`](v2-bold/contracts/src/PriceFeeds/CompositePriceFeed.sol#L57) | |
+| `_fetchPriceETHUSDxCanonical` | [`v2-bold/contracts/src/PriceFeeds/CompositePriceFeed.sol:78`](v2-bold/contracts/src/PriceFeeds/CompositePriceFeed.sol#L78) | |
+| `_withinDeviationThreshold` | [`v2-bold/contracts/src/PriceFeeds/CompositePriceFeed.sol:99`](v2-bold/contracts/src/PriceFeeds/CompositePriceFeed.sol#L99) | Market vs canonical sanity check |
+
+**Two prices, not one.** `fetchPrice` and `fetchRedemptionPrice` can differ.
+`_fetchPricePrimary(bool _isRedemption)` at [`v2-bold/contracts/src/PriceFeeds/WSTETHPriceFeed.sol:36`](v2-bold/contracts/src/PriceFeeds/WSTETHPriceFeed.sol#L36) takes the **maximum** of the
+market rate and the canonical rate for redemptions and the **minimum** for
+everything else. That asymmetry is deliberate: it always prices against the
+actor, so neither a borrower nor a redeemer can profit from an oracle
+discrepancy.
+
+**Canonical rates.** For wstETH and rETH, the LST contract itself reports an
+exchange rate that cannot be manipulated by trading. `_getCanonicalRate` at
+[`v2-bold/contracts/src/PriceFeeds/WSTETHPriceFeed.sol:73`](v2-bold/contracts/src/PriceFeeds/WSTETHPriceFeed.sol#L73) reads it. If the market oracle fails, the branch keeps operating on the
+canonical rate ([`v2-bold/contracts/src/PriceFeeds/CompositePriceFeed.sol:44`](v2-bold/contracts/src/PriceFeeds/CompositePriceFeed.sol#L44)); if the canonical rate also fails, it shuts down.
+
+Contrast with v1, where a dead oracle meant falling back to Tellor and hoping.
+v2's answer is to stop the branch and open urgent redemption, which is a cleaner
+failure mode for a system with no governance to intervene.
+
+## 2.10 Zappers
+
+`v2-bold/contracts/src/Zappers/` wraps multi-step operations into one transaction. Not part of the
+core protocol; a borrower can do everything without them.
+
+| Contract | Purpose |
+|---|---|
+| `BaseZapper` | Shared plumbing |
+| `WETHZapper` | Open and adjust with raw ETH instead of WETH |
+| `GasCompZapper` | Handles the ETH gas deposit for LST branches |
+| `LeverageWETHZapper` | Flash-loan leverage on the WETH branch |
+| `LeverageLSTZapper` | Flash-loan leverage on an LST branch |
+| `LeftoversSweep` | Returns dust after a zap |
+| `Modules/Exchanges/*` | Curve, Uniswap V3 and a hybrid router |
+
+### Leverage via flash loan — [`v2-bold/contracts/src/Zappers/LeverageLSTZapper.sol:10-206`](v2-bold/contracts/src/Zappers/LeverageLSTZapper.sol#L10-L206)
+
+| Function | Line | Flow |
+|---|---|---|
+| `openLeveragedTroveWithRawETH` | [`v2-bold/contracts/src/Zappers/LeverageLSTZapper.sol:21`](v2-bold/contracts/src/Zappers/LeverageLSTZapper.sol#L21) | Flash-borrow collateral, open a Trove, swap the borrowed BOLD back to collateral, repay |
+| `receiveFlashLoanOnOpenLeveragedTrove` | [`v2-bold/contracts/src/Zappers/LeverageLSTZapper.sol:51`](v2-bold/contracts/src/Zappers/LeverageLSTZapper.sol#L51) | Callback |
+| `leverUpTrove` | [`v2-bold/contracts/src/Zappers/LeverageLSTZapper.sol:111`](v2-bold/contracts/src/Zappers/LeverageLSTZapper.sol#L111) | Borrow more BOLD, swap to collateral, add it |
+| `receiveFlashLoanOnLeverUpTrove` | [`v2-bold/contracts/src/Zappers/LeverageLSTZapper.sol:130`](v2-bold/contracts/src/Zappers/LeverageLSTZapper.sol#L130) | Callback |
+| `leverDownTrove` | [`v2-bold/contracts/src/Zappers/LeverageLSTZapper.sol:157`](v2-bold/contracts/src/Zappers/LeverageLSTZapper.sol#L157) | Withdraw collateral, swap to BOLD, repay debt |
+| `receiveFlashLoanOnLeverDownTrove` | [`v2-bold/contracts/src/Zappers/LeverageLSTZapper.sol:176`](v2-bold/contracts/src/Zappers/LeverageLSTZapper.sol#L176) | Callback |
+| `leverageRatioToCollateralRatio` | [`v2-bold/contracts/src/Zappers/LeverageLSTZapper.sol:203`](v2-bold/contracts/src/Zappers/LeverageLSTZapper.sol#L203) | Converts a target leverage into an ICR |
+
+The comment at [`v2-bold/contracts/src/Zappers/LeverageLSTZapper.sol:72`](v2-bold/contracts/src/Zappers/LeverageLSTZapper.sol#L72) and [`v2-bold/contracts/src/Zappers/LeverageLSTZapper.sol:90`](v2-bold/contracts/src/Zappers/LeverageLSTZapper.sol#L90) explains a subtlety: the zapper adds itself
+as an add/receive manager on the Trove so it can fully adjust the position, then
+removes itself. Without that, the flash-loan callback could not act on a Trove it
+does not own.
+
+This is the same pattern as Aave's Uniswap adapters; see
+[`../aave/V1-V2-COMPLETE-REFERENCE.md`](../aave/V1-V2-COMPLETE-REFERENCE.md).
+Flash-loan-powered position management is a genre, and the zappers are a
+particularly clean example of it.
+
+`WETHZapper` at [`v2-bold/contracts/src/Zappers/WETHZapper.sol:8-100`](v2-bold/contracts/src/Zappers/WETHZapper.sol#L8-L100) is simpler: `openTroveWithRawETH` at [`v2-bold/contracts/src/Zappers/WETHZapper.sol:20`](v2-bold/contracts/src/Zappers/WETHZapper.sol#L20) and
+`addCollWithRawETH` at [`v2-bold/contracts/src/Zappers/WETHZapper.sol:80`](v2-bold/contracts/src/Zappers/WETHZapper.sol#L80) just wrap and unwrap.
+
+---
+
