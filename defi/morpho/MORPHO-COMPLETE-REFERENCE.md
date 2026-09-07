@@ -542,3 +542,140 @@ can accidentally invoke the raw `transfer` instead of `safeTransfer`. The commen
 [`IERC20.sol:7-8`](morpho-blue/src/interfaces/IERC20.sol#L7-L8) states this outright. It is a
 small, elegant use of the type system to make a footgun unrepresentable.
 
+---
+
+<a id="3-morphosol--every-function"></a>
+## 3. `Morpho.sol` — every function
+
+[`morpho-blue/src/Morpho.sol`](morpho-blue/src/Morpho.sol), 557 lines, `pragma solidity 0.8.19`,
+declared `contract Morpho is IMorphoStaticTyping` at
+[`:24`](morpho-blue/src/Morpho.sol#L24). No inheritance beyond the interface, no proxy, no
+initializer, no upgrade path. What is deployed is what runs, forever.
+
+Twenty-one functions total: 1 constructor, 1 modifier, 5 owner-only, 1 market creation,
+8 user actions, 2 authorization, 2 interest, 2 internal health checks, 1 view helper.
+
+### 3.1 `constructor(address newOwner)`
+
+[`:75-82`](morpho-blue/src/Morpho.sol#L75-L82) · sets `DOMAIN_SEPARATOR` and `owner`.
+
+| | |
+|---|---|
+| **Checks** | `newOwner != address(0)` → `ZERO_ADDRESS` |
+| **Writes** | `DOMAIN_SEPARATOR` (immutable), `owner` |
+| **Emits** | `SetOwner(newOwner)` |
+
+```solidity
+DOMAIN_SEPARATOR = keccak256(abi.encode(DOMAIN_TYPEHASH, block.chainid, address(this)));
+```
+
+The separator binds `chainid` and `address(this)` but **not** a name or version string. Because
+it is `immutable`, the chain id is frozen at deploy time: after a hard fork, signatures made for
+the old chain id remain valid on the fork. Most protocols recompute the separator when
+`block.chainid` changes; Blue deliberately does not, trading fork safety for a cold-storage read
+saved on every `setAuthorizationWithSig`.
+
+### 3.2 `modifier onlyOwner()`
+
+[`:87-90`](morpho-blue/src/Morpho.sol#L87-L90) · `msg.sender == owner` else `NOT_OWNER`.
+
+The *entire* access-control system. There are no roles, no `ACLManager`, no pausers, no
+guardians, no timelock. Compare Aave's six-role `ACLManager`
+([`../aave/V3-PROTOCOL-COMPLETE-REFERENCE.md`](../aave/V3-PROTOCOL-COMPLETE-REFERENCE.md), §19).
+
+### 3.3 `setOwner(address newOwner)`
+
+[`:95-101`](morpho-blue/src/Morpho.sol#L95-L101) · `onlyOwner`.
+
+| | |
+|---|---|
+| **Checks** | `newOwner != owner` → `ALREADY_SET` |
+| **Writes** | `owner = newOwner` |
+| **Emits** | `SetOwner` |
+
+Single-step transfer. No two-step `acceptOwnership` handshake, so a typo permanently hands the
+contract to an unreachable address. MetaMorpho, by contrast, uses OpenZeppelin's `Ownable2Step`
+([`metamorpho/src/MetaMorpho.sol:43`](metamorpho/src/MetaMorpho.sol#L43)). The asymmetry is
+deliberate: what the Blue owner can actually *do* is so limited (§3.4–3.7) that a lost owner is
+survivable, because it cannot touch existing markets or user funds.
+
+### 3.4 `enableIrm(address irm)`
+
+[`:104-110`](morpho-blue/src/Morpho.sol#L104-L110) · `onlyOwner`.
+
+| | |
+|---|---|
+| **Checks** | `!isIrmEnabled[irm]` → `ALREADY_SET` |
+| **Writes** | `isIrmEnabled[irm] = true` |
+| **Emits** | `EnableIrm(irm)` |
+
+**One-way only.** There is no `disableIrm`. Once an interest-rate model is whitelisted it can
+never be removed, so markets already using it can never be rug-pulled by governance revoking
+their IRM. This is the single most important governance-minimisation decision in the contract.
+
+### 3.5 `enableLltv(uint256 lltv)`
+
+[`:113-120`](morpho-blue/src/Morpho.sol#L113-L120) · `onlyOwner`.
+
+| | |
+|---|---|
+| **Checks** | `!isLltvEnabled[lltv]` → `ALREADY_SET`; `lltv < WAD` → `MAX_LLTV_EXCEEDED` |
+| **Writes** | `isLltvEnabled[lltv] = true` |
+| **Emits** | `EnableLltv(lltv)` |
+
+Also one-way. `lltv < WAD` is strict, so 100% LLTV is impossible. Note there is no *lower* bound:
+`enableLltv(0)` is legal and creates markets where any borrow is instantly liquidatable.
+
+### 3.6 `setFee(MarketParams marketParams, uint256 newFee)`
+
+[`:123-136`](morpho-blue/src/Morpho.sol#L123-L136) · `onlyOwner`.
+
+| | |
+|---|---|
+| **Checks** | market exists → `MARKET_NOT_CREATED`; `newFee != market[id].fee` → `ALREADY_SET`; `newFee <= MAX_FEE` (0.25e18) → `MAX_FEE_EXCEEDED` |
+| **Calls** | `_accrueInterest(marketParams, id)` **before** writing |
+| **Writes** | `market[id].fee` |
+| **Emits** | `SetFee(id, newFee)` |
+
+The accrual at [`:130`](morpho-blue/src/Morpho.sol#L130) is load-bearing and the comment says so:
+interest earned under the old fee must be settled at the old fee before the new one applies.
+Omitting it would retroactively re-price all pending interest.
+
+This is the **only** owner function that touches an existing market, and all it can do is move a
+number between 0 and 25% of the interest. It cannot pause the market, change its oracle, change
+its LLTV, seize collateral, or stop a withdrawal.
+
+### 3.7 `setFeeRecipient(address newFeeRecipient)`
+
+[`:139-145`](morpho-blue/src/Morpho.sol#L139-L145) · `onlyOwner`. Checks `ALREADY_SET`, writes
+`feeRecipient`, emits `SetFeeRecipient`. Global, not per-market. Setting it to `address(0)` burns
+protocol fees rather than reverting.
+
+### 3.8 `createMarket(MarketParams marketParams)`
+
+[`:150-164`](morpho-blue/src/Morpho.sol#L150-L164) · **permissionless**, no modifier.
+
+| | |
+|---|---|
+| **Checks** | `isIrmEnabled[irm]` → `IRM_NOT_ENABLED`; `isLltvEnabled[lltv]` → `LLTV_NOT_ENABLED`; `market[id].lastUpdate == 0` → `MARKET_ALREADY_CREATED` |
+| **Writes** | `market[id].lastUpdate = block.timestamp`; `idToMarketParams[id] = marketParams` |
+| **Emits** | `CreateMarket(id, marketParams)` |
+| **Calls** | `IIrm(irm).borrowRate(marketParams, market[id])` if `irm != address(0)` |
+
+Anyone can list a market. The owner controls only the *menu* of IRMs and LLTVs, never the
+combinations drawn from it. `loanToken`, `collateralToken` and `oracle` are entirely unvalidated
+— you may create a market whose oracle is your own contract returning any number you like. That
+is safe for everyone else because such a market is a distinct `Id` that nobody else has supplied
+to.
+
+Two subtleties:
+
+- The trailing IRM call at [`:163`](morpho-blue/src/Morpho.sol#L163) exists to initialise
+  stateful IRMs (Morpho's own `AdaptiveCurveIrm` stores per-market rate state). It is an
+  **untrusted external call at the end of market creation**, but reentering `createMarket` for the
+  same id is blocked by the `lastUpdate` write that already happened at
+  [`:157`](morpho-blue/src/Morpho.sol#L157).
+- `irm == address(0)` is explicitly permitted and produces a **zero-interest market**, since
+  `_accrueInterest` short-circuits on the same condition at
+  [`:487`](morpho-blue/src/Morpho.sol#L487).
+
