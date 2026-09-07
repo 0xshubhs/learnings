@@ -1640,3 +1640,71 @@ composability edge that only appears when you read both contracts together.
 [`:903`](metamorpho/src/MetaMorpho.sol#L903) acknowledges the fee rounds to zero when
 `totalInterest * fee < WAD`.
 
+---
+
+<a id="9-metamorpho-factory-libraries-interfaces-mocks"></a>
+## 9. MetaMorpho factory, libraries, interfaces, mocks
+
+All 15 files in the repo are accounted for here and in §7–8.
+
+### 9.1 `MetaMorphoFactory`
+
+[`metamorpho/src/MetaMorphoFactory.sol`](metamorpho/src/MetaMorphoFactory.sol), 58 lines.
+
+```solidity
+metaMorpho = IMetaMorpho(
+    address(new MetaMorpho{salt: salt}(initialOwner, MORPHO, initialTimelock, asset, name, symbol))
+);
+isMetaMorpho[address(metaMorpho)] = true;
+```
+
+[`:48-52`](metamorpho/src/MetaMorphoFactory.sol#L48-L52).
+
+**Full deployment, not a proxy.** `new MetaMorpho{salt:}` deploys a complete 911-line contract via
+CREATE2 — no clone, no delegatecall, no upgradeability. Each vault is independent bytecode, which
+means a vault's owner cannot be upgraded into something else, and it costs real gas to deploy.
+The `salt` gives deterministic addresses.
+
+`isMetaMorpho` is the only registry: a boolean map that integrators use to distinguish a genuine
+factory-deployed vault from an impostor with the same interface. `MORPHO` is immutable
+([`:20`](metamorpho/src/MetaMorphoFactory.sol#L20)), so a factory is pinned to one Blue deployment.
+
+### 9.2 Libraries
+
+| File | Lines | Contents |
+|---|---|---|
+| [`ConstantsLib.sol`](metamorpho/src/libraries/ConstantsLib.sol) | 20 | `MAX_TIMELOCK` 2 weeks, `MIN_TIMELOCK` 1 day, `MAX_QUEUE_LENGTH` 30, `MAX_FEE` 0.5e18 |
+| [`PendingLib.sol`](metamorpho/src/libraries/PendingLib.sol) | 48 | `MarketConfig`, `PendingUint192`, `PendingAddress` + two `update` overloads |
+| [`ErrorsLib.sol`](metamorpho/src/libraries/ErrorsLib.sol) | 98 | **custom errors**, unlike Blue's strings |
+| [`EventsLib.sol`](metamorpho/src/libraries/EventsLib.sol) | 109 | every vault event |
+
+`MarketConfig` packs `uint184 cap` + `bool enabled` + `uint64 removableAt` into one slot
+([`PendingLib.sol:4-12`](metamorpho/src/libraries/PendingLib.sol#L4-L12)), which is why
+`submitCap` casts through `toUint184`
+([`MetaMorpho.sol:283`](metamorpho/src/MetaMorpho.sol#L283)). The comment at
+[`PendingLib.sol:6`](metamorpho/src/libraries/PendingLib.sol#L6) is worth noting: *"The exposure
+to a given market can go beyond the cap in case of interest or donations."* Caps bound new
+allocation, not accrued position size.
+
+### 9.3 Interfaces
+
+[`IMetaMorpho.sol`](metamorpho/src/interfaces/IMetaMorpho.sol), 222 lines, splits into
+`IMetaMorphoBase`, `IMetaMorphoStaticTyping` and `IMetaMorpho` — the identical
+tuple-versus-struct pattern Blue uses (§6.1).
+[`IMetaMorphoFactory.sol`](metamorpho/src/interfaces/IMetaMorphoFactory.sol), 32 lines.
+
+### 9.4 Mocks
+
+| File | Lines | Purpose |
+|---|---|---|
+| [`ERC777Mock.sol`](metamorpho/src/mocks/ERC777Mock.sol) | 531 | full ERC-777 with transfer hooks — for reentrancy tests |
+| [`ERC1820Registry.sol`](metamorpho/src/mocks/ERC1820Registry.sol) | 221 | the registry ERC-777 requires |
+| [`ERC20Mock.sol`](metamorpho/src/mocks/ERC20Mock.sol) | — | plain token |
+| [`OracleMock.sol`](metamorpho/src/mocks/OracleMock.sol) | — | settable price |
+| [`IrmMock.sol`](metamorpho/src/mocks/IrmMock.sol) | 25 | test IRM |
+| [`MetaMorphoMock.sol`](metamorpho/src/mocks/MetaMorphoMock.sol) | 27 | minimal vault stub |
+| [`MorphoImport.sol`](metamorpho/src/mocks/MorphoImport.sol) | — | pulls Blue into the build so tests can deploy it |
+
+That two mocks totalling **752 lines** exist purely to model ERC-777 reentrancy tells you how
+seriously the reentrancy path through `_deposit` (§8.7) is taken.
+
