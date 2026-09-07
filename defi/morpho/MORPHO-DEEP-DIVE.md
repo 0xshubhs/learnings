@@ -1062,8 +1062,8 @@ Nothing is recomputed from state that reentrancy could have moved. In `supply`
 the trailing line pulls exactly the `assets` decided before the callback fired.
 
 **Three. Health is checked at the end of the functions that can worsen it.**
-`borrow` ([`:264`](morpho-blue/src/Morpho.sol#L264)) and `withdrawCollateral`
-([`:341`](morpho-blue/src/Morpho.sol#L341)) both assert `_isHealthy` *after* all
+`borrow` ([`:258-259`](morpho-blue/src/Morpho.sol#L258-L259)) and `withdrawCollateral`
+([`:337`](morpho-blue/src/Morpho.sol#L337)) both assert `_isHealthy` *after* all
 state changes, and `borrow`/`withdraw` additionally assert
 `totalBorrowAssets <= totalSupplyAssets`. So a reentrant borrow-inside-a-callback
 still has to leave the position healthy when the outer frame finishes.

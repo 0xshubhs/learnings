@@ -940,3 +940,116 @@ internal balance.
 
 ---
 
+## 1.7 `SortedTroves`
+
+[`v1-dev/packages/contracts/contracts/SortedTroves.sol:46-420`](v1-dev/packages/contracts/contracts/SortedTroves.sol#L46-L420). A doubly-linked list of Troves ordered by descending NICR. It
+exists so that liquidation and redemption can find the riskiest Troves in O(1)
+instead of scanning.
+
+### Storage
+
+```solidity
+struct Node { bool exists; address nextId; address prevId; }
+struct Data { address head; address tail; uint256 maxSize; uint256 size; mapping (address => Node) nodes; }
+```
+
+[`v1-dev/packages/contracts/contracts/SortedTroves.sol:61-74`](v1-dev/packages/contracts/contracts/SortedTroves.sol#L61-L74). `head` is the highest NICR, `tail` the lowest. Liquidation walks
+from `tail`; redemption also starts at `tail`.
+
+### Functions
+
+| Function | Line | Notes |
+|---|---|---|
+| `setParams` | [`v1-dev/packages/contracts/contracts/SortedTroves.sol:80`](v1-dev/packages/contracts/contracts/SortedTroves.sol#L80) | One-shot, `onlyOwner`, renounces afterwards |
+| `insert` | [`v1-dev/packages/contracts/contracts/SortedTroves.sol:104`](v1-dev/packages/contracts/contracts/SortedTroves.sol#L104) | External wrapper, gated to BorrowerOperations or TroveManager |
+| `_insert` | [`v1-dev/packages/contracts/contracts/SortedTroves.sol:111`](v1-dev/packages/contracts/contracts/SortedTroves.sol#L111) | Validates the hint, else finds the position |
+| `remove` / `_remove` | [`v1-dev/packages/contracts/contracts/SortedTroves.sol:158`](v1-dev/packages/contracts/contracts/SortedTroves.sol#L158) / [`v1-dev/packages/contracts/contracts/SortedTroves.sol:167`](v1-dev/packages/contracts/contracts/SortedTroves.sol#L167) | O(1) unlink |
+| `reInsert` | [`v1-dev/packages/contracts/contracts/SortedTroves.sol:211`](v1-dev/packages/contracts/contracts/SortedTroves.sol#L211) | Remove then insert, used on every Trove adjustment |
+| `contains` | [`v1-dev/packages/contracts/contracts/SortedTroves.sol:229`](v1-dev/packages/contracts/contracts/SortedTroves.sol#L229) | |
+| `isFull` / `isEmpty` | [`v1-dev/packages/contracts/contracts/SortedTroves.sol:236`](v1-dev/packages/contracts/contracts/SortedTroves.sol#L236) / [`v1-dev/packages/contracts/contracts/SortedTroves.sol:243`](v1-dev/packages/contracts/contracts/SortedTroves.sol#L243) | |
+| `getSize` / `getMaxSize` | [`v1-dev/packages/contracts/contracts/SortedTroves.sol:250`](v1-dev/packages/contracts/contracts/SortedTroves.sol#L250) / [`v1-dev/packages/contracts/contracts/SortedTroves.sol:257`](v1-dev/packages/contracts/contracts/SortedTroves.sol#L257) | |
+| `getFirst` / `getLast` | [`v1-dev/packages/contracts/contracts/SortedTroves.sol:264`](v1-dev/packages/contracts/contracts/SortedTroves.sol#L264) / [`v1-dev/packages/contracts/contracts/SortedTroves.sol:271`](v1-dev/packages/contracts/contracts/SortedTroves.sol#L271) | |
+| `getNext` / `getPrev` | [`v1-dev/packages/contracts/contracts/SortedTroves.sol:279`](v1-dev/packages/contracts/contracts/SortedTroves.sol#L279) / [`v1-dev/packages/contracts/contracts/SortedTroves.sol:287`](v1-dev/packages/contracts/contracts/SortedTroves.sol#L287) | |
+| `validInsertPosition` | [`v1-dev/packages/contracts/contracts/SortedTroves.sol:297`](v1-dev/packages/contracts/contracts/SortedTroves.sol#L297) | Public hint check |
+| `_validInsertPosition` | [`v1-dev/packages/contracts/contracts/SortedTroves.sol:301`](v1-dev/packages/contracts/contracts/SortedTroves.sol#L301) | Confirms `prev.NICR >= NICR >= next.NICR` |
+| `_descendList` | [`v1-dev/packages/contracts/contracts/SortedTroves.sol:325`](v1-dev/packages/contracts/contracts/SortedTroves.sol#L325) | Walk down from a hint that was too high |
+| `_ascendList` | [`v1-dev/packages/contracts/contracts/SortedTroves.sol:352`](v1-dev/packages/contracts/contracts/SortedTroves.sol#L352) | Walk up from a hint that was too low |
+| `_findInsertPosition` | [`v1-dev/packages/contracts/contracts/SortedTroves.sol:387`](v1-dev/packages/contracts/contracts/SortedTroves.sol#L387) | Picks a direction and walks |
+
+### The hint pattern
+
+Callers pass `_prevId` and `_lowerHint` computed **off-chain**. If the hint is
+still valid the insert is O(1). If the price moved between hint computation and
+execution, `_findInsertPosition` walks from the hint, which is usually a short
+distance. A wrong hint costs gas but never correctness, because
+`_validInsertPosition` re-checks on-chain.
+
+`HintHelpers` at [`v1-dev/packages/contracts/contracts/HintHelpers.sol:10-171`](v1-dev/packages/contracts/contracts/HintHelpers.sol#L10-L171) is the off-chain helper: 
+`getApproxHint` at [`v1-dev/packages/contracts/contracts/HintHelpers.sol:56`](v1-dev/packages/contracts/contracts/HintHelpers.sol#L56) samples the list with a
+pseudo-random walk to find a starting point, and
+`getRedemptionHints` at [`v1-dev/packages/contracts/contracts/HintHelpers.sol:22`](v1-dev/packages/contracts/contracts/HintHelpers.sol#L22) computes the redemption entry
+point plus the partial-redemption NICR.
+
+**This is the same design tension as Uniswap V3's tick bitmap:** an on-chain
+ordered structure that would be too expensive to maintain naively, made cheap by
+pushing search off-chain and verifying on-chain.
+
+---
+
+## 1.8 The pools
+
+Four contracts that hold funds. None contains logic beyond bookkeeping and caller
+checks.
+
+### `ActivePool` — [`v1-dev/packages/contracts/contracts/ActivePool.sol:18-130`](v1-dev/packages/contracts/contracts/ActivePool.sol#L18-L130)
+
+Holds the ETH and tracks the LUSD debt of all **active** Troves.
+
+| Function | Line | Caller |
+|---|---|---|
+| `getETH` | [`v1-dev/packages/contracts/contracts/ActivePool.sol:73`](v1-dev/packages/contracts/contracts/ActivePool.sol#L73) | anyone |
+| `getLUSDDebt` | [`v1-dev/packages/contracts/contracts/ActivePool.sol:77`](v1-dev/packages/contracts/contracts/ActivePool.sol#L77) | anyone |
+| `sendETH` | [`v1-dev/packages/contracts/contracts/ActivePool.sol:83`](v1-dev/packages/contracts/contracts/ActivePool.sol#L83) | BorrowerOperations, TroveManager, StabilityPool |
+| `increaseLUSDDebt` | [`v1-dev/packages/contracts/contracts/ActivePool.sol:93`](v1-dev/packages/contracts/contracts/ActivePool.sol#L93) | BorrowerOperations, TroveManager |
+| `decreaseLUSDDebt` | [`v1-dev/packages/contracts/contracts/ActivePool.sol:99`](v1-dev/packages/contracts/contracts/ActivePool.sol#L99) | BorrowerOperations, TroveManager, StabilityPool |
+
+Guards at [`v1-dev/packages/contracts/contracts/ActivePool.sol:107`](v1-dev/packages/contracts/contracts/ActivePool.sol#L107), [`v1-dev/packages/contracts/contracts/ActivePool.sol:114`](v1-dev/packages/contracts/contracts/ActivePool.sol#L114), [`v1-dev/packages/contracts/contracts/ActivePool.sol:122`](v1-dev/packages/contracts/contracts/ActivePool.sol#L122). `receive()` accepts ETH only from
+BorrowerOperations or DefaultPool.
+
+### `DefaultPool` — [`v1-dev/packages/contracts/contracts/DefaultPool.sol:18-105`](v1-dev/packages/contracts/contracts/DefaultPool.sol#L18-L105)
+
+Holds ETH and debt that has been **redistributed** but not yet claimed by the
+receiving Troves. A Trove's share moves to `ActivePool` when
+`_applyPendingRewards` runs.
+
+| Function | Line | Caller |
+|---|---|---|
+| `getETH` / `getLUSDDebt` | [`v1-dev/packages/contracts/contracts/DefaultPool.sol:60`](v1-dev/packages/contracts/contracts/DefaultPool.sol#L60) / [`v1-dev/packages/contracts/contracts/DefaultPool.sol:64`](v1-dev/packages/contracts/contracts/DefaultPool.sol#L64) | anyone |
+| `sendETHToActivePool` | [`v1-dev/packages/contracts/contracts/DefaultPool.sol:70`](v1-dev/packages/contracts/contracts/DefaultPool.sol#L70) | TroveManager only |
+| `increaseLUSDDebt` / `decreaseLUSDDebt` | [`v1-dev/packages/contracts/contracts/DefaultPool.sol:81`](v1-dev/packages/contracts/contracts/DefaultPool.sol#L81) / [`v1-dev/packages/contracts/contracts/DefaultPool.sol:87`](v1-dev/packages/contracts/contracts/DefaultPool.sol#L87) | TroveManager only |
+
+The split between Active and Default is what makes lazy redistribution work: the
+system's totals stay correct without touching individual Troves.
+
+### `CollSurplusPool` — [`v1-dev/packages/contracts/contracts/CollSurplusPool.sol:12-120`](v1-dev/packages/contracts/contracts/CollSurplusPool.sol#L12-L120)
+
+Holds collateral owed back to borrowers after a capped Recovery-Mode liquidation
+or a full redemption.
+
+| Function | Line | Caller |
+|---|---|---|
+| `getETH` | [`v1-dev/packages/contracts/contracts/CollSurplusPool.sol:63`](v1-dev/packages/contracts/contracts/CollSurplusPool.sol#L63) | anyone |
+| `getCollateral` | [`v1-dev/packages/contracts/contracts/CollSurplusPool.sol:67`](v1-dev/packages/contracts/contracts/CollSurplusPool.sol#L67) | anyone |
+| `accountSurplus` | [`v1-dev/packages/contracts/contracts/CollSurplusPool.sol:73`](v1-dev/packages/contracts/contracts/CollSurplusPool.sol#L73) | TroveManager |
+| `claimColl` | [`v1-dev/packages/contracts/contracts/CollSurplusPool.sol:82`](v1-dev/packages/contracts/contracts/CollSurplusPool.sol#L82) | BorrowerOperations |
+
+### `GasPool` — [`v1-dev/packages/contracts/contracts/GasPool.sol:16-20`](v1-dev/packages/contracts/contracts/GasPool.sol#L16-L20)
+
+Four lines of code and no functions. It holds the 200 LUSD gas compensation for
+every open Trove. `LUSDToken` mints to it on open and burns from it on close.
+Having a dedicated address rather than an internal counter means the LUSD
+`totalSupply` always equals real circulating supply plus reserves, with no
+special-casing.
+
+---
+
