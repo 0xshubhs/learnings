@@ -908,3 +908,240 @@ Three, all at [`:533-535`](core/contracts/0.8.9/Accounting.sol#L533-L535):
 | `InternalSharesCantBeZero()` | Internal shares reached zero, which would make the share rate undefined. The "stone in the elevator" exists to make this unreachable. |
 
 ---
+## 7. `OracleReportSanityChecker` and the limiters
+
+[`core/contracts/0.8.9/sanity_checks/OracleReportSanityChecker.sol`](core/contracts/0.8.9/sanity_checks/OracleReportSanityChecker.sol) — 1,588 lines, solc 0.8.9.
+
+The oracle is a quorum of off-chain actors. This contract is the assumption that
+they might be wrong or captured, expressed as code: every number in a report must
+fall inside a governance-set band, or the report reverts.
+
+### 7.1 `LimitsList`
+
+The struct at [`:59-103`](core/contracts/0.8.9/sanity_checks/OracleReportSanityChecker.sol#L59-L103).
+Each field is separately settable and separately role-gated.
+
+| Field | Units | Meaning |
+|---|---|---|
+| `exitedEthAmountPerDayLimit` | ETH, fits `uint32` | Max exited ETH reportable per day. |
+| `appearedEthAmountPerDayLimit` | ETH, fits `uint32` | Max newly appeared ETH per day. |
+| `annualBalanceIncreaseBPLimit` | bp | Max annualised CL balance growth, excluding fresh deposits and withdrawals. Catches an impossibly good report. |
+| `simulatedShareRateDeviationBPLimit` | bp | How far the submitted `simulatedShareRate` may differ from the recomputed one. |
+| `maxBalanceExitRequestedPerReportInEth` | ETH | Cap on exit requests in one report. |
+| `maxEffectiveBalanceWeightWCType01` | ETH, `uint16`, non-zero | Effective-balance weight for 0x01 credentials. |
+| `maxEffectiveBalanceWeightWCType02` | ETH, `uint16`, non-zero | Same for 0x02 (EIP-7251 compounding). |
+| `maxItemsPerExtraDataTransaction` | count, `uint16` | Gas bound on extra data. |
+| `maxNodeOperatorsPerExtraDataItem` | count, `uint16` | Gas bound per item. |
+| `requestTimestampMargin` | seconds | Minimum age of a withdrawal request before it may be finalised. |
+| `maxPositiveTokenRebase` | 1e9 precision | Max positive rebase per report. `1e6` is 0.1%, `1e9` is 100%. |
+| `maxCLBalanceDecreaseBP` | bp, `uint16` | Max CL balance decrease over the window, as a fraction of adjusted balance. |
+
+The two `maxEffectiveBalanceWeight*` fields are v3 additions and exist because
+EIP-7251 lets a validator hold up to 2048 ETH instead of 32, so "one validator"
+is no longer a fixed quantity of ETH.
+
+### 7.2 Roles
+
+Sixteen, at [`:191-219`](core/contracts/0.8.9/sanity_checks/OracleReportSanityChecker.sol#L191-L219).
+`ALL_LIMITS_MANAGER_ROLE` sets everything at once via `setOracleReportLimits`
+([`:330`](core/contracts/0.8.9/sanity_checks/OracleReportSanityChecker.sol#L330));
+each remaining role sets exactly one field. The granularity is the point: the DAO
+can hand out the authority to tune one bound without handing over the rest.
+
+| Role | Setter |
+|---|---|
+| `ALL_LIMITS_MANAGER_ROLE` | `setOracleReportLimits` [`:330`](core/contracts/0.8.9/sanity_checks/OracleReportSanityChecker.sol#L330) |
+| `EXITED_ETH_AMOUNT_PER_DAY_LIMIT_MANAGER_ROLE` | `setExitedEthAmountPerDayLimit` [`:343`](core/contracts/0.8.9/sanity_checks/OracleReportSanityChecker.sol#L343) |
+| `APPEARED_ETH_AMOUNT_PER_DAY_LIMIT_MANAGER_ROLE` | `setAppearedEthAmountPerDayLimit` [`:354`](core/contracts/0.8.9/sanity_checks/OracleReportSanityChecker.sol#L354) |
+| `CONSOLIDATION_ETH_AMOUNT_PER_DAY_LIMIT_MANAGER_ROLE` | `setConsolidationEthAmountPerDayLimit` [`:365`](core/contracts/0.8.9/sanity_checks/OracleReportSanityChecker.sol#L365) |
+| `EXITED_VALIDATOR_ETH_AMOUNT_LIMIT_MANAGER_ROLE` | `setExitedValidatorEthAmountLimit` [`:375`](core/contracts/0.8.9/sanity_checks/OracleReportSanityChecker.sol#L375) |
+| `EXTERNAL_PENDING_BALANCE_CAP_MANAGER_ROLE` | `setExternalPendingBalanceCapEth` [`:386`](core/contracts/0.8.9/sanity_checks/OracleReportSanityChecker.sol#L386) |
+| `ANNUAL_BALANCE_INCREASE_LIMIT_MANAGER_ROLE` | `setAnnualBalanceIncreaseBPLimit` [`:397`](core/contracts/0.8.9/sanity_checks/OracleReportSanityChecker.sol#L397) |
+| `SHARE_RATE_DEVIATION_LIMIT_MANAGER_ROLE` | `setSimulatedShareRateDeviationBPLimit` [`:408`](core/contracts/0.8.9/sanity_checks/OracleReportSanityChecker.sol#L408) |
+| `MAX_BALANCE_EXIT_REQUESTED_PER_REPORT_IN_ETH_ROLE` | `setMaxBalanceExitRequestedPerReportInEth` [`:420`](core/contracts/0.8.9/sanity_checks/OracleReportSanityChecker.sol#L420) |
+| `MAX_EFFECTIVE_BALANCE_WEIGHTS_MANAGER_ROLE` | `setMaxEffectiveBalanceWeightWCType01` [`:431`](core/contracts/0.8.9/sanity_checks/OracleReportSanityChecker.sol#L431), `...Type02` [`:442`](core/contracts/0.8.9/sanity_checks/OracleReportSanityChecker.sol#L442) |
+| `MAX_ITEMS_PER_EXTRA_DATA_TRANSACTION_ROLE` | `setMaxItemsPerExtraDataTransaction` [`:481`](core/contracts/0.8.9/sanity_checks/OracleReportSanityChecker.sol#L481) |
+| `MAX_NODE_OPERATORS_PER_EXTRA_DATA_ITEM_ROLE` | `setMaxNodeOperatorsPerExtraDataItem` [`:492`](core/contracts/0.8.9/sanity_checks/OracleReportSanityChecker.sol#L492) |
+| `REQUEST_TIMESTAMP_MARGIN_MANAGER_ROLE` | `setRequestTimestampMargin` [`:454`](core/contracts/0.8.9/sanity_checks/OracleReportSanityChecker.sol#L454) |
+| `MAX_POSITIVE_TOKEN_REBASE_MANAGER_ROLE` | `setMaxPositiveTokenRebase` [`:470`](core/contracts/0.8.9/sanity_checks/OracleReportSanityChecker.sol#L470) |
+| `SECOND_OPINION_MANAGER_ROLE` | `setSecondOpinionOracleAndCLBalanceUpperMargin` [`:506`](core/contracts/0.8.9/sanity_checks/OracleReportSanityChecker.sol#L506) |
+| `MAX_CL_BALANCE_DECREASE_MANAGER_ROLE` | `setMaxCLBalanceDecreaseBP` [`:522`](core/contracts/0.8.9/sanity_checks/OracleReportSanityChecker.sol#L522) |
+
+### 7.3 The checks
+
+| Function | Line | Called by |
+|---|---|---|
+| `checkAccountingOracleReport(...)` | [`:645`](core/contracts/0.8.9/sanity_checks/OracleReportSanityChecker.sol#L645) | `Accounting._sanityChecks`. The main gate. |
+| `checkModuleAndCLBalancesChangeRates(...)` | [`:719`](core/contracts/0.8.9/sanity_checks/OracleReportSanityChecker.sol#L719) | `AccountingOracle`, per-module rate bounds. |
+| `checkExitBusOracleReport(uint256)` | [`:763`](core/contracts/0.8.9/sanity_checks/OracleReportSanityChecker.sol#L763) | `ValidatorsExitBus`. |
+| `checkExitedValidatorsCount(...)` | [`:780`](core/contracts/0.8.9/sanity_checks/OracleReportSanityChecker.sol#L780) | Exit accounting. |
+| `checkNodeOperatorsPerExtraDataItemCount(uint256,uint256)` | [`:804`](core/contracts/0.8.9/sanity_checks/OracleReportSanityChecker.sol#L804) | Extra-data bound. |
+| `checkExtraDataItemsCountPerTransaction(uint256)` | [`:813`](core/contracts/0.8.9/sanity_checks/OracleReportSanityChecker.sol#L813) | Extra-data bound. |
+| `checkWithdrawalQueueOracleReport(...)` | [`:823`](core/contracts/0.8.9/sanity_checks/OracleReportSanityChecker.sol#L823) | Enforces `requestTimestampMargin`. |
+
+**The second-opinion oracle.** `setSecondOpinionOracleAndCLBalanceUpperMargin`
+wires an independent oracle (LIP-23,
+[`ISecondOpinionOracle`](core/contracts/0.8.9/interfaces/ISecondOpinionOracle.sol)).
+When the CL balance falls by more than `maxCLBalanceDecreaseBP`, the report is
+not simply rejected; a second source must corroborate the loss. This is the
+protocol's answer to a mass-slashing report that might be either real or forged.
+
+### 7.4 `PositiveTokenRebaseLimiter`
+
+[`core/contracts/0.8.9/lib/PositiveTokenRebaseLimiter.sol`](core/contracts/0.8.9/lib/PositiveTokenRebaseLimiter.sol) — 178 lines.
+
+A memory-only accumulator that caps how good a single report may be. Rewards
+beyond the cap are not lost; they are deferred by leaving ether unclaimed from
+the vaults this round.
+
+| Function | Line | Purpose |
+|---|---|---|
+| `initLimiterState(...)` | [`:83`](core/contracts/0.8.9/lib/PositiveTokenRebaseLimiter.sol#L83) | Builds `TokenRebaseLimiterData` from the cap and current totals. |
+| `isLimitReached(...)` | [`:109`](core/contracts/0.8.9/lib/PositiveTokenRebaseLimiter.sol#L109) | Whether the budget is exhausted. |
+| `decreaseEther(...)` | [`:118`](core/contracts/0.8.9/lib/PositiveTokenRebaseLimiter.sol#L118) | Consumes budget for ether leaving. |
+| `increaseEther(...)` | [`:134`](core/contracts/0.8.9/lib/PositiveTokenRebaseLimiter.sol#L134) | Consumes budget for ether arriving; returns the amount actually allowed. |
+| `getSharesToBurnLimit(...)` | [`:159`](core/contracts/0.8.9/lib/PositiveTokenRebaseLimiter.sol#L159) | How many shares may be burnt without breaching the cap. |
+
+---
+
+## 8. The oracle stack
+
+Three layers: `HashConsensus` decides *what* the committee agreed, `BaseOracle`
+handles the handoff, and the two concrete oracles interpret the payload.
+
+### 8.1 `HashConsensus`
+
+[`core/contracts/0.8.9/oracle/HashConsensus.sol`](core/contracts/0.8.9/oracle/HashConsensus.sol) — 1,096 lines, solc 0.8.9.
+
+Members submit a **hash** of a report for a reference slot. When a quorum agrees
+on the same hash, that hash is forwarded to the processor. The data itself is
+submitted separately and checked against the hash, which keeps consensus cheap.
+
+**Structures.** `FrameConfig` [`:123`](core/contracts/0.8.9/oracle/HashConsensus.sol#L123),
+`ConsensusFrame` [`:137`](core/contracts/0.8.9/oracle/HashConsensus.sol#L137),
+`ReportingState` [`:147`](core/contracts/0.8.9/oracle/HashConsensus.sol#L147),
+`MemberState` [`:156`](core/contracts/0.8.9/oracle/HashConsensus.sol#L156),
+`ReportVariant` [`:163`](core/contracts/0.8.9/oracle/HashConsensus.sol#L163),
+`MemberConsensusState` [`:531`](core/contracts/0.8.9/oracle/HashConsensus.sol#L531).
+
+**Roles** at [`:172-190`](core/contracts/0.8.9/oracle/HashConsensus.sol#L172-L190):
+`MANAGE_MEMBERS_AND_QUORUM_ROLE`, `DISABLE_CONSENSUS_ROLE`,
+`MANAGE_FRAME_CONFIG_ROLE`, `MANAGE_FAST_LANE_CONFIG_ROLE`,
+`MANAGE_REPORT_PROCESSOR_ROLE`.
+
+**Frame arithmetic**, [`:672-700`](core/contracts/0.8.9/oracle/HashConsensus.sol#L672-L700):
+
+```
+epoch      = (timestamp − GENESIS_TIME) / SECONDS_PER_SLOT / SLOTS_PER_EPOCH
+frameIndex = (epoch − initialEpoch) / epochsPerFrame
+frameStart = initialEpoch + frameIndex · epochsPerFrame
+```
+
+`_computeFrameIndex` reverts `InitialEpochIsYetToArrive()` below `initialEpoch`.
+`_computeTimestampAtSlot` is `GENESIS_TIME + slot · SECONDS_PER_SLOT`, matching
+the consensus spec, which the comment cites at
+[`:694`](core/contracts/0.8.9/oracle/HashConsensus.sol#L694).
+
+**The fast lane.** `fastLaneLengthSlots` gives a rotating subset of members an
+exclusive window at the start of each frame
+(`getIsFastLaneMember` [`:398`](core/contracts/0.8.9/oracle/HashConsensus.sol#L398),
+`getFastLaneMembers` [`:420`](core/contracts/0.8.9/oracle/HashConsensus.sol#L420)).
+It spreads gas costs across the committee instead of rewarding whoever submits
+first every time.
+
+| Function | Line |
+|---|---|
+| `getChainConfig()` | [`:274`](core/contracts/0.8.9/oracle/HashConsensus.sol#L274) |
+| `getFrameConfig()` / `setFrameConfig(uint256,uint256)` | [`:288`](core/contracts/0.8.9/oracle/HashConsensus.sol#L288), [`:350`](core/contracts/0.8.9/oracle/HashConsensus.sol#L350) |
+| `getCurrentFrame()` / `getInitialRefSlot()` | [`:307`](core/contracts/0.8.9/oracle/HashConsensus.sol#L307), [`:318`](core/contracts/0.8.9/oracle/HashConsensus.sol#L318) |
+| `updateInitialEpoch(uint256)` | [`:326`](core/contracts/0.8.9/oracle/HashConsensus.sol#L326) — `DEFAULT_ADMIN_ROLE` |
+| `getIsMember` / `getMembers` | [`:366`](core/contracts/0.8.9/oracle/HashConsensus.sol#L366), [`:408`](core/contracts/0.8.9/oracle/HashConsensus.sol#L408) |
+| `addMember` / `removeMember` | [`:441`](core/contracts/0.8.9/oracle/HashConsensus.sol#L441), [`:448`](core/contracts/0.8.9/oracle/HashConsensus.sol#L448) |
+| `getQuorum` / `setQuorum` / `disableConsensus` | [`:455`](core/contracts/0.8.9/oracle/HashConsensus.sol#L455), [`:459`](core/contracts/0.8.9/oracle/HashConsensus.sol#L459), [`:466`](core/contracts/0.8.9/oracle/HashConsensus.sol#L466) |
+| `getReportProcessor` / `setReportProcessor` | [`:475`](core/contracts/0.8.9/oracle/HashConsensus.sol#L475), [`:479`](core/contracts/0.8.9/oracle/HashConsensus.sol#L479) |
+| `getConsensusState` / `getReportVariants` / `getConsensusStateForMember` | [`:500`](core/contracts/0.8.9/oracle/HashConsensus.sol#L500), [`:512`](core/contracts/0.8.9/oracle/HashConsensus.sol#L512), [`:564`](core/contracts/0.8.9/oracle/HashConsensus.sol#L564) |
+| `submitReport(uint256 slot, bytes32 report, uint256 consensusVersion)` | [`:609`](core/contracts/0.8.9/oracle/HashConsensus.sol#L609) — members only |
+
+`disableConsensus` sets quorum beyond the member count, halting reports without
+removing anyone. It is the emergency brake.
+
+### 8.2 `BaseOracle`
+
+[`core/contracts/0.8.9/oracle/BaseOracle.sol`](core/contracts/0.8.9/oracle/BaseOracle.sol) — 416 lines.
+
+Shared plumbing. Roles `MANAGE_CONSENSUS_CONTRACT_ROLE`
+[`:74`](core/contracts/0.8.9/oracle/BaseOracle.sol#L74) and
+`MANAGE_CONSENSUS_VERSION_ROLE` [`:79`](core/contracts/0.8.9/oracle/BaseOracle.sol#L79).
+
+| Function | Line | Notes |
+|---|---|---|
+| `submitConsensusReport(bytes32,uint256,uint256)` | [`:174`](core/contracts/0.8.9/oracle/BaseOracle.sol#L174) | Only the consensus contract. Stores hash and deadline. |
+| `discardConsensusReport(uint256 refSlot)` | [`:225`](core/contracts/0.8.9/oracle/BaseOracle.sol#L225) | Drops a report if consensus is lost before processing. |
+| `getConsensusReport()` | [`:146`](core/contracts/0.8.9/oracle/BaseOracle.sol#L146) | Hash, refSlot, deadline, processing flag. |
+| `getLastProcessingRefSlot()` | [`:248`](core/contracts/0.8.9/oracle/BaseOracle.sol#L248) | Monotonic; blocks replay. |
+| `_checkConsensusData(uint256,uint256,bytes32)` | [`:300`](core/contracts/0.8.9/oracle/BaseOracle.sol#L300) | Data must hash to the agreed hash for the right slot and version. |
+| `_startProcessing()` | [`:326`](core/contracts/0.8.9/oracle/BaseOracle.sol#L326) | Marks processing begun, returns the previous refSlot. |
+| `_checkProcessingDeadline()` | [`:347`](core/contracts/0.8.9/oracle/BaseOracle.sol#L347) | Late data is refused. |
+| `_handleConsensusReport(...)` | [`:285`](core/contracts/0.8.9/oracle/BaseOracle.sol#L285) | `virtual` hook the concrete oracles override. |
+
+### 8.3 `AccountingOracle`
+
+[`core/contracts/0.8.9/oracle/AccountingOracle.sol`](core/contracts/0.8.9/oracle/AccountingOracle.sol) — 916 lines.
+
+Carries the report that drives the rebase. `SUBMIT_DATA_ROLE` at
+[`:105`](core/contracts/0.8.9/oracle/AccountingOracle.sol#L105).
+
+`ReportData` [`:152`](core/contracts/0.8.9/oracle/AccountingOracle.sol#L152) is the
+main payload; `ExtraDataProcessingState`
+[`:94`](core/contracts/0.8.9/oracle/AccountingOracle.sol#L94) tracks the
+second-phase upload; `ProcessingState`
+[`:384`](core/contracts/0.8.9/oracle/AccountingOracle.sol#L384) is the public view.
+
+**Two-phase submission.** The main report arrives via `submitReportData`
+([`:360`](core/contracts/0.8.9/oracle/AccountingOracle.sol#L360)). Per-operator
+exit counts can be far too large for one transaction, so they come afterwards
+through `submitReportExtraDataList(bytes)`
+([`:380`](core/contracts/0.8.9/oracle/AccountingOracle.sol#L380)), or
+`submitReportExtraDataEmpty()`
+([`:371`](core/contracts/0.8.9/oracle/AccountingOracle.sol#L371)) when there is
+none. The `maxItemsPerExtraDataTransaction` and
+`maxNodeOperatorsPerExtraDataItem` limits from [§7.1](#71-limitslist) bound each
+chunk.
+
+`_handleConsensusReportData` ([`:477`](core/contracts/0.8.9/oracle/AccountingOracle.sol#L477))
+validates then calls `Accounting.handleOracleReport`.
+`_processStakingRouterExitedValidatorsByModule`
+([`:565`](core/contracts/0.8.9/oracle/AccountingOracle.sol#L565)) and
+`_processStakingRouterValidatorBalancesByModule`
+([`:609`](core/contracts/0.8.9/oracle/AccountingOracle.sol#L609)) push per-module
+results onward. `getProcessingState()`
+([`:414`](core/contracts/0.8.9/oracle/AccountingOracle.sol#L414)) is what a
+monitoring bot polls.
+
+### 8.4 `ValidatorsExitBus` and `ValidatorsExitBusOracle`
+
+[`ValidatorsExitBus.sol`](core/contracts/0.8.9/oracle/ValidatorsExitBus.sol) — 1,148 lines;
+[`ValidatorsExitBusOracle.sol`](core/contracts/0.8.9/oracle/ValidatorsExitBusOracle.sol) — 285 lines.
+
+Lido cannot force a validator to exit from the execution layer alone, so
+historically it *published a request* and relied on operators to act. EIP-7002
+changed that, and v3 reflects it: the bus both publishes requests and can trigger
+withdrawals directly.
+
+Roles at [`:228-235`](core/contracts/0.8.9/oracle/ValidatorsExitBus.sol#L228-L235):
+`SUBMIT_REPORT_HASH_ROLE`, `EXIT_REQUEST_LIMIT_MANAGER_ROLE`, `PAUSE_ROLE`,
+`RESUME_ROLE`.
+
+| Function | Line | Purpose |
+|---|---|---|
+| `submitExitRequestsHash(bytes32)` | [`:324`](core/contracts/0.8.9/oracle/ValidatorsExitBus.sol#L324) | Commit to a request set. |
+| `submitExitRequestsData(ExitRequestsData)` | [`:346`](core/contracts/0.8.9/oracle/ValidatorsExitBus.sol#L346) | Reveal it; must match the hash. |
+| `triggerExits(...)` | [`:391`](core/contracts/0.8.9/oracle/ValidatorsExitBus.sol#L391) | EIP-7002 triggerable withdrawals, via the gateway. |
+| `setExitRequestLimit(...)` / `getExitRequestLimitFullInfo()` | [`:451`](core/contracts/0.8.9/oracle/ValidatorsExitBus.sol#L451), [`:467`](core/contracts/0.8.9/oracle/ValidatorsExitBus.sol#L467) | Rate limit, backed by [`ExitLimitUtils`](core/contracts/0.8.9/lib/ExitLimitUtils.sol). |
+| `setMaxValidatorsPerReport(uint256)` | [`:493`](core/contracts/0.8.9/oracle/ValidatorsExitBus.sol#L493) | Per-report cap. |
+| `getDeliveryTimestamp(bytes32)` | [`:514`](core/contracts/0.8.9/oracle/ValidatorsExitBus.sol#L514) | When a request set was delivered; feeds the delay verifier. |
+| `unpackExitRequest(...)` | [`:534`](core/contracts/0.8.9/oracle/ValidatorsExitBus.sol#L534) | Decodes the packed request format. |
+| `pauseFor` / `pauseUntil` / `resume` | [`:572`](core/contracts/0.8.9/oracle/ValidatorsExitBus.sol#L572), [`:581`](core/contracts/0.8.9/oracle/ValidatorsExitBus.sol#L581), [`:561`](core/contracts/0.8.9/oracle/ValidatorsExitBus.sol#L561) | Via `PausableUntil`. |
+| `MAX_EFFECTIVE_BALANCE_WEIGHT_WC_TYPE_01/02()` | [`:302`](core/contracts/0.8.9/oracle/ValidatorsExitBus.sol#L302), [`:307`](core/contracts/0.8.9/oracle/ValidatorsExitBus.sol#L307) | Read through to the sanity checker. |
+
+---
