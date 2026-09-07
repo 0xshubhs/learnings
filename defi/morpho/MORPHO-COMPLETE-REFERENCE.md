@@ -1779,9 +1779,9 @@ return SCALE_FACTOR.mulDiv(
 branching. `VaultLib.getAssets` returns `1` for a zero-address vault
 ([`VaultLib.sol:13-17`](morpho-blue-oracles/src/morpho-chainlink/libraries/VaultLib.sol#L13-L17));
 `ChainlinkDataFeedLib.getPrice` returns `1` for a zero-address feed
-([`ChainlinkDataFeedLib.sol:38-45`](morpho-blue-oracles/src/morpho-chainlink/libraries/ChainlinkDataFeedLib.sol#L38-L45));
+([`ChainlinkDataFeedLib.sol:20-27`](morpho-blue-oracles/src/morpho-chainlink/libraries/ChainlinkDataFeedLib.sol#L20-L27));
 and `getDecimals` returns **`0`** so the exponent is unaffected
-([`:49-53`](morpho-blue-oracles/src/morpho-chainlink/libraries/ChainlinkDataFeedLib.sol#L49-L53)).
+([`:31-35`](morpho-blue-oracles/src/morpho-chainlink/libraries/ChainlinkDataFeedLib.sol#L31-L35)).
 Four optional components, zero conditionals in `price()`.
 
 Constructor validation is thin: only that a conversion sample is `1` when its vault is unset, and
@@ -1798,7 +1798,7 @@ than liquidators can act.
 
 ### 10.2 `ChainlinkDataFeedLib` — what is deliberately *not* checked
 
-[`ChainlinkDataFeedLib.sol:31-37`](morpho-blue-oracles/src/morpho-chainlink/libraries/ChainlinkDataFeedLib.sol#L31-L37)
+[`ChainlinkDataFeedLib.sol:13-19`](morpho-blue-oracles/src/morpho-chainlink/libraries/ChainlinkDataFeedLib.sol#L13-L19)
 states the position outright:
 
 ```
@@ -1808,7 +1808,7 @@ states the position outright:
 ```
 
 The only validation is `answer >= 0`
-([`:42`](morpho-blue-oracles/src/morpho-chainlink/libraries/ChainlinkDataFeedLib.sol#L42),
+([`:24`](morpho-blue-oracles/src/morpho-chainlink/libraries/ChainlinkDataFeedLib.sol#L24),
 `NEGATIVE_ANSWER`). No `updatedAt` check, no L2 sequencer-uptime feed, no round-completeness check.
 
 This is the same gap I flagged in Aave v2's `AaveOracle`
