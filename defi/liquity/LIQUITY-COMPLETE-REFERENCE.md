@@ -781,3 +781,162 @@ rather than discovering the violation afterwards.
 
 ---
 
+## 1.6 `StabilityPool`
+
+[`v1-dev/packages/contracts/contracts/StabilityPool.sol:1-993`](v1-dev/packages/contracts/contracts/StabilityPool.sol#L1-L993). The counterparty to every liquidation, and the most mathematically
+interesting contract in v1.
+
+**The problem it solves.** N depositors share the pool. A liquidation must
+decrease every depositor's LUSD proportionally and credit every depositor ETH
+proportionally. Doing that with N storage writes is impossible on-chain. The
+product-sum algorithm does it with O(1) writes per liquidation and O(1) reads
+per depositor.
+
+### 1.6.1 The product-sum algorithm
+
+Two accumulators, described in the contract's own header comment at [`v1-dev/packages/contracts/contracts/StabilityPool.sol:30-110`](v1-dev/packages/contracts/contracts/StabilityPool.sol#L30-L110):
+
+| Symbol | Line | Role |
+|---|---|---|
+| `P` | [`v1-dev/packages/contracts/contracts/StabilityPool.sol:193`](v1-dev/packages/contracts/contracts/StabilityPool.sol#L193) | Running **product**. Each liquidation multiplies it by `(1 - lossPerUnit)`. |
+| `S` | [`v1-dev/packages/contracts/contracts/StabilityPool.sol:203`](v1-dev/packages/contracts/contracts/StabilityPool.sol#L203) | Running **sum** of ETH gained per unit of deposit. |
+| `G` | [`v1-dev/packages/contracts/contracts/StabilityPool.sol:215`](v1-dev/packages/contracts/contracts/StabilityPool.sol#L215) | Same shape as `S`, for LQTY issuance. |
+
+A depositor snapshots `(P, S, G)` at deposit time ([`v1-dev/packages/contracts/contracts/StabilityPool.sol:170-177`](v1-dev/packages/contracts/contracts/StabilityPool.sol#L170-L177)):
+
+```solidity
+struct Snapshots {
+    uint S;
+    uint P;
+    uint G;
+    uint128 scale;
+    uint128 epoch;
+}
+```
+
+Then:
+
+```
+compoundedDeposit = initialDeposit * P_now / P_snapshot
+ETHGain           = initialDeposit * (S_now - S_snapshot) / P_snapshot
+```
+
+Both are O(1). `P` decreasing multiplicatively is exactly a proportional haircut
+applied to everyone at once, and dividing the `S` delta by `P_snapshot` scales
+the ETH credit to the depositor's *then-current* share.
+
+### 1.6.2 Epochs and scales, the two precision problems
+
+**Problem one: `P` hits zero.** If a liquidation empties the pool,
+`lossPerUnit = 1` and `P` would become 0, destroying every future division.
+Solution at [`v1-dev/packages/contracts/contracts/StabilityPool.sol:596-600`](v1-dev/packages/contracts/contracts/StabilityPool.sol#L596-L600): when the pool is fully drained, increment
+`currentEpoch`, reset `P` to `1e18`, and reset `S`. Deposits from a prior epoch
+are worth exactly zero, which `_getCompoundedStakeFromSnapshots` detects by
+comparing `epoch` snapshots ([`v1-dev/packages/contracts/contracts/StabilityPool.sol:792-795`](v1-dev/packages/contracts/contracts/StabilityPool.sol#L792-L795)).
+
+**Problem two: `P` underflows toward zero.** Many partial liquidations shrink `P`
+multiplicatively. Once it drops below `1e9` the fixed-point precision collapses.
+Solution at [`v1-dev/packages/contracts/contracts/StabilityPool.sol:605-617`](v1-dev/packages/contracts/contracts/StabilityPool.sol#L605-L617): multiply `P` by `SCALE_FACTOR = 1e9` ([`v1-dev/packages/contracts/contracts/StabilityPool.sol:195`](v1-dev/packages/contracts/contracts/StabilityPool.sol#L195)) and
+increment `currentScale`. Reads then correct for the scale difference.
+
+`_getCompoundedStakeFromSnapshots` at [`v1-dev/packages/contracts/contracts/StabilityPool.sol:781-812`](v1-dev/packages/contracts/contracts/StabilityPool.sol#L781-L812) handles all three cases:
+
+| `scaleDiff` | Treatment |
+|---|---|
+| `0` | `initialStake * P / snapshot_P` |
+| `1` | `initialStake * P / snapshot_P / SCALE_FACTOR` |
+| `>= 2` | Return `0`. The stake has shrunk by at least 1e-18. |
+
+There is also a dust floor: a compounded stake below `initialStake / 1e9` is
+truncated to zero ([`v1-dev/packages/contracts/contracts/StabilityPool.sol:808-810`](v1-dev/packages/contracts/contracts/StabilityPool.sol#L808-L810)), so the pool never carries unreclaimable dust.
+
+### 1.6.3 `offset(uint _debtToOffset, uint _collToAdd)` — [`v1-dev/packages/contracts/contracts/StabilityPool.sol:514`](v1-dev/packages/contracts/contracts/StabilityPool.sol#L514)
+
+**Only callable by `TroveManager`** ([`v1-dev/packages/contracts/contracts/StabilityPool.sol:940`](v1-dev/packages/contracts/contracts/StabilityPool.sol#L940),
+`"StabilityPool: Caller is not TroveManager"`).
+
+1. `_triggerLQTYIssuance` ([`v1-dev/packages/contracts/contracts/StabilityPool.sol:450`](v1-dev/packages/contracts/contracts/StabilityPool.sol#L450)) mints pending LQTY and folds it into `G`.
+2. `_computeRewardsPerUnitStaked` ([`v1-dev/packages/contracts/contracts/StabilityPool.sol:531`](v1-dev/packages/contracts/contracts/StabilityPool.sol#L531)) derives the per-unit ETH gain and
+   LUSD loss.
+3. `_updateRewardSumAndProduct` ([`v1-dev/packages/contracts/contracts/StabilityPool.sol:580`](v1-dev/packages/contracts/contracts/StabilityPool.sol#L580)) writes the new `S` and `P`, handling
+   epoch and scale transitions.
+4. `_moveOffsetCollAndDebt` ([`v1-dev/packages/contracts/contracts/StabilityPool.sol:628`](v1-dev/packages/contracts/contracts/StabilityPool.sol#L628)) burns the LUSD and pulls the ETH from
+   `ActivePool`.
+
+#### The rounding, and who it favours — [`v1-dev/packages/contracts/contracts/StabilityPool.sol:531-577`](v1-dev/packages/contracts/contracts/StabilityPool.sol#L531-L577)
+
+Same four-step error feedback as redistribution, plus one deliberate asymmetry:
+
+```solidity
+LUSDLossPerUnitStaked = (LUSDLossNumerator.div(_totalLUSDDeposits)).add(1);
+```
+
+[`v1-dev/packages/contracts/contracts/StabilityPool.sol:569`](v1-dev/packages/contracts/contracts/StabilityPool.sol#L569). The `+1` makes the loss *slightly too large*. The comment at
+[`v1-dev/packages/contracts/contracts/StabilityPool.sol:566-568`](v1-dev/packages/contracts/contracts/StabilityPool.sol#L566-L568) says why: "We want 'slightly too much' LUSD loss, which ensures the
+error in any given compoundedLUSDDeposit favors the Stability Pool." Rounding
+against the depositor by one wei guarantees the pool can always pay out what it
+claims. Rounding the other way would eventually leave it one wei short.
+
+`assert(_debtToOffset < _totalLUSDDeposits)` at [`v1-dev/packages/contracts/contracts/StabilityPool.sol:552`](v1-dev/packages/contracts/contracts/StabilityPool.sol#L552) is enforced upstream by
+`getMaxAmountToOffset` at [`v1-dev/packages/contracts/contracts/StabilityPool.sol:495`](v1-dev/packages/contracts/contracts/StabilityPool.sol#L495), which is what `batchLiquidateTroves` queries
+before deciding how much to offset.
+
+### 1.6.4 Deposit lifecycle
+
+#### `provideToSP(uint _amount, address _frontEndTag)` — [`v1-dev/packages/contracts/contracts/StabilityPool.sol:316`](v1-dev/packages/contracts/contracts/StabilityPool.sol#L316)
+
+- **Checks:** `_requireNonZeroAmount`; if the depositor is new,
+  `_requireFrontEndNotRegistered` and `_requireValidFrontEndTag`.
+- **Body:** triggers LQTY issuance, pays out any accrued LQTY to the depositor
+  and their front end, computes the compounded deposit, adds `_amount`, writes
+  fresh snapshots, transfers LUSD in, and **sends any accrued ETH gain to the
+  depositor**.
+- **Emits:** `UserDepositChanged`, `ETHGainWithdrawn`.
+
+#### `withdrawFromSP(uint _amount)` — [`v1-dev/packages/contracts/contracts/StabilityPool.sol:363`](v1-dev/packages/contracts/contracts/StabilityPool.sol#L363)
+
+- **Checks:** `_requireNoUnderCollateralizedTroves` ([`v1-dev/packages/contracts/contracts/StabilityPool.sol:957`](v1-dev/packages/contracts/contracts/StabilityPool.sol#L957)) blocks withdrawal
+  while the riskiest Trove sits below MCR. This stops depositors from fleeing
+  ahead of a liquidation they can see coming.
+- **Body:** mirror of `provideToSP`. Withdrawing `type(uint).max` exits fully.
+
+#### `withdrawETHGainToTrove(address _upperHint, address _lowerHint)` — [`v1-dev/packages/contracts/contracts/StabilityPool.sol:408`](v1-dev/packages/contracts/contracts/StabilityPool.sol#L408)
+
+Routes the ETH gain into the caller's Trove via
+`BorrowerOperations.moveETHGainToTrove` instead of to their wallet. Requires an
+active Trove and a non-zero gain.
+
+### 1.6.5 Views
+
+| Function | Line | Returns |
+|---|---|---|
+| `getDepositorETHGain` | [`v1-dev/packages/contracts/contracts/StabilityPool.sol:655`](v1-dev/packages/contracts/contracts/StabilityPool.sol#L655) | Accrued ETH |
+| `_getETHGainFromSnapshots` | [`v1-dev/packages/contracts/contracts/StabilityPool.sol:666`](v1-dev/packages/contracts/contracts/StabilityPool.sol#L666) | The `(S_now - S_snap) / P_snap` computation, scale-aware |
+| `getDepositorLQTYGain` | [`v1-dev/packages/contracts/contracts/StabilityPool.sol:690`](v1-dev/packages/contracts/contracts/StabilityPool.sol#L690) | Accrued LQTY |
+| `getFrontEndLQTYGain` | [`v1-dev/packages/contracts/contracts/StabilityPool.sol:725`](v1-dev/packages/contracts/contracts/StabilityPool.sol#L725) | Front-end share |
+| `getCompoundedLUSDDeposit` | [`v1-dev/packages/contracts/contracts/StabilityPool.sol:753`](v1-dev/packages/contracts/contracts/StabilityPool.sol#L753) | Post-haircut deposit |
+| `getCompoundedFrontEndStake` | [`v1-dev/packages/contracts/contracts/StabilityPool.sol:770`](v1-dev/packages/contracts/contracts/StabilityPool.sol#L770) | Front-end equivalent |
+| `getMaxAmountToOffset` | [`v1-dev/packages/contracts/contracts/StabilityPool.sol:495`](v1-dev/packages/contracts/contracts/StabilityPool.sol#L495) | Ceiling that preserves the `offset` assert |
+
+### 1.6.6 Front ends
+
+[`v1-dev/packages/contracts/contracts/StabilityPool.sol:838-870`](v1-dev/packages/contracts/contracts/StabilityPool.sol#L838-L870). `registerFrontEnd(uint _kickbackRate)` lets a UI register once and
+claim a share of LQTY rewards; the depositor's `_frontEndTag` is fixed at first
+deposit and immutable afterwards. `kickbackRate` is the fraction passed back to
+the depositor. This is Liquity's answer to having no marketing budget: front ends
+are paid in protocol tokens for bringing deposits.
+
+### 1.6.7 Access control
+
+| Guard | Line |
+|---|---|
+| `_requireCallerIsActivePool` | [`v1-dev/packages/contracts/contracts/StabilityPool.sol:948`](v1-dev/packages/contracts/contracts/StabilityPool.sol#L948) |
+| `_requireCallerIsTroveManager` | [`v1-dev/packages/contracts/contracts/StabilityPool.sol:940`](v1-dev/packages/contracts/contracts/StabilityPool.sol#L940) |
+| `_requireCallerIsBorrowerOperations` | [`v1-dev/packages/contracts/contracts/StabilityPool.sol:944`](v1-dev/packages/contracts/contracts/StabilityPool.sol#L944) |
+| `_requireNoUnderCollateralizedTroves` | [`v1-dev/packages/contracts/contracts/StabilityPool.sol:957`](v1-dev/packages/contracts/contracts/StabilityPool.sol#L957) |
+
+`receive()` at [`v1-dev/packages/contracts/contracts/StabilityPool.sol:985`](v1-dev/packages/contracts/contracts/StabilityPool.sol#L985) accepts ETH only from `ActivePool` and adds it to the
+internal balance.
+
+---
+
