@@ -1,11 +1,11 @@
 # Session log — how these documents were produced
 
-A record of what was run and what came out of it. Everything planned was
-completed; nothing is outstanding.
+A record of what was run and what came out of it, across two rounds. Everything
+planned was completed; nothing is outstanding.
 
 ## What was set up
 
-Thirteen protocol repositories were shallow-cloned and their `.git` directories
+Nineteen protocol repositories were shallow-cloned and their `.git` directories
 removed, giving one flat greppable corpus:
 
 ```
@@ -13,6 +13,8 @@ uni/     v1-contracts  v2-core  v2-periphery  v3-core  v3-periphery  v4-core
 curve/   curve-contract  stableswap-ng  curve-dao-contracts
 aave/    v1-aave-protocol  v2-protocol  v3-core-original  aave-v3-origin  v4-aave
 lifi/    contracts
+morpho/  morpho-blue  metamorpho  morpho-blue-oracles  morpho-blue-bundlers
+liquity/ v1-dev  v2-bold
 ```
 
 Aave v4 turned out to be public at `aave/aave-v4`, with audits dated through
@@ -36,7 +38,7 @@ mid-write. Wave three briefs required chunked appends and none hit it.
 
 ## The documents
 
-All twenty are complete. Deep dives first, then references.
+All twenty-four are complete. Deep dives first, then references.
 
 | Document | Lines | Coverage |
 |---|---|---|
