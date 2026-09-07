@@ -858,3 +858,294 @@ sender identity a destination contract can trust, and it is why payload-3 is the
 basis for cross-chain composability.
 
 ---
+
+## 10. Token bridge: `Bridge.sol` inbound
+
+### The four public redeemers
+
+All four funnel into `_completeTransfer`.
+
+| Function | Line | `unwrapWETH` | Payload |
+|---|---|---|---|
+| `completeTransfer` | [`:652`](wormhole/ethereum/contracts/bridge/Bridge.sol#L652) | false | 1 |
+| `completeTransferAndUnwrapETH` | [`:663`](wormhole/ethereum/contracts/bridge/Bridge.sol#L663) | true | 1 |
+| `completeTransferWithPayload` | [`:627`](wormhole/ethereum/contracts/bridge/Bridge.sol#L627) | false | 3, returns payload |
+| `completeTransferAndUnwrapETHWithPayload` | [`:641`](wormhole/ethereum/contracts/bridge/Bridge.sol#L641) | true | 3, returns payload |
+
+None of them is `nonReentrant`. The protection is the replay flag instead, set
+before any external call.
+
+### `_completeTransfer(bytes, bool) internal` — [`:679`](wormhole/ethereum/contracts/bridge/Bridge.sol#L679)
+
+Order of operations, which is the whole security argument:
+
+1. `parseAndVerifyVM` on the core contract, `require(valid, reason)` — [`:680-682`](wormhole/ethereum/contracts/bridge/Bridge.sol#L680-L682).
+2. `verifyBridgeVM(vm)` — the emitter must be the registered token bridge on the source chain. Reverts `InvalidEmitter` at [`:683`](wormhole/ethereum/contracts/bridge/Bridge.sol#L683).
+3. Parse as payload 1 or 3 via `_parseTransferCommon`.
+4. **Payload-3 gate**: `if (transfer.payloadID == 3) { if (msg.sender != transferRecipient) revert InvalidSender(); }` — [`:689-691`](wormhole/ethereum/contracts/bridge/Bridge.sol#L689-L691). Only the designated recipient may redeem a contract-controlled transfer. This is what makes payload 3 safe to build protocols on: nobody can front-run the redemption and hand your contract tokens out of context.
+5. **Replay check and set**, [`:693-694`](wormhole/ethereum/contracts/bridge/Bridge.sol#L693-L694). `isTransferCompleted(vm.hash)` then `setTransferCompleted(vm.hash)`, both before any token movement.
+6. Emit `TransferRedeemed` — [`:697`](wormhole/ethereum/contracts/bridge/Bridge.sol#L697).
+7. `if (transfer.toChain != chainId()) revert InvalidTargetChain()` — [`:699`](wormhole/ethereum/contracts/bridge/Bridge.sol#L699).
+8. Resolve the token: native side unlocks and calls `bridgedIn`; foreign side looks up the wrapper and reverts `WrappedAssetNotFound` if absent — [`:701-712`](wormhole/ethereum/contracts/bridge/Bridge.sol#L701-L712).
+9. `if (unwrapWETH && address(transferToken) != address(WETH())) revert OnlyWETH()` — [`:714`](wormhole/ethereum/contracts/bridge/Bridge.sol#L714).
+10. De-normalize amount and fee back to native decimals — [`:721-722`](wormhole/ethereum/contracts/bridge/Bridge.sol#L721-L722).
+11. Pay the relayer fee, then the recipient.
+
+Steps 5 and 6 land before every transfer, so a reentrant token cannot replay the
+same VAA.
+
+### `_truncateAddress(bytes32) internal pure` — [`:673`](wormhole/ethereum/contracts/bridge/Bridge.sol#L673)
+
+```solidity
+if (bytes12(b) != 0) revert InvalidEVMAddress();
+return address(uint160(uint256(b)));
+```
+
+Rejects a 32-byte value whose top 12 bytes are non-zero. Contrast this with the
+core's `submitContractUpgrade`, which truncates silently. Here it matters: a
+Solana address is a full 32 bytes, and quietly folding one into 20 bytes would
+send funds to an address nobody controls.
+
+### The relayer fee
+
+[`:725-743`](wormhole/ethereum/contracts/bridge/Bridge.sol#L725-L743). Paid only
+when `nativeFee > 0 && transferRecipient != msg.sender`. If the recipient redeems
+their own transfer, the fee is zeroed at
+[`:742`](wormhole/ethereum/contracts/bridge/Bridge.sol#L742) and they receive the
+whole amount — so self-redeeming is always strictly better for the user, and the
+fee is genuinely a payment for someone else's gas.
+
+The mint-versus-transfer split appears twice, once for the fee and once for the
+principal: foreign tokens are minted on the wrapper
+([`:735`](wormhole/ethereum/contracts/bridge/Bridge.sol#L735),
+[`:755`](wormhole/ethereum/contracts/bridge/Bridge.sol#L755)), native tokens are
+released from the bridge's own balance
+([`:737`](wormhole/ethereum/contracts/bridge/Bridge.sol#L737),
+[`:757`](wormhole/ethereum/contracts/bridge/Bridge.sol#L757)).
+
+### `bridgedIn` — [`:770`](wormhole/ethereum/contracts/bridge/Bridge.sol#L770)
+
+```solidity
+setOutstandingBridged(token, outstandingBridged(token) - normalizedAmount);
+```
+
+Unchecked subtraction in the sense that there is no explicit guard — it relies on
+Solidity 0.8 overflow reverting. If accounting ever desynchronized, redemption of
+a native token would revert rather than silently underflow.
+
+### `verifyBridgeVM(IWormhole.VM memory) internal view` — [`:774`](wormhole/ethereum/contracts/bridge/Bridge.sol#L774)
+
+```solidity
+if (isFork()) revert InvalidFork();
+return bridgeContracts(vm.emitterChainId) == vm.emitterAddress;
+```
+
+Two jobs in four lines: refuse to process anything at all on a forked chain, and
+confirm the message came from the registered peer. `InvalidFork` is declared in
+`BridgeGovernance` at
+[`:35`](wormhole/ethereum/contracts/bridge/BridgeGovernance.sol#L35).
+
+### `createWrapped` / `updateWrapped`
+
+`createWrapped(bytes) external notPaused` at
+[`:569`](wormhole/ethereum/contracts/bridge/Bridge.sol#L569) verifies an
+`AssetMeta` VAA and calls `_createWrapped`
+([`:580`](wormhole/ethereum/contracts/bridge/Bridge.sol#L580)), which:
+
+- rejects tokens native to this chain, `OnlyForeignTokens` [`:581`](wormhole/ethereum/contracts/bridge/Bridge.sol#L581)
+- rejects duplicates, `WrappedAssetAlreadyExists` [`:582`](wormhole/ethereum/contracts/bridge/Bridge.sol#L582)
+- deploys a `BridgeToken` beacon proxy by `CREATE2` with
+
+```solidity
+bytes32 salt = keccak256(abi.encodePacked(meta.tokenChain, meta.tokenAddress));
+```
+
+[`:604`](wormhole/ethereum/contracts/bridge/Bridge.sol#L604). The salt is the
+origin `(chain, address)` pair, so **the wrapper address is deterministic across
+every EVM chain** running the same bridge bytecode. That is how integrators can
+precompute a wrapped-token address before it exists.
+
+The assembly at [`:606-612`](wormhole/ethereum/contracts/bridge/Bridge.sol#L606-L612)
+checks `extcodesize(token)` and reverts with no data on failure.
+
+`updateWrapped` at [`:549`](wormhole/ethereum/contracts/bridge/Bridge.sol#L549)
+handles a later re-attestation, calling `updateDetails` with the VAA's `sequence`
+so stale attestations can be ordered and rejected by the token itself.
+
+`receive() external payable {}` at
+[`:959`](wormhole/ethereum/contracts/bridge/Bridge.sol#L959) accepts ETH with no
+checks, because WETH sends ETH here during `withdraw`. Any ETH sent directly is
+stuck.
+
+---
+
+## 11. Token bridge: payload codecs
+
+### On-the-wire layouts
+
+**`Transfer`, payload 1** — 133 bytes exactly. Encoder [`:790`](wormhole/ethereum/contracts/bridge/Bridge.sol#L790), parser [`:854`](wormhole/ethereum/contracts/bridge/Bridge.sol#L854).
+
+| Offset | Size | Field |
+|---|---|---|
+| `0` | 1 | `payloadID` = 1 |
+| `1` | 32 | `amount` (normalized, ≤ 8 decimals) |
+| `33` | 32 | `tokenAddress` |
+| `65` | 2 | `tokenChain` |
+| `67` | 32 | `to` |
+| `99` | 2 | `toChain` |
+| `101` | 32 | `fee` |
+
+**`AssetMeta`, payload 2** — 100 bytes exactly. Encoder [`:779`](wormhole/ethereum/contracts/bridge/Bridge.sol#L779), parser [`:822`](wormhole/ethereum/contracts/bridge/Bridge.sol#L822).
+
+| Offset | Size | Field |
+|---|---|---|
+| `0` | 1 | `payloadID` = 2 |
+| `1` | 32 | `tokenAddress` |
+| `33` | 2 | `tokenChain` |
+| `35` | 1 | `decimals` |
+| `36` | 32 | `symbol` |
+| `68` | 32 | `name` |
+
+**`TransferWithPayload`, payload 3** — 133-byte header plus arbitrary tail. Encoder [`:802`](wormhole/ethereum/contracts/bridge/Bridge.sol#L802), parser [`:889`](wormhole/ethereum/contracts/bridge/Bridge.sol#L889).
+
+| Offset | Size | Field |
+|---|---|---|
+| `0` | 1 | `payloadID` = 3 |
+| `1` | 32 | `amount` |
+| `33` | 32 | `tokenAddress` |
+| `65` | 2 | `tokenChain` |
+| `67` | 32 | `to` |
+| `99` | 2 | `toChain` |
+| `101` | 32 | `fromAddress` |
+| `133` | rest | `payload` |
+
+Payload 3 replaces payload 1's `fee` field with `fromAddress`. Same offset, same
+width, different meaning — which is exactly why `_parseTransferCommon` must
+dispatch on the payload id rather than reinterpreting bytes.
+
+### Length discipline
+
+`parseTransfer` [`:880`](wormhole/ethereum/contracts/bridge/Bridge.sol#L880) and
+`parseAssetMeta` [`:845`](wormhole/ethereum/contracts/bridge/Bridge.sol#L845) both
+end with `if (encoded.length != index) revert Invalid...`, rejecting trailing
+bytes. **`parseTransferWithPayload` does not** — it cannot, since its tail is
+variable-length. It ends by slicing the remainder at
+[`:915`](wormhole/ethereum/contracts/bridge/Bridge.sol#L915).
+
+### `_parseTransferCommon(bytes) public pure` — [`:926`](wormhole/ethereum/contracts/bridge/Bridge.sol#L926)
+
+Normalizes payload 1 and 3 into one `Transfer` struct, forcing `fee = 0` for
+payload 3 at [`:940`](wormhole/ethereum/contracts/bridge/Bridge.sol#L940).
+Anything else reverts `InvalidPayloadId`. The docblock at
+[`:922-924`](wormhole/ethereum/contracts/bridge/Bridge.sol#L922-L924) admits its
+real motivation: getting under the local-variable limit in `_completeTransfer`.
+
+It is declared `public` despite the leading underscore, so it is callable
+externally and useful for off-chain decoding.
+
+### `bytes32ToString(bytes32) internal pure` — [`:946`](wormhole/ethereum/contracts/bridge/Bridge.sol#L946)
+
+Walks until the first zero byte, then copies. Converts the fixed-width name and
+symbol back into a Solidity `string` for the wrapper.
+
+---
+
+## 12. Token bridge: `BridgeGovernance.sol`
+
+Module constant at
+[`:25`](wormhole/ethereum/contracts/bridge/BridgeGovernance.sol#L25):
+`0x...546f6b656e427269646765`, ASCII `"TokenBridge"` left-padded.
+
+Fourteen custom errors are declared at
+[`:29-44`](wormhole/ethereum/contracts/bridge/BridgeGovernance.sol#L29-L44). The
+comment at [`:27-28`](wormhole/ethereum/contracts/bridge/BridgeGovernance.sol#L27-L28)
+gives the reason: revert strings would push `BridgeImplementation` past the
+24,576-byte EIP-170 limit. That constraint explains several odd shapes in this
+codebase, including the shared `_requireRole` and `_clearPauseToNow` helpers.
+
+### `verifyGovernanceVM(bytes) internal view` — [`:166`](wormhole/ethereum/contracts/bridge/BridgeGovernance.sol#L166)
+
+Differs from the core's version in two ways: it takes raw bytes and reverts rather
+than returning a flag, and it does **not** require the current guardian set — only
+that the emitter matches governance. Checks: valid VAA (forwarding the core's
+dynamic reason string, [`:169`](wormhole/ethereum/contracts/bridge/BridgeGovernance.sol#L169)),
+`WrongGovernanceChain`, `WrongGovernanceContract`, `GovernanceActionConsumed`.
+
+### The four handlers
+
+| Action | Function | Line | Payload size |
+|---|---|---|---|
+| 1 `RegisterChain` | `registerChain` | [`:47`](wormhole/ethereum/contracts/bridge/BridgeGovernance.sol#L47) | 69 bytes |
+| 2 `UpgradeContract` | `upgrade` | [`:61`](wormhole/ethereum/contracts/bridge/BridgeGovernance.sol#L61) | 67 bytes |
+| 3 `RecoverChainId` | `submitRecoverChainId` | [`:148`](wormhole/ethereum/contracts/bridge/BridgeGovernance.sol#L148) | 67 bytes |
+| 4 `SetPauserAddresses` | `submitSetPauserAddresses` | [`:98`](wormhole/ethereum/contracts/bridge/BridgeGovernance.sol#L98) | variable |
+
+**`RegisterChain`** — parser [`:193`](wormhole/ethereum/contracts/bridge/BridgeGovernance.sol#L193)
+
+| Offset | Size | Field |
+|---|---|---|
+| `0` | 32 | `module` |
+| `32` | 1 | `action` = 1 |
+| `33` | 2 | `chainId` (this chain or 0) |
+| `35` | 2 | `emitterChainID` |
+| `37` | 32 | `emitterAddress` |
+
+`if (bridgeContracts(chain.emitterChainID) != bytes32(0)) revert ChainAlreadyRegistered();`
+at [`:55`](wormhole/ethereum/contracts/bridge/BridgeGovernance.sol#L55). **A peer
+registration is permanent.** There is no way to change a registered peer, only to
+upgrade the whole implementation. That is a deliberate immutability guarantee: the
+set of trusted source bridges cannot be quietly swapped.
+
+**`UpgradeContract`** — parser [`:220`](wormhole/ethereum/contracts/bridge/BridgeGovernance.sol#L220)
+
+| Offset | Size | Field |
+|---|---|---|
+| `0` | 32 | `module` |
+| `32` | 1 | `action` = 2 |
+| `33` | 2 | `chainId` |
+| `35` | 32 | `newContract` |
+
+Guarded by `if (isFork()) revert InvalidFork()` at
+[`:62`](wormhole/ethereum/contracts/bridge/BridgeGovernance.sol#L62) and requires
+an exact chain match at
+[`:70`](wormhole/ethereum/contracts/bridge/BridgeGovernance.sol#L70) — no `0`
+wildcard, unlike `registerChain`.
+
+**`RecoverChainId`** — parser [`:245`](wormhole/ethereum/contracts/bridge/BridgeGovernance.sol#L245). Same shape as the core's action 5: no `chain` field, targeted by `evmChainId` instead. Inverted guard `if (!isFork()) revert NotAFork()` at [`:149`](wormhole/ethereum/contracts/bridge/BridgeGovernance.sol#L149).
+
+**`SetPauserAddresses`** — parsed inline at
+[`:103-116`](wormhole/ethereum/contracts/bridge/BridgeGovernance.sol#L103-L116),
+with no struct and no separate parser, again for bytecode size.
+
+| Offset | Size | Field |
+|---|---|---|
+| `0` | 32 | `module` |
+| `32` | 1 | `action` = 4 |
+| `33` | 2 | `chainId` |
+| `35` | 1 | `pauserLen` (0 or 20) |
+| `36` | 0 or 20 | `pauser` |
+| … | 1 | `freezerLen` |
+| … | 0 or 20 | `freezer` |
+| … | 1 | `unpauserLen` |
+| … | 0 or 20 | `unpauser` |
+
+`_parsePauserAddress` at
+[`:129-143`](wormhole/ethereum/contracts/bridge/BridgeGovernance.sol#L129-L143)
+accepts only length 20 or 0, reverting `InvalidAddressLength` otherwise. Length 0
+means "leave unassigned", which resolves to `address(0)` and therefore to a role
+nobody can invoke.
+
+Wire order is `pauser, freezer, unpauser`; the storage struct order is
+`pauser, unpauser, freezer`. They do not match, and the comment at
+[`:23-25`](wormhole/ethereum/contracts/bridge/BridgePauserStorage.sol#L23-L25)
+flags it explicitly. Anyone hand-building one of these payloads should read that
+note first.
+
+### `upgradeImplementation(address) internal` — [`:180`](wormhole/ethereum/contracts/bridge/BridgeGovernance.sol#L180)
+
+Same as the core's, except failure surfaces as `InitializeFailed(bytes reason)`
+at [`:188`](wormhole/ethereum/contracts/bridge/BridgeGovernance.sol#L188) rather
+than a string revert — a parameterized custom error, which is how the reason is
+preserved without the string-literal bytecode cost.
+
+---
