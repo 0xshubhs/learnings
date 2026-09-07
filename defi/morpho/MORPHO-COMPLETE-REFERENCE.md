@@ -824,3 +824,78 @@ The asymmetry with `supplyCollateral` is deliberate and correct: *withdrawing* c
 accrue first, because the health check compares collateral against debt, and debt grows with
 interest. Skipping accrual here would let a borrower withdraw against a stale, understated debt.
 
+### 3.15 `liquidate(marketParams, borrower, seizedAssets, repaidShares, data)`
+
+[`:347-417`](morpho-blue/src/Morpho.sol#L347-L417) · returns `(seizedAssets, repaidAssets)`.
+The densest function in the contract, and the one that differs most from Aave.
+
+| | |
+|---|---|
+| **Checks** | market exists; `exactlyOneZero(seizedAssets, repaidShares)` |
+| **Accrues** | yes |
+| **Price** | `IOracle(marketParams.oracle).price()` once, at [`:361`](morpho-blue/src/Morpho.sol#L361) |
+| **Guard** | `!_isHealthy(..., collateralPrice)` → `HEALTHY_POSITION` ([`:363`](morpho-blue/src/Morpho.sol#L363)) |
+| **Writes** | `borrowShares`, `totalBorrowShares`, `totalBorrowAssets`, `collateral`, and on bad debt also `totalSupplyAssets` |
+| **Emits** | `Liquidate(id, caller, borrower, repaidAssets, repaidShares, seizedAssets, badDebtAssets, badDebtShares)` |
+| **Order** | seize → callback → pull repayment |
+
+**No close factor.** Aave caps a single liquidation at 50% of debt (or 100% below a health-factor
+threshold); Blue has no such cap at all. A liquidator may repay the entire position in one call.
+The only limit is the borrower's collateral. This removes an entire class of parameter and an
+entire class of griefing, at the cost of giving liquidators more discretion.
+
+**Two entry modes**, mirroring the assets-or-shares convention:
+
+*Given `seizedAssets`* ([`:372-375`](morpho-blue/src/Morpho.sol#L372-L375)) — "I want exactly this
+much collateral":
+
+```
+seizedAssetsQuoted = ceil(seizedAssets · price / 1e36)
+repaidShares       = toSharesUp( ceil(seizedAssetsQuoted / LIF) )
+```
+
+*Given `repaidShares`* ([`:377-379`](morpho-blue/src/Morpho.sol#L377-L379)) — "I want to clear
+exactly this much debt":
+
+```
+seizedAssets = floor( floor(toAssetsDown(repaidShares) · LIF) · 1e36 / price )
+```
+
+Both round against the liquidator. `ORACLE_PRICE_SCALE = 1e36`
+([`ConstantsLib.sol:17`](morpho-blue/src/libraries/ConstantsLib.sol#L17)).
+
+**Bad-debt socialisation** ([`:392-403`](morpho-blue/src/Morpho.sol#L392-L403)) is the part with
+no Aave equivalent. If the seize leaves `collateral == 0` while `borrowShares > 0`, the remaining
+debt is written off **in the same transaction**:
+
+```solidity
+if (position[id][borrower].collateral == 0) {
+    badDebtShares = position[id][borrower].borrowShares;
+    badDebtAssets = UtilsLib.min(
+        market[id].totalBorrowAssets,
+        badDebtShares.toAssetsUp(market[id].totalBorrowAssets, market[id].totalBorrowShares)
+    );
+
+    market[id].totalBorrowAssets -= badDebtAssets.toUint128();
+    market[id].totalSupplyAssets -= badDebtAssets.toUint128();
+    market[id].totalBorrowShares -= badDebtShares.toUint128();
+    position[id][borrower].borrowShares = 0;
+}
+```
+
+Reducing `totalSupplyAssets` immediately lowers the value of every supply share in that market,
+pro rata. Suppliers eat the loss at once, transparently, rather than the protocol carrying a
+deficit that governance must later decide how to clear (Aave's `eliminateReserveDeficit`, added
+in 3.4). Because Blue markets are isolated, the loss cannot spread beyond the one market. This is
+the clearest expression of Blue's whole design thesis: push risk to the edges and price it there.
+
+The `UtilsLib.min` guard at [`:394`](morpho-blue/src/Morpho.sol#L394) prevents the rounding-up
+conversion from subtracting more than `totalBorrowAssets` holds.
+
+**Ordering.** Collateral goes out at [`:410`](morpho-blue/src/Morpho.sol#L410) *before* the
+callback at [`:412`](morpho-blue/src/Morpho.sol#L412), and repayment is pulled at
+[`:414`](morpho-blue/src/Morpho.sol#L414) *after* it. So a liquidator needs no capital: receive
+collateral, sell it inside `onMorphoLiquidate`, and repay from the proceeds. Blue makes the
+flash-liquidation pattern native rather than requiring a separate adapter, which is what Aave v2
+needed `FlashLiquidationAdapter` for.
+
