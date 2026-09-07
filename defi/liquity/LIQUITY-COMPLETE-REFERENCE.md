@@ -1532,3 +1532,109 @@ revert." A failing oracle must not brick the whole system.
 
 ---
 
+
+## 2.5 `TroveManager` — [`v2-bold/contracts/src/TroveManager.sol:1-2006`](v2-bold/contracts/src/TroveManager.sol#L1-L2006)
+
+### 2.5.1 Liquidation
+
+| Function | Line | Purpose |
+|---|---|---|
+| `_liquidate` | [`v2-bold/contracts/src/TroveManager.sol:231`](v2-bold/contracts/src/TroveManager.sol#L231) | Single-Trove core |
+| `_getCollGasCompensation` | [`v2-bold/contracts/src/TroveManager.sol:335`](v2-bold/contracts/src/TroveManager.sol#L335) | 0.5%, capped at 2 ETH |
+| `_getOffsetAndRedistributionVals` | [`v2-bold/contracts/src/TroveManager.sol:343`](v2-bold/contracts/src/TroveManager.sol#L343) | Split, now penalty-aware |
+| `_getCollPenaltyAndSurplus` | [`v2-bold/contracts/src/TroveManager.sol:398`](v2-bold/contracts/src/TroveManager.sol#L398) | **New in v2** |
+| `batchLiquidateTroves` | [`v2-bold/contracts/src/TroveManager.sol:417`](v2-bold/contracts/src/TroveManager.sol#L417) | Entry point |
+| `_batchLiquidateTroves` | [`v2-bold/contracts/src/TroveManager.sol:482`](v2-bold/contracts/src/TroveManager.sol#L482) | |
+| `_addLiquidationValuesToTotals` | [`v2-bold/contracts/src/TroveManager.sol:516`](v2-bold/contracts/src/TroveManager.sol#L516) | |
+| `_sendGasCompensation` | [`v2-bold/contracts/src/TroveManager.sol:537`](v2-bold/contracts/src/TroveManager.sol#L537) | |
+| `_movePendingTroveRewardsToActivePool` | [`v2-bold/contracts/src/TroveManager.sol:548`](v2-bold/contracts/src/TroveManager.sol#L548) | |
+
+**The big change is bounded penalties.** v1 gave the Stability Pool the entire
+collateral of a liquidated Trove, so a depositor's gain depended on how far
+below MCR the Trove had fallen. v2 fixes the penalty: 5% for a Stability Pool
+offset, 10% or 20% for redistribution depending on the branch. `_getCollPenaltyAndSurplus`
+at [`v2-bold/contracts/src/TroveManager.sol:398`](v2-bold/contracts/src/TroveManager.sol#L398) computes the penalty and returns everything above it as **surplus to
+the borrower**, claimable from `CollSurplusPool`.
+
+So in v2 a liquidated borrower keeps the collateral above the penalty. That is a
+material fairness change, and it also removes v1's Recovery Mode entirely: v1
+needed a special capped path during system stress, v2 caps every liquidation
+always.
+
+`_isActiveOrZombie` at [`v2-bold/contracts/src/TroveManager.sol:478`](v2-bold/contracts/src/TroveManager.sol#L478) lets zombie Troves be liquidated even though they
+are off the sorted list.
+
+### 2.5.2 Redemption
+
+| Function | Line | Purpose |
+|---|---|---|
+| `_applySingleRedemption` | [`v2-bold/contracts/src/TroveManager.sol:560`](v2-bold/contracts/src/TroveManager.sol#L560) | |
+| `_redeemCollateralFromTrove` | [`v2-bold/contracts/src/TroveManager.sol:672`](v2-bold/contracts/src/TroveManager.sol#L672) | |
+| `_updateBatchInterestPriorToRedemption` | [`v2-bold/contracts/src/TroveManager.sol:717`](v2-bold/contracts/src/TroveManager.sol#L717) | Settles batch interest first |
+| `redeemCollateral` | [`v2-bold/contracts/src/TroveManager.sol:747`](v2-bold/contracts/src/TroveManager.sol#L747) | Called by `CollateralRegistry`, not users |
+| `_urgentRedeemCollateralFromTrove` | [`v2-bold/contracts/src/TroveManager.sol:848`](v2-bold/contracts/src/TroveManager.sol#L848) | Post-shutdown |
+| `urgentRedemption` | [`v2-bold/contracts/src/TroveManager.sol:874`](v2-bold/contracts/src/TroveManager.sol#L874) | Post-shutdown, 2% bonus |
+| `shutdown` | [`v2-bold/contracts/src/TroveManager.sol:934`](v2-bold/contracts/src/TroveManager.sol#L934) | |
+
+**Redemption now targets the lowest interest rate, not the lowest ICR.** The
+sorted list is ordered by `annualInterestRate`, so redeeming walks from the
+cheapest borrower. This is the economic heart of v2: your interest rate is a bid
+for redemption protection.
+
+The note at [`v2-bold/contracts/src/TroveManager.sol:737-739`](v2-bold/contracts/src/TroveManager.sol#L737-L739) is candid about a limitation: a very large redemption
+can run out of gas if it traverses many small Troves, and the fix is to split it
+into chunks across several transactions.
+
+### 2.5.3 Interest and batch accounting
+
+| Function | Line | Purpose |
+|---|---|---|
+| `getCurrentICR` | [`v2-bold/contracts/src/TroveManager.sol:943`](v2-bold/contracts/src/TroveManager.sol#L943) | |
+| `_getLatestTroveData` | [`v2-bold/contracts/src/TroveManager.sol:955`](v2-bold/contracts/src/TroveManager.sol#L955) | Accrues interest and redistribution on read |
+| `_getLatestTroveDataFromBatch` | [`v2-bold/contracts/src/TroveManager.sol:981`](v2-bold/contracts/src/TroveManager.sol#L981) | Batch member variant |
+| `getLatestTroveData` | [`v2-bold/contracts/src/TroveManager.sol:1012`](v2-bold/contracts/src/TroveManager.sol#L1012) | External view |
+| `getTroveAnnualInterestRate` | [`v2-bold/contracts/src/TroveManager.sol:1016`](v2-bold/contracts/src/TroveManager.sol#L1016) | |
+| `_getBatchManager` | [`v2-bold/contracts/src/TroveManager.sol:1025`](v2-bold/contracts/src/TroveManager.sol#L1025), [`v2-bold/contracts/src/TroveManager.sol:1029`](v2-bold/contracts/src/TroveManager.sol#L1029) | |
+| `_getLatestBatchData` | [`v2-bold/contracts/src/TroveManager.sol:1034`](v2-bold/contracts/src/TroveManager.sol#L1034) | |
+| `getLatestBatchData` | [`v2-bold/contracts/src/TroveManager.sol:1055`](v2-bold/contracts/src/TroveManager.sol#L1055) | |
+| `_updateStakeAndTotalStakes` | [`v2-bold/contracts/src/TroveManager.sol:1060`](v2-bold/contracts/src/TroveManager.sol#L1060) | |
+| `_computeNewStake` | [`v2-bold/contracts/src/TroveManager.sol:1069`](v2-bold/contracts/src/TroveManager.sol#L1069) | |
+| `_redistributeDebtAndColl` | [`v2-bold/contracts/src/TroveManager.sol:1086`](v2-bold/contracts/src/TroveManager.sol#L1086) | Same error-feedback pattern as v1 |
+
+`LatestTroveData` ([`v2-bold/contracts/src/Types/LatestTroveData.sol:5`](v2-bold/contracts/src/Types/LatestTroveData.sol#L5)) is the v2 answer to v1's
+`getEntireDebtAndColl`: a struct carrying recorded debt, accrued interest,
+accrued batch management fee, redistribution gains, and the resulting totals.
+Every read path materialises it, so callers never see stale debt.
+
+## 2.6 `CollateralRegistry` — [`v2-bold/contracts/src/CollateralRegistry.sol:1-316`](v2-bold/contracts/src/CollateralRegistry.sol#L1-L316)
+
+New in v2. Coordinates redemption across every collateral branch and owns the
+system-wide base rate.
+
+| Function | Line | Purpose |
+|---|---|---|
+| `redeemCollateral` | [`v2-bold/contracts/src/CollateralRegistry.sol:92`](v2-bold/contracts/src/CollateralRegistry.sol#L92) | **The user-facing redemption entry point** |
+| `_updateLastFeeOpTime` | [`v2-bold/contracts/src/CollateralRegistry.sol:180`](v2-bold/contracts/src/CollateralRegistry.sol#L180) | |
+| `_minutesPassedSinceLastFeeOp` | [`v2-bold/contracts/src/CollateralRegistry.sol:189`](v2-bold/contracts/src/CollateralRegistry.sol#L189) | |
+| `_updateBaseRateAndGetRedemptionRate` | [`v2-bold/contracts/src/CollateralRegistry.sol:194`](v2-bold/contracts/src/CollateralRegistry.sol#L194) | |
+| `_getUpdatedBaseRateFromRedemption` | [`v2-bold/contracts/src/CollateralRegistry.sol:212`](v2-bold/contracts/src/CollateralRegistry.sol#L212) | |
+| `_calcDecayedBaseRate` | [`v2-bold/contracts/src/CollateralRegistry.sol:229`](v2-bold/contracts/src/CollateralRegistry.sol#L229) | 6-hour half-life |
+| `_calcRedemptionRate` | [`v2-bold/contracts/src/CollateralRegistry.sol:236`](v2-bold/contracts/src/CollateralRegistry.sol#L236) | |
+| `_calcRedemptionFee` | [`v2-bold/contracts/src/CollateralRegistry.sol:243`](v2-bold/contracts/src/CollateralRegistry.sol#L243) | |
+| `getRedemptionRate` | [`v2-bold/contracts/src/CollateralRegistry.sol:250`](v2-bold/contracts/src/CollateralRegistry.sol#L250) | |
+| `getRedemptionRateWithDecay` | [`v2-bold/contracts/src/CollateralRegistry.sol:254`](v2-bold/contracts/src/CollateralRegistry.sol#L254) | |
+| `getRedemptionRateForRedeemedAmount` | [`v2-bold/contracts/src/CollateralRegistry.sol:258`](v2-bold/contracts/src/CollateralRegistry.sol#L258) | |
+| `getRedemptionFeeWithDecay` | [`v2-bold/contracts/src/CollateralRegistry.sol:264`](v2-bold/contracts/src/CollateralRegistry.sol#L264) | |
+| `getEffectiveRedemptionFeeInBold` | [`v2-bold/contracts/src/CollateralRegistry.sol:268`](v2-bold/contracts/src/CollateralRegistry.sol#L268) | |
+
+`redeemCollateral` at [`v2-bold/contracts/src/CollateralRegistry.sol:92`](v2-bold/contracts/src/CollateralRegistry.sol#L92) splits the requested amount across branches **in
+proportion to each branch's outstanding debt**, then calls each branch's
+`TroveManager.redeemCollateral`. A redeemer therefore receives a basket of
+collateral rather than choosing one, which prevents cherry-picking the healthiest
+branch and leaving the weakest branches unredeemed.
+
+The base rate lives here rather than in `TroveManager` precisely because it must
+be global: one BOLD peg, one fee.
+
+---
+
