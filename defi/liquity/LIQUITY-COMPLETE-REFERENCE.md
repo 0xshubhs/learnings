@@ -1329,3 +1329,113 @@ share.
 
 ---
 
+# Part 2 — Liquity v2 (BOLD)
+
+102 Solidity files in `v2-bold/contracts/src/`, Solidity 0.8.24. Same skeleton as v1, four
+structural changes that alter almost every contract.
+
+## 2.1 What changed, and why
+
+| Change | v1 | v2 |
+|---|---|---|
+| Interest rate | None. One-off borrowing fee only. | **Each borrower sets their own annual rate**, 0.5% to 250% |
+| Collateral | ETH only, one system | **Multiple branches**, each with its own MCR/CCR and pools, unified by a `CollateralRegistry` |
+| Redemption target | Lowest ICR | **Lowest interest rate**, across all branches pro rata |
+| Trove identity | `address` | **ERC-721 NFT**, so one address can hold many Troves |
+| Yield | Stability Pool earns liquidation gains only | Pool also earns **75% of all interest paid** |
+| Delegation | None | **Batch managers** set rates for many Troves at once |
+| Shutdown | None | Per-branch shutdown with urgent redemption |
+
+**The central idea.** v1 priced borrowing with a governance-free but *rigid*
+base-rate model. v2 replaces it with a market: borrowers pick their own rate, and
+redemptions hit the lowest rates first. Paying more buys redemption protection.
+The market clears without a governance vote and without an oracle for the rate
+itself.
+
+## 2.2 Constants — [`v2-bold/contracts/src/Dependencies/Constants.sol:1-90`](v2-bold/contracts/src/Dependencies/Constants.sol#L1-L90)
+
+| Constant | Line | Value |
+|---|---|---|
+| `CCR_WETH` / `CCR_SETH` | [`v2-bold/contracts/src/Dependencies/Constants.sol:20`](v2-bold/contracts/src/Dependencies/Constants.sol#L20) / [`v2-bold/contracts/src/Dependencies/Constants.sol:21`](v2-bold/contracts/src/Dependencies/Constants.sol#L21) | 150% / 160% |
+| `MCR_WETH` / `MCR_SETH` | [`v2-bold/contracts/src/Dependencies/Constants.sol:23`](v2-bold/contracts/src/Dependencies/Constants.sol#L23) / [`v2-bold/contracts/src/Dependencies/Constants.sol:24`](v2-bold/contracts/src/Dependencies/Constants.sol#L24) | 110% / 120% |
+| `SCR_WETH` / `SCR_SETH` | [`v2-bold/contracts/src/Dependencies/Constants.sol:26`](v2-bold/contracts/src/Dependencies/Constants.sol#L26) / [`v2-bold/contracts/src/Dependencies/Constants.sol:27`](v2-bold/contracts/src/Dependencies/Constants.sol#L27) | 110% / 120% shutdown threshold |
+| `BCR_ALL` | [`v2-bold/contracts/src/Dependencies/Constants.sol:31`](v2-bold/contracts/src/Dependencies/Constants.sol#L31) | 10% buffer above MCR to join a batch |
+| `LIQUIDATION_PENALTY_SP_*` | [`v2-bold/contracts/src/Dependencies/Constants.sol:33`](v2-bold/contracts/src/Dependencies/Constants.sol#L33) | 5% |
+| `LIQUIDATION_PENALTY_REDISTRIBUTION_*` | [`v2-bold/contracts/src/Dependencies/Constants.sol:36`](v2-bold/contracts/src/Dependencies/Constants.sol#L36) / [`v2-bold/contracts/src/Dependencies/Constants.sol:37`](v2-bold/contracts/src/Dependencies/Constants.sol#L37) | 10% WETH, 20% staked-ETH |
+| `COLL_GAS_COMPENSATION_DIVISOR` | [`v2-bold/contracts/src/Dependencies/Constants.sol:40`](v2-bold/contracts/src/Dependencies/Constants.sol#L40) | 0.5% to the liquidator |
+| `COLL_GAS_COMPENSATION_CAP` | [`v2-bold/contracts/src/Dependencies/Constants.sol:41`](v2-bold/contracts/src/Dependencies/Constants.sol#L41) | **2 ETH cap** |
+| `MIN_DEBT` | [`v2-bold/contracts/src/Dependencies/Constants.sol:44`](v2-bold/contracts/src/Dependencies/Constants.sol#L44) | 2,000 BOLD |
+| `MIN_ANNUAL_INTEREST_RATE` | [`v2-bold/contracts/src/Dependencies/Constants.sol:46`](v2-bold/contracts/src/Dependencies/Constants.sol#L46) | 0.5% |
+| `MAX_ANNUAL_INTEREST_RATE` | [`v2-bold/contracts/src/Dependencies/Constants.sol:47`](v2-bold/contracts/src/Dependencies/Constants.sol#L47) | 250% |
+| `MAX_ANNUAL_BATCH_MANAGEMENT_FEE` | [`v2-bold/contracts/src/Dependencies/Constants.sol:50`](v2-bold/contracts/src/Dependencies/Constants.sol#L50) | 10% |
+| `MIN_INTEREST_RATE_CHANGE_PERIOD` | [`v2-bold/contracts/src/Dependencies/Constants.sol:51`](v2-bold/contracts/src/Dependencies/Constants.sol#L51) | 1 hour |
+| `MAX_BATCH_SHARES_RATIO` | [`v2-bold/contracts/src/Dependencies/Constants.sol:60`](v2-bold/contracts/src/Dependencies/Constants.sol#L60) | 1e9 |
+| `REDEMPTION_MINUTE_DECAY_FACTOR` | [`v2-bold/contracts/src/Dependencies/Constants.sol:64`](v2-bold/contracts/src/Dependencies/Constants.sol#L64) | 6-hour half-life (v1 was 12) |
+| `REDEMPTION_BETA` | [`v2-bold/contracts/src/Dependencies/Constants.sol:67`](v2-bold/contracts/src/Dependencies/Constants.sol#L67) | 1 (v1 was 2) |
+| `INITIAL_BASE_RATE` | [`v2-bold/contracts/src/Dependencies/Constants.sol:70`](v2-bold/contracts/src/Dependencies/Constants.sol#L70) | **100%**, so redemptions are uneconomic until BOLD depegs |
+| `URGENT_REDEMPTION_BONUS` | [`v2-bold/contracts/src/Dependencies/Constants.sol:73`](v2-bold/contracts/src/Dependencies/Constants.sol#L73) | 2% |
+| `UPFRONT_INTEREST_PERIOD` | [`v2-bold/contracts/src/Dependencies/Constants.sol:78`](v2-bold/contracts/src/Dependencies/Constants.sol#L78) | 7 days |
+| `INTEREST_RATE_ADJ_COOLDOWN` | [`v2-bold/contracts/src/Dependencies/Constants.sol:79`](v2-bold/contracts/src/Dependencies/Constants.sol#L79) | 7 days |
+| `SP_YIELD_SPLIT` | [`v2-bold/contracts/src/Dependencies/Constants.sol:81`](v2-bold/contracts/src/Dependencies/Constants.sol#L81) | **75% of interest to the Stability Pool** |
+| `MIN_BOLD_IN_SP` | [`v2-bold/contracts/src/Dependencies/Constants.sol:83`](v2-bold/contracts/src/Dependencies/Constants.sol#L83) | 1 BOLD |
+
+Three of these deserve attention.
+
+**`COLL_GAS_COMPENSATION_CAP = 2 ether`** ([`v2-bold/contracts/src/Dependencies/Constants.sol:41`](v2-bold/contracts/src/Dependencies/Constants.sol#L41)). In v1 the liquidator's 0.5%
+was uncapped, so liquidating a whale paid absurdly well at the borrower's
+expense. v2 caps it.
+
+**`INITIAL_BASE_RATE = 100%`** ([`v2-bold/contracts/src/Dependencies/Constants.sol:70`](v2-bold/contracts/src/Dependencies/Constants.sol#L70)). The comment says it plainly: "To
+prevent redemptions unless Bold depegs below 0.95 and allow the system to take
+off." v1's bootstrap period was a 14-day time lock; v2 instead starts the fee so
+high that redemption is unprofitable, and lets it decay.
+
+**`MAX_BATCH_SHARES_RATIO = 1e9`** ([`v2-bold/contracts/src/Dependencies/Constants.sol:60`](v2-bold/contracts/src/Dependencies/Constants.sol#L60)) with the comment at [`v2-bold/contracts/src/Dependencies/Constants.sol:55-59`](v2-bold/contracts/src/Dependencies/Constants.sol#L55-L59)
+explaining it is an explicit anti-inflation-attack bound on the batch
+debt-to-shares ratio. This is the ERC-4626 first-depositor problem appearing in a
+lending context; compare `virtualUnderlyingBalance` in
+[`../aave/AAVE-DEEP-DIVE.md`](../aave/AAVE-DEEP-DIVE.md).
+
+## 2.3 The interest rate model
+
+### Per-Trove rates
+
+Every Trove stores `annualInterestRate`. Debt accrues continuously:
+
+```
+interest = debt * annualInterestRate * timeElapsed / (ONE_YEAR * 1e18)
+```
+
+`_calcInterest` is the shared helper. Because each Trove has its own rate, there
+is no single system-wide index; interest is computed per Trove from its
+`lastDebtUpdateTime`.
+
+### The upfront fee — [`v2-bold/contracts/src/BorrowerOperations.sol:1195`](v2-bold/contracts/src/BorrowerOperations.sol#L1195)
+
+```solidity
+return _calcInterest(_debt * _avgInterestRate, UPFRONT_INTEREST_PERIOD);
+```
+
+Opening a Trove, or increasing its debt, charges **7 days of interest upfront**
+at the branch's *average* rate. This blocks a specific attack: without it, a
+borrower could open at a very low rate, sit in front of everyone in the
+redemption queue for free, and close before paying anything. Charging a week up
+front makes that round trip cost money.
+
+### The adjustment cooldown — [`v2-bold/contracts/src/BorrowerOperations.sol:539`](v2-bold/contracts/src/BorrowerOperations.sol#L539)
+
+Changing your rate within `INTEREST_RATE_ADJ_COOLDOWN` (7 days) of the last
+change costs another upfront fee. Outside the window it is free. This lets rates
+track the market while pricing rapid gaming of the redemption queue.
+
+### Where interest goes
+
+`SP_YIELD_SPLIT = 75%` ([`v2-bold/contracts/src/Dependencies/Constants.sol:81`](v2-bold/contracts/src/Dependencies/Constants.sol#L81)). Three quarters of every interest payment is
+routed to the Stability Pool as BOLD yield; the rest accrues to the protocol.
+This is the biggest economic difference from v1, where the Stability Pool earned
+only liquidation gains and LQTY emissions. In v2 the pool is a real yield-bearing
+position, which is what keeps it deep enough to absorb liquidations without token
+incentives.
+
+---
+
