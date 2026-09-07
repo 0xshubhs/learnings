@@ -938,3 +938,104 @@ market's suppliers eat it immediately. If Alice was the only supplier of
 100,000 USDC, her position is now worth 98,035.
 
 ---
+
+## 7. What this design costs
+
+The minimalism is not free. Five things Aave gives you that Morpho does not, and
+they are real.
+
+### Capital fragmentation
+
+One market is one collateral against one loan asset. WETH/USDC at `lltv = 0.86`
+and WETH/USDC at `lltv = 0.945` are **different markets with different ids and
+separate liquidity**. Aave has one USDC reserve that every collateral type
+borrows from.
+
+The practical consequence: a supplier who wants WETH/USDC exposure must pick a
+specific LLTV, and their capital sits idle if borrowers concentrate elsewhere.
+MetaMorpho exists mostly to paper over this — its `supplyQueue`
+([`metamorpho/src/MetaMorpho.sol:100`](metamorpho/src/MetaMorpho.sol#L100)) is
+literally a manual answer to "which of these fragmented markets should my money
+be in today". Aave solves the same problem structurally, for free, by not
+fragmenting.
+
+### No cross-collateral positions
+
+In Aave a user posts WETH, wstETH and WBTC, and borrows USDC against the combined
+value; `calculateUserAccountData`
+([`GenericLogic.sol:65`](../aave/aave-v3-origin/src/contracts/protocol/libraries/logic/GenericLogic.sol#L65))
+loops over every reserve the user has touched and produces one health factor.
+
+Morpho's `_isHealthy` ([`Morpho.sol:515`](morpho-blue/src/Morpho.sol#L515)) reads
+one collateral balance in one market. To replicate the Aave position you open
+three separate markets, each independently liquidatable. You lose the
+diversification benefit entirely: a WBTC crash liquidates your WBTC market even
+though your other two are massively over-collateralised.
+
+This is the sharpest trade in the whole design. Isolation is what makes
+permissionless listing safe and bad debt cheap to socialise, and it is exactly
+what costs the borrower cross-margining.
+
+### No e-mode
+
+Aave's e-mode raises LTV for correlated pairs — wstETH against WETH at 93% rather
+than 80% — via `EModeConfiguration`
+([`aave/aave-v3-origin/src/contracts/protocol/libraries/configuration/EModeConfiguration.sol`](../aave/aave-v3-origin/src/contracts/protocol/libraries/configuration/EModeConfiguration.sol)).
+Morpho's equivalent is simply *a market created at a high LLTV*, which is
+arguably cleaner. But the owner must have enabled that LLTV first
+([`Morpho.sol:113`](morpho-blue/src/Morpho.sol#L113)), and the LIF formula then
+mechanically shrinks the liquidation bounty at high LLTV — 0.6% at `lltv = 0.98`,
+per the table in §6. Thin bounties mean liquidators may not show up in a fast
+market. Aave decouples the two knobs; Morpho ties them together by design.
+
+### No supply or borrow caps
+
+Aave enforces `supplyCap` and `borrowCap` from the config bitmap in
+`validateSupply` and `validateBorrow`
+([`ValidationLogic.sol`](../aave/aave-v3-origin/src/contracts/protocol/libraries/logic/ValidationLogic.sol)).
+Morpho has none: a market accepts unbounded deposits.
+
+The cap moved up a layer. MetaMorpho's per-market `cap`
+([`metamorpho/src/MetaMorpho.sol:273`](metamorpho/src/MetaMorpho.sol#L273))
+limits how much *that vault* will put in, but nothing limits the market itself.
+For a direct supplier there is no protection at all against a market growing
+past the depth its oracle and liquidator set can support.
+
+### No pause, no freeze, no emergency anything
+
+There is no admin function to halt a market. Aave has `setReservePause` and
+`setReserveFreeze` in `PoolConfigurator`, and a whole guardian role to use them.
+Morpho's owner can do exactly four things
+([`Morpho.sol:95-145`](morpho-blue/src/Morpho.sol#L95-L145)): transfer ownership,
+*enable* an IRM, *enable* an LLTV, and set the fee (capped at 25%) and its
+recipient. Note what is missing: there is no `disableIrm`, no `disableLltv`.
+Enabling is monotonic — once an LLTV is allowed, anyone can create markets at it
+forever.
+
+If an oracle breaks, nobody can stop the market. Suppliers can withdraw whatever
+liquidity is not borrowed, and that is the entire remedy. This is a deliberate
+choice — immutability is the product — but it means the failure mode is *loss*
+rather than *pause*.
+
+### The scoreboard
+
+| | Aave v3 | Morpho Blue |
+|---|---|---|
+| Listing | DAO vote | permissionless |
+| Cross-collateral | yes | no |
+| e-mode | yes | via high-LLTV markets |
+| Caps | supply + borrow | none in core |
+| Pause / freeze | yes | none |
+| Bad debt | deficit + Umbrella | instant socialisation |
+| Close factor | 50% or 100% | none |
+| Rate model | admin-swappable per reserve | fixed per market, chosen at creation |
+| Oracle validation | in `AaveOracle` | entirely in the oracle contract |
+| Upgradeable | yes, proxies throughout | no |
+| Core size | ~10,000 lines | 557 lines |
+
+Read that table twice. Almost every "no" in the right column is a feature that
+was moved rather than deleted — to MetaMorpho, to the oracle contract, to the
+IRM, or to the user's own judgement. The genuine deletions are cross-collateral,
+caps, and the pause switch.
+
+---
