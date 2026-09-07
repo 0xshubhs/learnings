@@ -1145,3 +1145,207 @@ Roles at [`:228-235`](core/contracts/0.8.9/oracle/ValidatorsExitBus.sol#L228-L23
 | `MAX_EFFECTIVE_BALANCE_WEIGHT_WC_TYPE_01/02()` | [`:302`](core/contracts/0.8.9/oracle/ValidatorsExitBus.sol#L302), [`:307`](core/contracts/0.8.9/oracle/ValidatorsExitBus.sol#L307) | Read through to the sanity checker. |
 
 ---
+## 9. Withdrawals
+
+Unstaking is asynchronous: ETH has to come off the beacon chain first. The queue
+makes the wait explicit and, importantly, makes each position transferable.
+
+### 9.1 `WithdrawalQueueBase`
+
+[`core/contracts/0.8.9/WithdrawalQueueBase.sol`](core/contracts/0.8.9/WithdrawalQueueBase.sol) — 596 lines.
+
+**Storage**, all unstructured, at
+[`:28-44`](core/contracts/0.8.9/WithdrawalQueueBase.sol#L28-L44): `QUEUE_POSITION`,
+`LAST_REQUEST_ID_POSITION`, `LAST_FINALIZED_REQUEST_ID_POSITION`,
+`CHECKPOINTS_POSITION`, `LAST_CHECKPOINT_INDEX_POSITION`,
+`LOCKED_ETHER_AMOUNT_POSITION`, `REQUEST_BY_OWNER_POSITION`,
+`LAST_REPORT_TIMESTAMP_POSITION`. These use inline `keccak256("...")` rather than
+precomputed literals.
+
+**`WithdrawalRequest`** [`:46`](core/contracts/0.8.9/WithdrawalQueueBase.sol#L46)
+stores *cumulative* stETH and shares, not per-request amounts. A single request's
+size is the difference between it and its predecessor, which is what
+`_calcBatch` ([`:534`](core/contracts/0.8.9/WithdrawalQueueBase.sol#L534))
+computes. That is why index 0 is a zero-filled sentinel, created by
+`_initializeQueue` ([`:517`](core/contracts/0.8.9/WithdrawalQueueBase.sol#L517))
+so that `_requestId - 1` never underflows.
+
+**`Checkpoint`** [`:62`](core/contracts/0.8.9/WithdrawalQueueBase.sol#L62) records
+`fromRequestId` and `maxShareRate`. Finalisation appends a checkpoint rather than
+writing to every request, so finalising a million requests is O(1).
+
+### 9.2 The discount mechanism
+
+This is the part worth understanding. A request is created at today's share rate,
+but if the protocol loses value before it is finalised, paying out at the
+original rate would let exiting users escape the loss at the expense of everyone
+who stayed.
+
+`_calculateClaimableEther` — [`:484`](core/contracts/0.8.9/WithdrawalQueueBase.sol#L484):
+
+```solidity
+(uint256 batchShareRate, uint256 eth, uint256 shares) = _calcBatch(prevRequest, _request);
+
+if (batchShareRate > checkpoint.maxShareRate) {
+    eth = shares * checkpoint.maxShareRate / E27_PRECISION_BASE;
+}
+return eth;
+```
+
+If the request's own rate exceeds the rate the batch was finalised at, the payout
+is recomputed at the **checkpoint's** rate. Requests are never paid *more* than
+the protocol could afford at finalisation, and never less than their own rate
+either. The loss lands on whoever was in the queue when it happened, which is the
+correct place for it.
+
+The hint machinery exists because finding the right checkpoint by binary search
+on chain would be expensive. `_findCheckpointHint`
+([`:418`](core/contracts/0.8.9/WithdrawalQueueBase.sol#L418)) does the search;
+callers normally precompute it off chain via `findCheckpointHints` and pass it
+in. A wrong hint reverts `InvalidHint(_hint)`, and the range check at
+[`:497-505`](core/contracts/0.8.9/WithdrawalQueueBase.sol#L497-L505) is what makes
+passing a hint safe rather than trusting.
+
+| Function | Line | Purpose |
+|---|---|---|
+| `getLastRequestId` / `getLastFinalizedRequestId` | [`:116`](core/contracts/0.8.9/WithdrawalQueueBase.sol#L116), [`:122`](core/contracts/0.8.9/WithdrawalQueueBase.sol#L122) | Queue head and finalisation frontier. |
+| `getLockedEtherAmount` | [`:127`](core/contracts/0.8.9/WithdrawalQueueBase.sol#L127) | ETH reserved for finalised requests. |
+| `unfinalizedRequestNumber` / `unfinalizedStETH` | [`:138`](core/contracts/0.8.9/WithdrawalQueueBase.sol#L138), [`:143`](core/contracts/0.8.9/WithdrawalQueueBase.sol#L143) | Outstanding demand; read by `Accounting`. |
+| `calculateFinalizationBatches(...)` | [`:215`](core/contracts/0.8.9/WithdrawalQueueBase.sol#L215) | Off-chain helper producing the batch split, using `BatchesCalculationState` [`:179`](core/contracts/0.8.9/WithdrawalQueueBase.sol#L179). |
+| `prefinalize(uint256[],uint256)` | [`:293`](core/contracts/0.8.9/WithdrawalQueueBase.sol#L293) | Prices a proposed finalisation without executing it. |
+| `_finalize(...)` | [`:332`](core/contracts/0.8.9/WithdrawalQueueBase.sol#L332) | Appends the checkpoint, moves the frontier, locks ETH. |
+| `_enqueue(uint128,uint128,address)` | [`:364`](core/contracts/0.8.9/WithdrawalQueueBase.sol#L364) | Appends a request with cumulative sums. |
+| `_getStatus(uint256)` | [`:393`](core/contracts/0.8.9/WithdrawalQueueBase.sol#L393) | Returns `WithdrawalRequestStatus` [`:68`](core/contracts/0.8.9/WithdrawalQueueBase.sol#L68). |
+| `_claim(uint256,uint256,address)` | [`:460`](core/contracts/0.8.9/WithdrawalQueueBase.sol#L460) | Marks claimed and sends ETH. |
+| `_sendValue(address,uint256)` | [`:525`](core/contracts/0.8.9/WithdrawalQueueBase.sol#L525) | Raw call with full gas, so contract recipients work. |
+
+### 9.3 `WithdrawalQueue`
+
+[`core/contracts/0.8.9/WithdrawalQueue.sol`](core/contracts/0.8.9/WithdrawalQueue.sol) — 415 lines.
+
+Roles at [`:46-49`](core/contracts/0.8.9/WithdrawalQueue.sol#L46-L49): `PAUSE_ROLE`,
+`RESUME_ROLE`, `FINALIZE_ROLE` (held by `Lido`), `ORACLE_ROLE`.
+
+| Function | Line | Notes |
+|---|---|---|
+| `requestWithdrawals(uint256[],address)` | [`:125`](core/contracts/0.8.9/WithdrawalQueue.sol#L125) | Batch request in stETH. |
+| `requestWithdrawalsWstETH(uint256[],address)` | [`:144`](core/contracts/0.8.9/WithdrawalQueue.sol#L144) | Unwraps first. |
+| `requestWithdrawalsWithPermit(...)` | [`:171`](core/contracts/0.8.9/WithdrawalQueue.sol#L171) | Permit plus request in one transaction. |
+| `requestWithdrawalsWstETHWithPermit(...)` | [`:186`](core/contracts/0.8.9/WithdrawalQueue.sol#L186) | Same for wstETH. |
+| `getWithdrawalRequests(address)` | [`:201`](core/contracts/0.8.9/WithdrawalQueue.sol#L201) | Ids owned by an address. |
+| `getWithdrawalStatus(uint256[])` | [`:207`](core/contracts/0.8.9/WithdrawalQueue.sol#L207) | Statuses in bulk. |
+| `getClaimableEther(uint256[],uint256[])` | [`:223`](core/contracts/0.8.9/WithdrawalQueue.sol#L223) | Payouts, given hints. |
+| `claimWithdrawals` / `claimWithdrawalsTo` / `claimWithdrawal` | [`:266`](core/contracts/0.8.9/WithdrawalQueue.sol#L266), [`:244`](core/contracts/0.8.9/WithdrawalQueue.sol#L244), [`:284`](core/contracts/0.8.9/WithdrawalQueue.sol#L284) | The single-id form searches for its own hint, so it costs more gas. |
+| `findCheckpointHints(uint256[],uint256,uint256)` | [`:298`](core/contracts/0.8.9/WithdrawalQueue.sol#L298) | The off-chain helper. |
+| `onOracleReport(bool,uint256,uint256)` | [`:319`](core/contracts/0.8.9/WithdrawalQueue.sol#L319) | Sets bunker mode. |
+| `isBunkerModeActive` / `bunkerModeSinceTimestamp` | [`:346`](core/contracts/0.8.9/WithdrawalQueue.sol#L346), [`:352`](core/contracts/0.8.9/WithdrawalQueue.sol#L352) | Bunker mode halts new deposits and changes finalisation, so a mass-slashing event cannot be exited around. |
+
+### 9.4 `WithdrawalQueueERC721`
+
+[`core/contracts/0.8.9/WithdrawalQueueERC721.sol`](core/contracts/0.8.9/WithdrawalQueueERC721.sol) — 394 lines.
+
+Makes each request an NFT, so a queue position can be sold rather than waited
+out. Implements ERC-721 plus ERC-4906 metadata updates
+([`IERC4906`](core/contracts/0.8.9/interfaces/IERC4906.sol)) and supplies the
+`_emitTransfer` hook that `WithdrawalQueue` declares abstract at
+[`:357`](core/contracts/0.8.9/WithdrawalQueue.sol#L357). `tokenURI` is delegated
+to a swappable descriptor contract.
+
+### 9.5 `WithdrawalVault`
+
+[`core/contracts/0.8.9/WithdrawalVault.sol`](core/contracts/0.8.9/WithdrawalVault.sol) — 225 lines,
+plus [`WithdrawalVaultEIP7685.sol`](core/contracts/0.8.9/WithdrawalVaultEIP7685.sol) — 132 lines.
+
+Holds ETH arriving from beacon-chain withdrawals until a report moves it. Only
+`Lido` may call `withdrawWithdrawals`. The EIP-7685 half encodes execution-layer
+withdrawal and consolidation requests, which is how v3 triggers exits without
+operator cooperation.
+
+Related: [`LidoExecutionLayerRewardsVault`](core/contracts/0.8.9/LidoExecutionLayerRewardsVault.sol)
+— 123 lines, the same pattern for MEV and priority fees, drained by
+`withdrawRewards`.
+
+---
+
+## 10. `Burner`, vaults and reward sinks
+
+[`core/contracts/0.8.9/Burner.sol`](core/contracts/0.8.9/Burner.sol) — 468 lines.
+
+Burning shares raises the share rate for everyone else, so it is how Lido applies
+a *negative* correction. Two categories are tracked separately: **cover** burns,
+which offset a loss such as slashing, and **non-cover** burns, mainly withdrawal
+finalisation.
+
+Roles: `REQUEST_BURN_MY_STETH_ROLE` and `REQUEST_BURN_SHARES_ROLE` at
+[`:91-92`](core/contracts/0.8.9/Burner.sol#L91-L92).
+
+| Function | Line | Notes |
+|---|---|---|
+| `requestBurnMyStETHForCover(uint256)` | [`:209`](core/contracts/0.8.9/Burner.sol#L209) | Caller's own stETH, cover. |
+| `requestBurnSharesForCover(address,uint256)` | [`:226`](core/contracts/0.8.9/Burner.sol#L226) | Pulls from another holder, cover. |
+| `requestBurnMyShares(uint256)` | [`:244`](core/contracts/0.8.9/Burner.sol#L244) | Own shares, non-cover. |
+| `requestBurnMyStETH(uint256)` | [`:261`](core/contracts/0.8.9/Burner.sol#L261) | Own stETH, non-cover. |
+| `requestBurnShares(address,uint256)` | [`:278`](core/contracts/0.8.9/Burner.sol#L278) | The one `Accounting` uses for the withdrawal queue. |
+| `commitSharesToBurn(uint256)` | [`:349`](core/contracts/0.8.9/Burner.sol#L349) | Only `Accounting`. Executes the burn during a report so it lands atomically with the rebase. |
+| `getSharesRequestedToBurn()` | [`:398`](core/contracts/0.8.9/Burner.sol#L398) | Pending cover and non-cover. |
+| `getCoverSharesBurnt` / `getNonCoverSharesBurnt` | [`:413`](core/contracts/0.8.9/Burner.sol#L413), [`:420`](core/contracts/0.8.9/Burner.sol#L420) | Lifetime totals. |
+| `getExcessStETH()` | [`:427`](core/contracts/0.8.9/Burner.sol#L427) | stETH beyond what is requested; recoverable. |
+| `recoverExcessStETH` / `recoverERC20` / `recoverERC721` | [`:288`](core/contracts/0.8.9/Burner.sol#L288), [`:314`](core/contracts/0.8.9/Burner.sol#L314), [`:330`](core/contracts/0.8.9/Burner.sol#L330) | Rescue paths for tokens sent by mistake. |
+| `migrate(address _oldBurner)` | [`:174`](core/contracts/0.8.9/Burner.sol#L174) | One-shot import of the v2 burner's counters, guarded by `isMigrationAllowed`. |
+
+**Separating the two counters matters.** Cover burns are funded by insurance or
+the DAO to absorb a loss; non-cover burns are the ordinary consequence of
+withdrawals. Collapsing them would make it impossible to tell, after the fact,
+whether the share rate rose because users left or because a loss was covered.
+
+Also here: [`TokenRateNotifier`](core/contracts/0.8.9/TokenRateNotifier.sol) (202
+lines) fans rebase notifications out to registered observers such as L2 bridges,
+via [`ITokenRatePusher`](core/contracts/0.8.9/interfaces/ITokenRatePusher.sol) and
+[`ITokenRatePusherWithArgs`](core/contracts/0.8.9/interfaces/ITokenRatePusherWithArgs.sol).
+[`OracleDaemonConfig`](core/contracts/0.8.9/OracleDaemonConfig.sol) (85 lines) is
+a role-gated key-value store the off-chain daemon reads for its parameters.
+
+---
+
+## 11. `DepositSecurityModule` and depositing
+
+[`core/contracts/0.8.9/DepositSecurityModule.sol`](core/contracts/0.8.9/DepositSecurityModule.sol) — 598 lines.
+
+**The attack this exists to stop.** Lido deposits 32 ETH batches against
+operator-supplied keys. If an operator front-runs the deposit and registers the
+same public key with *their own* withdrawal credentials first, the 32 ETH is
+theirs. The deposit contract cannot distinguish the two. So Lido will not deposit
+unless a quorum of guardians signs off that the deposit root has not changed.
+
+Two immutable prefixes bind signatures to purpose, built in the constructor at
+[`:119-131`](core/contracts/0.8.9/DepositSecurityModule.sol#L119-L131):
+`ATTEST_MESSAGE_PREFIX` [`:78`](core/contracts/0.8.9/DepositSecurityModule.sol#L78)
+and `PAUSE_MESSAGE_PREFIX` [`:80`](core/contracts/0.8.9/DepositSecurityModule.sol#L80).
+Each is a keccak over a domain string plus the chain id, so a signature cannot be
+replayed onto another network or repurposed between the two flows.
+
+| Function | Line | Access |
+|---|---|---|
+| `getOwner` / `setOwner(address)` | [`:156`](core/contracts/0.8.9/DepositSecurityModule.sol#L156), [`:170`](core/contracts/0.8.9/DepositSecurityModule.sol#L170) | owner |
+| `getPauseIntentValidityPeriodBlocks` / setter | [`:184`](core/contracts/0.8.9/DepositSecurityModule.sol#L184), [`:193`](core/contracts/0.8.9/DepositSecurityModule.sol#L193) | owner. Bounds how stale a pause signature may be. |
+| `getMaxOperatorsPerUnvetting` / setter | [`:207`](core/contracts/0.8.9/DepositSecurityModule.sol#L207), [`:216`](core/contracts/0.8.9/DepositSecurityModule.sol#L216) | owner |
+| `getGuardianQuorum` / `setGuardianQuorum` | [`:230`](core/contracts/0.8.9/DepositSecurityModule.sol#L230), [`:239`](core/contracts/0.8.9/DepositSecurityModule.sol#L239) | owner |
+| `getGuardians` / `isGuardian` / `getGuardianIndex` | [`:256`](core/contracts/0.8.9/DepositSecurityModule.sol#L256), [`:265`](core/contracts/0.8.9/DepositSecurityModule.sol#L265), [`:279`](core/contracts/0.8.9/DepositSecurityModule.sol#L279) | view |
+| `addGuardian` / `addGuardians` / `removeGuardian` | [`:294`](core/contracts/0.8.9/DepositSecurityModule.sol#L294), [`:306`](core/contracts/0.8.9/DepositSecurityModule.sol#L306), [`:332`](core/contracts/0.8.9/DepositSecurityModule.sol#L332) | owner |
+| `pauseDeposits(uint256 blockNumber, Signature)` | [`:368`](core/contracts/0.8.9/DepositSecurityModule.sol#L368) | **any single guardian**. Hashes `PAUSE_MESSAGE_PREFIX ‖ blockNumber` ([`:379`](core/contracts/0.8.9/DepositSecurityModule.sol#L379)) and pauses on one valid signature. |
+| `unpauseDeposits()` | [`:396`](core/contracts/0.8.9/DepositSecurityModule.sol#L396) | owner only |
+
+**The asymmetry is deliberate.** One guardian can halt deposits; only the owner
+can resume them. Stopping is cheap and reversible, so it is made easy; restarting
+is a decision, so it is made hard. Pausing is also bounded by
+`pauseIntentValidityPeriodBlocks`, which stops an old signature being replayed
+later to cause a denial of service.
+
+Depositing itself runs through
+[`BeaconChainDepositor`](core/contracts/0.8.25/lib/BeaconChainDepositor.sol) (160
+lines), which builds the call to the vendored
+[`deposit_contract.sol`](core/contracts/0.6.11/deposit_contract.sol) (178 lines).
+On Sepolia the deposit contract differs, hence
+[`SepoliaDepositAdapter`](core/contracts/tooling/sepolia/SepoliaDepositAdapter.sol).
+
+---
