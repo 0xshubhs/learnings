@@ -1231,3 +1231,116 @@ MetaMorpho depends on this library directly — `totalAssets()` sums
 `expectedSupplyAssets` across its withdraw queue
 ([`metamorpho/src/MetaMorpho.sol:589-593`](metamorpho/src/MetaMorpho.sol#L589-L593)).
 
+---
+
+<a id="6-morpho-blue-interfaces-and-mocks"></a>
+## 6. Morpho Blue interfaces and mocks
+
+Five interfaces, five mocks. All ten are listed here; none is skipped.
+
+### 6.1 `IMorpho.sol` — the full surface
+
+[`morpho-blue/src/interfaces/IMorpho.sol`](morpho-blue/src/interfaces/IMorpho.sol), 355 lines,
+the largest file in the repo — larger than half of `Morpho.sol` itself, because it carries all
+the NatSpec.
+
+Three interfaces in a deliberate hierarchy:
+
+| Interface | Line | Purpose |
+|---|---|---|
+| `IMorphoBase` | [`:51`](morpho-blue/src/interfaces/IMorpho.sol#L51) | everything except the two struct getters |
+| `IMorphoStaticTyping` | [`:277`](morpho-blue/src/interfaces/IMorpho.sol#L277) | adds `position`/`market`/`idToMarketParams` returning **flattened tuples** |
+| `IMorpho` | [`:322`](morpho-blue/src/interfaces/IMorpho.sol#L322) | adds the same three returning **structs** |
+
+`Morpho.sol` implements `IMorphoStaticTyping`
+([`Morpho.sol:24`](morpho-blue/src/Morpho.sol#L24)) because Solidity's auto-generated public
+mapping getters return tuples, not structs. `IMorpho` exists purely for integrator ergonomics: it
+is ABI-compatible with the same deployed bytecode, but lets callers write
+`morpho.market(id).totalSupplyAssets` instead of destructuring six values. The comment at
+[`:271-276`](morpho-blue/src/interfaces/IMorpho.sol#L271-L276) explains the split.
+
+### 6.2 `IIrm.sol`
+
+[`morpho-blue/src/interfaces/IIrm.sol`](morpho-blue/src/interfaces/IIrm.sol), 19 lines, two
+functions:
+
+| Function | Mutability | Called from |
+|---|---|---|
+| `borrowRate(MarketParams, Market)` | **non-view** | `_accrueInterest` [`Morpho.sol:488`](morpho-blue/src/Morpho.sol#L488), `createMarket` [`:163`](morpho-blue/src/Morpho.sol#L163) |
+| `borrowRateView(MarketParams, Market)` | `view` | `MorphoBalancesLib` [`:44`](morpho-blue/src/libraries/periphery/MorphoBalancesLib.sol#L44) |
+
+The dual signature is the whole reason a stateful IRM is possible. Morpho's production
+`AdaptiveCurveIrm` (a separate repo, not cloned here) keeps per-market rate state that drifts
+toward a target utilisation, updating it in `borrowRate` and simulating it in `borrowRateView`.
+The rate is returned as **per-second, WAD-scaled**, which is what `wTaylorCompounded` expects.
+
+Nothing in Blue validates the returned rate. An IRM returning `type(uint256).max` would overflow
+`x * n` in `wTaylorCompounded` and revert, which fails safe.
+
+### 6.3 `IOracle.sol`
+
+[`morpho-blue/src/interfaces/IOracle.sol`](morpho-blue/src/interfaces/IOracle.sol), 15 lines, one
+function:
+
+```solidity
+function price() external view returns (uint256);
+```
+
+The docstring at [`:11-13`](morpho-blue/src/interfaces/IOracle.sol#L11-L13) specifies the
+contract: the price of 1 asset of collateral quoted in loan token, scaled by
+`1e36 + loanDecimals - collateralDecimals`. All decimal handling is pushed into the oracle, which
+is why `_isHealthy` can divide by a single constant.
+
+**The entire oracle interface is one view function.** No round id, no timestamp, no staleness
+data, no min/max bounds. Blue cannot check staleness because the interface gives it nothing to
+check. This is a deliberate transfer of responsibility to the market creator and, transitively,
+to the suppliers who choose that market.
+
+### 6.4 `IMorphoCallbacks.sol`
+
+[`morpho-blue/src/interfaces/IMorphoCallbacks.sol`](morpho-blue/src/interfaces/IMorphoCallbacks.sol),
+52 lines, five single-function interfaces:
+
+| Interface | Callback | Invoked from |
+|---|---|---|
+| `IMorphoLiquidateCallback` | `onMorphoLiquidate(repaidAssets, data)` | [`Morpho.sol:412`](morpho-blue/src/Morpho.sol#L412) |
+| `IMorphoRepayCallback` | `onMorphoRepay(assets, data)` | [`:293`](morpho-blue/src/Morpho.sol#L293) |
+| `IMorphoSupplyCallback` | `onMorphoSupply(assets, data)` | [`:192`](morpho-blue/src/Morpho.sol#L192) |
+| `IMorphoSupplyCollateralCallback` | `onMorphoSupplyCollateral(assets, data)` | [`:317`](morpho-blue/src/Morpho.sol#L317) |
+| `IMorphoFlashLoanCallback` | `onMorphoFlashLoan(assets, data)` | [`:429`](morpho-blue/src/Morpho.sol#L429) |
+
+Note the pattern: callbacks exist on exactly the four operations where Blue **pulls** tokens from
+the caller, plus the flash loan. `borrow`, `withdraw` and `withdrawCollateral` push tokens out and
+need no callback.
+
+None returns a value or a magic selector, unlike ERC-3156's
+`keccak256("ERC3156FlashBorrower.onFlashLoan")` handshake. Blue does not need one, because the
+trailing `transferFrom` is the real enforcement.
+
+### 6.5 `IERC20.sol` — the empty interface
+
+[`morpho-blue/src/interfaces/IERC20.sol`](morpho-blue/src/interfaces/IERC20.sol), 9 lines:
+
+```solidity
+/// @dev Empty because we only call functions in assembly. It prevents calling
+/// transfer (transferFrom) instead of safeTransfer (safeTransferFrom).
+interface IERC20 {}
+```
+
+Discussed in §2.5. A deliberately empty type used to make a mistake uncompilable.
+
+### 6.6 Mocks
+
+| File | Lines | What it is |
+|---|---|---|
+| [`ERC20Mock.sol`](morpho-blue/src/mocks/ERC20Mock.sol) | 52 | minimal ERC-20 with a `setBalance` cheat |
+| [`OracleMock.sol`](morpho-blue/src/mocks/OracleMock.sol) | 12 | `setPrice` / `price` |
+| [`IrmMock.sol`](morpho-blue/src/mocks/IrmMock.sol) | 25 | utilisation-proportional rate, for tests |
+| [`FlashBorrowerMock.sol`](morpho-blue/src/mocks/FlashBorrowerMock.sol) | 24 | round-trips a flash loan |
+| [`mocks/interfaces/IERC20.sol`](morpho-blue/src/mocks/interfaces/IERC20.sol) | 24 | a *real* ERC-20 interface, usable because mocks are not called through `SafeTransferLib` |
+
+`IrmMock.borrowRate` at
+[`IrmMock.sol:22-24`](morpho-blue/src/mocks/IrmMock.sol#L22-L24) is `pure` despite the interface
+declaring it non-view, which is legal (a `pure` function satisfies a non-view signature) and
+confirms that stateless IRMs are supported.
+
