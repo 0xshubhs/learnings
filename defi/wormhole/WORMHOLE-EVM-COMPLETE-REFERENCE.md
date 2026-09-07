@@ -1793,3 +1793,296 @@ Mints appear as `Transfer(address(0), to, amount)` and burns as
 `Transfer(from, address(0), amount)`.
 
 ---
+
+## 22. Revert decoder
+
+### Core — revert strings
+
+The core predates custom errors and uses strings throughout.
+
+| String | Thrown at | Cause |
+|---|---|---|
+| `VM version incompatible` | [`Messages.sol:157`](wormhole/ethereum/contracts/Messages.sol#L157) | First byte is not 1 |
+| `too many guardians` | [`Messages.sol:215`](wormhole/ethereum/contracts/Messages.sol#L215) | `quorum` called with ≥ 256 |
+| `ecrecover failed with signature` | [`Messages.sol:119`](wormhole/ethereum/contracts/Messages.sol#L119) | Malformed `(v,r,s)` |
+| `signature indices must be ascending` | [`Messages.sol:122`](wormhole/ethereum/contracts/Messages.sol#L122) | Out-of-order or duplicated guardian index |
+| `guardian index out of bounds` | [`Messages.sol:131`](wormhole/ethereum/contracts/Messages.sol#L131) | Index ≥ guardian count |
+| `Invalid key` | [`Setters.sol:20`](wormhole/ethereum/contracts/Setters.sol#L20) | A guardian set contains `address(0)` |
+| `invalid evmChainId` | [`Setters.sol:54`](wormhole/ethereum/contracts/Setters.sol#L54) | Value does not equal `block.chainid` |
+| `invalid fee` | [`Implementation.sol:21`](wormhole/ethereum/contracts/Implementation.sol#L21) | `msg.value != messageFee()`, including overpayment |
+| `Unknown chain id.` | [`Implementation.sol:57`](wormhole/ethereum/contracts/Implementation.sol#L57) | `initialize` on a chain not in the hardcoded list |
+| `already initialized` | [`Implementation.sol:69`](wormhole/ethereum/contracts/Implementation.sol#L69) | Second `initialize` for one implementation |
+| `unsupported` | [`Implementation.sol:77`](wormhole/ethereum/contracts/Implementation.sol#L77) | Unknown selector |
+| `the Wormhole contract does not accept assets` | [`Implementation.sol:79`](wormhole/ethereum/contracts/Implementation.sol#L79) | Plain ETH send |
+| `no guardians specified` | [`Setup.sol:20`](wormhole/ethereum/contracts/Setup.sol#L20) | Empty initial set |
+| `invalid fork` | [`Governance.sol:28`](wormhole/ethereum/contracts/Governance.sol#L28) | Upgrade attempted on a fork |
+| `not a fork` | [`Governance.sol:147`](wormhole/ethereum/contracts/Governance.sol#L147) | `submitRecoverChainId` on a healthy chain |
+| `Invalid Module` / `invalid Module` | [`Governance.sol:39`](wormhole/ethereum/contracts/Governance.sol#L39), [`:89`](wormhole/ethereum/contracts/Governance.sol#L89), [`:128`](wormhole/ethereum/contracts/Governance.sol#L128), [`:158`](wormhole/ethereum/contracts/Governance.sol#L158) | Module is not `"Core"`. **Capitalization is inconsistent between handlers** |
+| `Invalid Chain` / `invalid Chain` | [`Governance.sol:42`](wormhole/ethereum/contracts/Governance.sol#L42), [`:67`](wormhole/ethereum/contracts/Governance.sol#L67), [`:92`](wormhole/ethereum/contracts/Governance.sol#L92), [`:131`](wormhole/ethereum/contracts/Governance.sol#L131) | Wrong target chain |
+| `invalid EVM Chain` | [`Governance.sol:161`](wormhole/ethereum/contracts/Governance.sol#L161) | `evmChainId != block.chainid` |
+| `new guardian set is empty` | [`Governance.sol:96`](wormhole/ethereum/contracts/Governance.sol#L96) | Rotation to zero guardians |
+| `index must increase in steps of 1` | [`Governance.sol:99`](wormhole/ethereum/contracts/Governance.sol#L99) | Non-consecutive set index |
+| `invalid ContractUpgrade` | [`GovernanceStructs.sol:73`](wormhole/ethereum/contracts/GovernanceStructs.sol#L73), [`:81`](wormhole/ethereum/contracts/GovernanceStructs.sol#L81) | Wrong action byte, or trailing bytes |
+| `invalid GuardianSetUpgrade` | [`GovernanceStructs.sol:94`](wormhole/ethereum/contracts/GovernanceStructs.sol#L94), [`:115`](wormhole/ethereum/contracts/GovernanceStructs.sol#L115) | Same |
+| `invalid SetMessageFee` | [`GovernanceStructs.sol:128`](wormhole/ethereum/contracts/GovernanceStructs.sol#L128), [`:136`](wormhole/ethereum/contracts/GovernanceStructs.sol#L136) | Same |
+| `invalid TransferFees` | [`GovernanceStructs.sol:149`](wormhole/ethereum/contracts/GovernanceStructs.sol#L149), [`:160`](wormhole/ethereum/contracts/GovernanceStructs.sol#L160) | Same |
+| `invalid RecoverChainId` | [`GovernanceStructs.sol:173`](wormhole/ethereum/contracts/GovernanceStructs.sol#L173), [`:181`](wormhole/ethereum/contracts/GovernanceStructs.sol#L181) | Same |
+
+### Core — non-reverting failure reasons
+
+`parseAndVerifyVM` returns these in `reason` rather than reverting: `"vm.hash
+doesn't match body"`, `"invalid guardian set"`, `"guardian set has expired"`,
+`"no quorum"`, `"VM signature invalid"`, `"not signed by current guardian set"`,
+`"wrong governance chain"`, `"wrong governance contract"`, `"governance action
+already consumed"`.
+
+**An integrator that ignores the returned `valid` flag accepts every one of
+these.** The function does not revert.
+
+### Token bridge — custom errors
+
+Twenty-two in `Bridge` at
+[`:56-108`](wormhole/ethereum/contracts/bridge/Bridge.sol#L56-L108) and fourteen
+in `BridgeGovernance` at
+[`:29-44`](wormhole/ethereum/contracts/bridge/BridgeGovernance.sol#L29-L44).
+
+| Error | Cause |
+|---|---|
+| `BridgePaused()` | Any `notPaused` entry point while paused |
+| `NotPauser()` / `NotFreezer()` / `NotUnpauser()` | Role unassigned, or caller mismatch |
+| `NotPaused()` | `unpause` / `unpauseExpired` while not paused |
+| `NotExpired()` | `unpauseExpired` before `pauseExpiry` |
+| `PauseNotExtended()` | `pause` that would not push the expiry forward |
+| `InsufficientFee()` | `msg.value <= wormholeFee` on an ETH transfer |
+| `FeeExceedsAmount()` | Arbiter fee greater than the amount |
+| `InvalidEmitter()` | VAA not from a registered peer bridge |
+| `WrappedAssetNotFound()` | No wrapper for that `(chain, token)` |
+| `OnlyForeignTokens()` | `createWrapped` for a local token |
+| `WrappedAssetAlreadyExists()` | Duplicate `createWrapped` |
+| `InvalidEVMAddress()` | 32-byte address with non-zero high bytes |
+| `InvalidSender()` | Payload-3 redeemed by someone other than the recipient |
+| `TransferAlreadyCompleted()` | Replayed VAA |
+| `InvalidTargetChain()` | `toChain` is not this chain |
+| `OnlyWETH()` | Unwrap path with a non-WETH token |
+| `OutstandingExceedsMax()` | Outbound would exceed `type(uint64).max` |
+| `InvalidAssetMeta()` / `InvalidTransferPayload()` / `InvalidPayloadId()` | Malformed payload |
+| `InvalidImplementationAddress()` / `InvalidEvmChainId()` | From `BridgeSetters` |
+| `InvalidChainId()` / `ChainAlreadyRegistered()` / `WrongChainId()` / `WrongLength()` / `WrongModule()` / `WrongAction()` | Governance parsing |
+| `InvalidFork()` / `NotAFork()` / `InvalidEVMChain()` | Fork state mismatch |
+| `WrongGovernanceChain()` / `WrongGovernanceContract()` / `GovernanceActionConsumed()` | Governance authentication |
+| `InitializeFailed(bytes reason)` | The delegatecalled `initialize()` reverted; carries the inner reason |
+| `InvalidAddressLength()` | `SetPauserAddresses` length not 0 or 20 |
+
+`AlreadyInitialized()` is declared separately in `BridgeImplementation` at
+[`:13`](wormhole/ethereum/contracts/bridge/BridgeImplementation.sol#L13).
+
+### `BytesLib`
+
+`slice_overflow`, `slice_outOfBounds`, `toAddress_outOfBounds`,
+`toUint8_outOfBounds`, `toUint16_outOfBounds`, `toUint32_outOfBounds`,
+`toUint64_outOfBounds`, `toUint96_outOfBounds`, `toUint128_outOfBounds`,
+`toUint256_outOfBounds`, `toBytes32_outOfBounds`. Seeing any of these means a
+truncated or malformed payload.
+
+---
+
+## 23. Chain ID registry
+
+Wormhole chain ids are protocol-internal and unrelated to EIP-155. The only
+in-repo mapping is the backfill table in
+[`Implementation.initialize`](wormhole/ethereum/contracts/Implementation.sol#L40-L58):
+
+| Wormhole ID | Chain | EVM chain id |
+|---|---|---|
+| 2 | Ethereum | 1 |
+| 4 | BSC | 56 |
+| 5 | Polygon | 137 |
+| 6 | Avalanche | 43114 |
+| 7 | Oasis | 42262 |
+| 9 | Aurora | 1313161554 |
+| 10 | Fantom | 250 |
+| 11 | Karura | 686 |
+| 12 | Acala | 787 |
+| 13 | Klaytn | 8217 |
+| 14 | Celo | 42220 |
+| 16 | Moonbeam | 1284 |
+| 17 | Neon | 245022934 |
+| 23 | Arbitrum | 42161 |
+| 24 | Optimism | 10 |
+| 25 | Gnosis | 100 |
+
+Chain **1 is Solana**, which never appears in this table because it is not EVM.
+It is referenced by number in the NFT bridge's SPL cache branches at
+[`nft/NFTBridge.sol:42`](wormhole/ethereum/contracts/nft/NFTBridge.sol#L42),
+[`:55`](wormhole/ethereum/contracts/nft/NFTBridge.sol#L55) and
+[`:136`](wormhole/ethereum/contracts/nft/NFTBridge.sol#L136).
+
+This list is a historical backfill, not the live registry. Chains added after it
+was written set `evmChainId` through `setup` instead. Treat it as a snapshot.
+
+---
+
+## 24. Use-case index
+
+### Publish a message
+
+```
+yourContract
+  └─► Wormhole.publishMessage{value: messageFee()}(nonce, payload, consistencyLevel)   Implementation.sol:15
+        ├─ require(msg.value == messageFee())                                          :21
+        ├─ useSequence(msg.sender)  ── nextSequence / setNextSequence                   :28-31
+        └─ emit LogMessagePublished(sender, sequence, nonce, payload, level)            :25
+```
+
+Read `messageFee()` first: the check is exact equality, so a stale fee reverts.
+
+### Verify a VAA
+
+```
+yourContract
+  └─► Wormhole.parseAndVerifyVM(encodedVM)                     Messages.sol:16
+        ├─ parseVM(encodedVM)                                  :147
+        │    ├─ require(version == 1)                          :157
+        │    └─ hash = keccak256(keccak256(body))              :186
+        └─ verifyVMInternal(vm, false)                         :40
+             ├─ guardianSet non-empty                          :75
+             ├─ set current or unexpired                       :80
+             ├─ signatures >= quorum(keys.length)              :90
+             └─ verifySignatures(...)                          :111
+```
+
+Then check `valid` yourself, and store `vm.hash` for replay protection.
+
+### Attest a token, then create its wrapper
+
+```
+source chain:  TokenBridge.attestToken{value: fee}(token, nonce)      Bridge.sol:222
+                 └─► Wormhole.publishMessage(AssetMeta payload 2)     :252
+
+dest chain:    TokenBridge.createWrapped(encodedVm)                   Bridge.sol:569
+                 ├─ wormhole().parseAndVerifyVM                       :570
+                 ├─ verifyBridgeVM  ── registered peer?               :573
+                 └─ _createWrapped                                    :580
+                      └─ CREATE2, salt = keccak256(tokenChain, tokenAddress)  :604
+```
+
+### Transfer tokens out
+
+```
+TokenBridge.transferTokens(token, amount, chain, recipient, fee, nonce)   Bridge.sol:350
+  ├─ nonReentrant, notPaused
+  ├─ _transferTokens                                                      :415
+  │    ├─ classify wrapped vs native                                      :419
+  │    ├─ floor amount to 8 decimals                                      :432
+  │    ├─ native:  balance-delta safeTransferFrom                         :436-447
+  │    │  wrapped: safeTransferFrom then burn                             :449-451
+  │    └─ bridgeOut  ── u64 ceiling check                                 :460, :764
+  └─ logTransfer  ──► Wormhole.publishMessage(Transfer payload 1)         :486, :508
+```
+
+### Complete a transfer in
+
+```
+TokenBridge.completeTransfer(encodedVm)                     Bridge.sol:652
+  └─ _completeTransfer(encodedVm, false)                    :679
+       ├─ parseAndVerifyVM + require(valid)                 :680-682
+       ├─ verifyBridgeVM                                    :683
+       ├─ payload 3 ⇒ msg.sender must be recipient          :689-691
+       ├─ replay check + set                                :693-694
+       ├─ emit TransferRedeemed                             :697
+       ├─ toChain == chainId()                              :699
+       ├─ native: bridgedIn / foreign: lookup wrapper       :701-712
+       ├─ de-normalize to native decimals                   :721-722
+       ├─ pay relayer fee if caller != recipient            :725-743
+       └─ mint (foreign) or safeTransfer (native)           :748-759
+```
+
+### Transfer with payload (contract-controlled)
+
+Send with `transferTokensWithPayload`
+([`:387`](wormhole/ethereum/contracts/bridge/Bridge.sol#L387)); the bridge stamps
+`fromAddress = msg.sender`
+([`:538`](wormhole/ethereum/contracts/bridge/Bridge.sol#L538)). Redeem from the
+recipient contract with `completeTransferWithPayload`
+([`:627`](wormhole/ethereum/contracts/bridge/Bridge.sol#L627)), which returns
+`vm.payload` for you to decode. Nobody else can redeem it
+([`:690`](wormhole/ethereum/contracts/bridge/Bridge.sol#L690)).
+
+### Bridge native ETH
+
+`wrapAndTransferETH{value: amount + messageFee}` at
+[`:260`](wormhole/ethereum/contracts/bridge/Bridge.sol#L260). Dust below 8
+decimals is refunded at
+[`:325-328`](wormhole/ethereum/contracts/bridge/Bridge.sol#L325-L328). Redeem with
+`completeTransferAndUnwrapETH` at
+[`:663`](wormhole/ethereum/contracts/bridge/Bridge.sol#L663).
+
+### Register a new chain by governance
+
+```
+TokenBridge.registerChain(encodedVM)                        BridgeGovernance.sol:47
+  ├─ verifyGovernanceVM                                     :166
+  ├─ setGovernanceActionConsumed                            :50
+  ├─ parseRegisterChain  ── module/action/length checks      :193
+  ├─ chainId matches or is 0                                :54
+  ├─ not already registered  (permanent!)                   :55
+  └─ setBridgeImplementation                                :57
+```
+
+### Upgrade an implementation
+
+Core: `submitContractUpgrade`
+([`Governance.sol:27`](wormhole/ethereum/contracts/Governance.sol#L27)) →
+`upgradeImplementation`
+([`:174`](wormhole/ethereum/contracts/Governance.sol#L174)) → `_upgradeTo` then
+`delegatecall initialize()`.
+Token bridge: `upgrade`
+([`BridgeGovernance.sol:61`](wormhole/ethereum/contracts/bridge/BridgeGovernance.sol#L61))
+→ [`:180`](wormhole/ethereum/contracts/bridge/BridgeGovernance.sol#L180).
+
+### Rotate the guardian set
+
+`submitNewGuardianSet`
+([`Governance.sol:79`](wormhole/ethereum/contracts/Governance.sol#L79)): index
+must be exactly current + 1, the outgoing set gets a 24-hour expiry, then the new
+set becomes current. VAAs signed by the old set stay valid for those 24 hours,
+**except** governance VAAs, which require the current set
+([`:198`](wormhole/ethereum/contracts/Governance.sol#L198)).
+
+### Pause in an emergency
+
+`pause()` for a 5-day hold, `freeze()` for an indefinite one, `unpause()` to lift,
+`unpauseExpired()` for anyone to lift a lapsed pause. See §8.
+
+---
+
+## 25. Gotchas
+
+1. **`parseAndVerifyVM` does not revert.** It returns `(vm, valid, reason)`. Ignoring `valid` accepts every malformed or unsigned VAA. This is the single most common Wormhole integration bug.
+2. **`verifySignatures` returns true for an empty signature array.** The docblock at [`Messages.sol:106-110`](wormhole/ethereum/contracts/Messages.sol#L106-L110) says so. Never call it directly.
+3. **`verifyVM` on a hand-built struct needs `checkHash`.** The public `verifyVM` passes `true`; anything reaching `verifyVMInternal(vm, false)` with an unvalidated struct is exploitable.
+4. **The VAA `version` byte is outside the hash** ([`:152-156`](wormhole/ethereum/contracts/Messages.sol#L152-L156)). Unforgeable today only because just one version is accepted.
+5. **`msg.value == messageFee()` is exact.** Overpaying reverts.
+6. **8-decimal truncation is protocol-wide.** ERC-20 dust is floored away before transfer; ETH dust is refunded. Anything below 1e-8 of a token cannot cross.
+7. **`outstandingBridged` is capped at `type(uint64).max`** ([`:766`](wormhole/ethereum/contracts/bridge/Bridge.sol#L766)). A very high-supply, high-decimal token can hit this.
+8. **Wrapper addresses are deterministic across chains** via `CREATE2` with `salt = keccak256(tokenChain, tokenAddress)` ([`:604`](wormhole/ethereum/contracts/bridge/Bridge.sol#L604)).
+9. **All wrapped tokens share one beacon.** Upgrading `tokenImplementation` upgrades every wrapper on the chain simultaneously.
+10. **`attestToken` truncates names and symbols to 32 bytes** with no check ([`:235-239`](wormhole/ethereum/contracts/bridge/Bridge.sol#L235-L239)).
+11. **Peer registration is permanent** ([`BridgeGovernance.sol:55`](wormhole/ethereum/contracts/bridge/BridgeGovernance.sol#L55)). A wrong emitter can only be fixed by upgrading the implementation.
+12. **`_truncateAddress` rejects dirty high bytes, but the core's `parseContractUpgrade` does not** ([`GovernanceStructs.sol:78`](wormhole/ethereum/contracts/GovernanceStructs.sol#L78)). Two different policies in one repo.
+13. **The ETH transfer paths are not `nonReentrant`**, unlike the ERC-20 ones.
+14. **`TokenImplementation.transferFrom` transfers before checking allowance** ([`:126-134`](wormhole/ethereum/contracts/bridge/token/TokenImplementation.sol#L126-L134)). Safe, but the event order is unlike any other ERC-20.
+15. **The NFT bridge's `parseTransfer` ignores its own length prefix and reads backwards**, with the final length assertion commented out ([`nft/NFTBridge.sol:245-258`](wormhole/ethereum/contracts/nft/NFTBridge.sol#L245-L258)).
+16. **`GuardianSetAdded` is declared but never emitted.** Verified by grep. Do not build an indexer on it.
+17. **`State.sol` declares two legacy events that nothing emits**, one of which shadows the real `LogMessagePublished` name.
+18. **`isFork()` disables most governance and all token-bridge VAA processing.** After a chain fork the bridge is inert until `submitRecoverChainId` runs.
+19. **Wire order and storage order differ for the pauser roles** — payload is `pauser, freezer, unpauser`, struct is `pauser, unpauser, freezer` ([`BridgePauserStorage.sol:22-25`](wormhole/ethereum/contracts/bridge/BridgePauserStorage.sol#L22-L25)).
+20. **`pause()` cannot shorten a `freeze()`** ([`:162`](wormhole/ethereum/contracts/bridge/Bridge.sol#L162)), and both skip the fork check on purpose.
+21. **The bridge's `receive()` accepts ETH unconditionally** ([`:959`](wormhole/ethereum/contracts/bridge/Bridge.sol#L959)) because WETH needs it. ETH sent directly is unrecoverable.
+22. **Custom errors exist for bytecode size, not style.** `BridgeImplementation` is near the 24,576-byte EIP-170 limit, which also explains `_requireRole`, `_requireNotPaused` and `_clearPauseToNow` being shared internal functions.
+23. **No EVM audit is in this repo.** The four PDFs in `audits/` cover the node and the Solana/Terra/CosmWasm contracts.
+
+---
+
+*Companion: [`WORMHOLE-DEEP-DIVE.md`](WORMHOLE-DEEP-DIVE.md) for the guardian
+network and the Solana implementation.*
