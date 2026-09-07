@@ -1613,3 +1613,278 @@ Withdrawal credentials: `getWithdrawalCredentials`
 0x01 and 0x02 forms.
 
 ---
+## 14. stVaults
+
+The largest addition in v3, in `0.8.25/vaults/`. A **staking vault** is a
+single-owner contract holding ETH and validators, which can connect to the
+protocol and mint stETH against its own collateral. It is a second way to stake
+that settles against the same token.
+
+This is why `StETH` grew an external-shares half-slot ([§2.2](#22-storage-and-the-v3-packing-change))
+and why `Lido` gained `mintExternalShares`, `burnExternalShares` and
+`internalizeExternalBadDebt` ([§5.8](#58-minting-and-burning)).
+
+```
+  vault owner                      node operator
+      |  fund / mint                     |  runs validators
+      v                                  v
+ +-----------+  Dashboard/Permissions  +--------------+
+ | Dashboard | ----------------------> | StakingVault |
+ +-----------+                         +--------------+
+      |                                   |  connected
+      | mintShares                        v
+      |                             +------------+   mintExternalShares   +------+
+      +---------------------------> |  VaultHub  | ---------------------> | Lido |
+                                    +------------+                        +------+
+                                       ^      ^
+                        tier limits    |      |  per-vault reports
+                                +-------------+   +------------+
+                                | OperatorGrid |   | LazyOracle |
+                                +-------------+   +------------+
+```
+
+### 14.1 `VaultHub`
+
+[`core/contracts/0.8.25/vaults/VaultHub.sol`](core/contracts/0.8.25/vaults/VaultHub.sol) — 1,772 lines.
+
+The solvency engine. It decides how much a vault may mint, whether it is
+healthy, and what happens when it is not.
+
+**Roles**, `immutable` rather than `constant`, at
+[`:121-130`](core/contracts/0.8.25/vaults/VaultHub.sol#L121-L130):
+`VAULT_MASTER_ROLE`, `REDEMPTION_MASTER_ROLE`, `VALIDATOR_EXIT_ROLE`,
+`BAD_DEBT_MASTER_ROLE`.
+
+**`VaultConnection`** [`:48`](core/contracts/0.8.25/vaults/VaultHub.sol#L48) — the
+per-vault terms, packed: `owner`, `shareLimit` (uint96), `vaultIndex`,
+`disconnectInitiatedTs`, `reserveRatioBP`, `forcedRebalanceThresholdBP`,
+`infraFeeBP`, `liquidityFeeBP`, `reservationFeeBP`,
+`beaconChainDepositsPauseIntent`, and a documented 24-bit gap.
+
+The `reserveRatioBP` comment at
+[`:60-61`](core/contracts/0.8.25/vaults/VaultHub.sol#L60-L61) states the
+over-collateralisation directly: at RR = 30%, minting 1 stETH locks
+`1/(1−0.3) = 1.428571428571428571` ETH in the vault. So
+
+```
+lockedEther = mintedStETH / (1 − reserveRatioBP/10000)
+```
+
+which is the vault analogue of a loan-to-value ratio.
+
+**`VaultRecord`** [`:77`](core/contracts/0.8.25/vaults/VaultHub.sol#L77) — the
+live accounting: `maxLiabilityShares` (the high-water mark within the current
+oracle period, used for the locked calculation), `liabilityShares`,
+`minimalReserve`, `redemptionShares`, `cumulativeLidoFees`, `settledLidoFees`.
+
+**`Report`** [`:102`](core/contracts/0.8.25/vaults/VaultHub.sol#L102) —
+`totalValue` (uint104), inOutDelta, and a `uint48` timestamp.
+
+**Views**
+
+| Function | Line | Returns |
+|---|---|---|
+| `vaultsCount` / `vaultByIndex` | [`:200`](core/contracts/0.8.25/vaults/VaultHub.sol#L200), [`:207`](core/contracts/0.8.25/vaults/VaultHub.sol#L207) | Enumeration. |
+| `vaultConnection` / `vaultRecord` | [`:215`](core/contracts/0.8.25/vaults/VaultHub.sol#L215), [`:221`](core/contracts/0.8.25/vaults/VaultHub.sol#L221) | Empty structs if not connected. |
+| `isVaultConnected` / `isPendingDisconnect` | [`:226`](core/contracts/0.8.25/vaults/VaultHub.sol#L226), [`:232`](core/contracts/0.8.25/vaults/VaultHub.sol#L232) | Lifecycle. |
+| `totalValue` / `liabilityShares` / `locked` | [`:238`](core/contracts/0.8.25/vaults/VaultHub.sol#L238), [`:244`](core/contracts/0.8.25/vaults/VaultHub.sol#L244), [`:250`](core/contracts/0.8.25/vaults/VaultHub.sol#L250) | Core accounting. |
+| `maxLockableValue` / `withdrawableValue` | [`:256`](core/contracts/0.8.25/vaults/VaultHub.sol#L256), [`:271`](core/contracts/0.8.25/vaults/VaultHub.sol#L271) | Headroom. |
+| `totalMintingCapacityShares(address,int256)` | [`:265`](core/contracts/0.8.25/vaults/VaultHub.sol#L265) | Capacity, optionally simulating a value change. |
+| `latestReport` / `isReportFresh` | [`:280`](core/contracts/0.8.25/vaults/VaultHub.sol#L280), [`:286`](core/contracts/0.8.25/vaults/VaultHub.sol#L286) | Staleness matters: an old report blocks minting. |
+| `isVaultHealthy` / `healthShortfallShares` | [`:295`](core/contracts/0.8.25/vaults/VaultHub.sol#L295), [`:303`](core/contracts/0.8.25/vaults/VaultHub.sol#L303) | Solvency and the gap. |
+| `obligations` / `obligationsShortfallValue` / `settleableLidoFeesValue` | [`:341`](core/contracts/0.8.25/vaults/VaultHub.sol#L341), [`:311`](core/contracts/0.8.25/vaults/VaultHub.sol#L311), [`:354`](core/contracts/0.8.25/vaults/VaultHub.sol#L354) | Owed shares and fees. |
+| `badDebtToInternalize` / `...ForLastRefSlot` | [`:360`](core/contracts/0.8.25/vaults/VaultHub.sol#L360), [`:365`](core/contracts/0.8.25/vaults/VaultHub.sol#L365) | What `Accounting` will socialise. |
+
+**Lifecycle and operations**
+
+| Function | Line | Access |
+|---|---|---|
+| `connectVault(address)` | [`:372`](core/contracts/0.8.25/vaults/VaultHub.sol#L372) | `whenResumed` |
+| `updateConnection(...)` | [`:447`](core/contracts/0.8.25/vaults/VaultHub.sol#L447) | Terms update |
+| `disconnect(address)` | [`:509`](core/contracts/0.8.25/vaults/VaultHub.sol#L509) | `VAULT_MASTER_ROLE` |
+| `voluntaryDisconnect(address)` | [`:716`](core/contracts/0.8.25/vaults/VaultHub.sol#L716) | Owner-initiated |
+| `transferVaultOwnership(address,address)` | [`:695`](core/contracts/0.8.25/vaults/VaultHub.sol#L695) | |
+| `fund(address) payable` / `withdraw(address,address,uint256)` | [`:727`](core/contracts/0.8.25/vaults/VaultHub.sol#L727), [`:744`](core/contracts/0.8.25/vaults/VaultHub.sol#L744) | Collateral in and out |
+| `mintShares(address,address,uint256)` | [`:777`](core/contracts/0.8.25/vaults/VaultHub.sol#L777) | Calls `Lido.mintExternalShares` |
+| `burnShares(address,uint256)` / `transferAndBurnShares(address,uint256)` | [`:806`](core/contracts/0.8.25/vaults/VaultHub.sol#L806), [`:825`](core/contracts/0.8.25/vaults/VaultHub.sol#L825) | Repay |
+| `rebalance(address,uint256)` | [`:762`](core/contracts/0.8.25/vaults/VaultHub.sol#L762) | Voluntary de-risk |
+| `forceRebalance(address)` | [`:956`](core/contracts/0.8.25/vaults/VaultHub.sol#L956) | Permissionless once below `forcedRebalanceThresholdBP` |
+| `settleLidoFees(address)` | [`:977`](core/contracts/0.8.25/vaults/VaultHub.sol#L977) | Pays accrued protocol fees |
+| `applyVaultReport(...)` | [`:525`](core/contracts/0.8.25/vaults/VaultHub.sol#L525) | From `LazyOracle` |
+| `setLiabilitySharesTarget(address,uint256)` | [`:424`](core/contracts/0.8.25/vaults/VaultHub.sol#L424) | `REDEMPTION_MASTER_ROLE` |
+| `socializeBadDebt(...)` / `internalizeBadDebt(...)` | [`:590`](core/contracts/0.8.25/vaults/VaultHub.sol#L590), [`:651`](core/contracts/0.8.25/vaults/VaultHub.sol#L651) | `BAD_DEBT_MASTER_ROLE` |
+| `decreaseInternalizedBadDebt(uint256)` | [`:684`](core/contracts/0.8.25/vaults/VaultHub.sol#L684) | Only `Accounting` |
+| `pauseBeaconChainDeposits` / `resumeBeaconChainDeposits` | [`:834`](core/contracts/0.8.25/vaults/VaultHub.sol#L834), [`:850`](core/contracts/0.8.25/vaults/VaultHub.sol#L850) | |
+| `requestValidatorExit(address,bytes)` | [`:867`](core/contracts/0.8.25/vaults/VaultHub.sol#L867) | |
+| `triggerValidatorWithdrawals(...)` / `forceValidatorExit(...)` | [`:886`](core/contracts/0.8.25/vaults/VaultHub.sol#L886), [`:933`](core/contracts/0.8.25/vaults/VaultHub.sol#L933) | `VALIDATOR_EXIT_ROLE` for the forced path |
+
+**The escalation ladder** is worth reading as one story: a vault drifts below its
+reserve ratio, so anyone may `forceRebalance`. If that is not enough, holders of
+`VALIDATOR_EXIT_ROLE` can `forceValidatorExit` to convert validators back to ETH.
+If the vault is still short after that, `socializeBadDebt` spreads the loss
+across other vaults, and only as a last resort does `internalizeBadDebt` push it
+onto every stETH holder via `Lido.internalizeExternalBadDebt`.
+
+### 14.2 `StakingVault`
+
+[`core/contracts/0.8.25/vaults/StakingVault.sol`](core/contracts/0.8.25/vaults/StakingVault.sol) — 745 lines.
+
+Holds the ETH and the validators. `Ownable2StepUpgradeable`, deployed behind a
+[`PinnedBeaconProxy`](core/contracts/0.8.25/vaults/PinnedBeaconProxy.sol).
+
+Three distinct parties: the **owner** funds, withdraws and mints; the **node
+operator** runs validators; the **depositor** submits beacon deposits. Keeping
+them separate is what lets a vault owner use a professional operator without
+handing over custody.
+
+| Function | Line | Access |
+|---|---|---|
+| `initialize(address,address,address)` | [`:117`](core/contracts/0.8.25/vaults/StakingVault.sol#L117) | initializer |
+| `owner` / `pendingOwner` / `nodeOperator` / `depositor` | [`:154`](core/contracts/0.8.25/vaults/StakingVault.sol#L154), [`:162`](core/contracts/0.8.25/vaults/StakingVault.sol#L162), [`:170`](core/contracts/0.8.25/vaults/StakingVault.sol#L170), [`:178`](core/contracts/0.8.25/vaults/StakingVault.sol#L178) | view |
+| `withdrawalCredentials()` | [`:187`](core/contracts/0.8.25/vaults/StakingVault.sol#L187) | The vault's own 0x02 credentials |
+| `availableBalance` / `stagedBalance` | [`:205`](core/contracts/0.8.25/vaults/StakingVault.sol#L205), [`:213`](core/contracts/0.8.25/vaults/StakingVault.sol#L213) | view |
+| `fund() payable` / `withdraw(address,uint256)` | [`:233`](core/contracts/0.8.25/vaults/StakingVault.sol#L233), [`:244`](core/contracts/0.8.25/vaults/StakingVault.sol#L244) | `onlyOwner` |
+| `pauseBeaconChainDeposits` / `resumeBeaconChainDeposits` | [`:273`](core/contracts/0.8.25/vaults/StakingVault.sol#L273), [`:285`](core/contracts/0.8.25/vaults/StakingVault.sol#L285) | `onlyOwner` |
+| `depositToBeaconChain(Deposit)` | [`:298`](core/contracts/0.8.25/vaults/StakingVault.sol#L298) | `onlyDepositor whenDepositsNotPaused` |
+| `stage(uint256)` / `unstage(uint256)` / `depositFromStaged(...)` | [`:306`](core/contracts/0.8.25/vaults/StakingVault.sol#L306), [`:320`](core/contracts/0.8.25/vaults/StakingVault.sol#L320), [`:335`](core/contracts/0.8.25/vaults/StakingVault.sol#L335) | `onlyDepositor`. Staging reserves ETH for a deposit in flight. |
+| `requestValidatorExit(bytes)` | [`:357`](core/contracts/0.8.25/vaults/StakingVault.sol#L357) | `onlyOwner` |
+| `triggerValidatorWithdrawals(...)` | [`:382`](core/contracts/0.8.25/vaults/StakingVault.sol#L382) | EIP-7002 |
+| `ejectValidators(bytes,address) payable` | [`:421`](core/contracts/0.8.25/vaults/StakingVault.sol#L421) | |
+| `calculateValidatorWithdrawalFee(uint256)` | [`:197`](core/contracts/0.8.25/vaults/StakingVault.sol#L197) | EIP-7002 fee, which rises with demand |
+| `setDepositor(address)` | [`:483`](core/contracts/0.8.25/vaults/StakingVault.sol#L483) | `onlyOwner` |
+| `ossify()` | [`:491`](core/contracts/0.8.25/vaults/StakingVault.sol#L491) | `onlyOwner`. Pins the implementation permanently, opting out of future upgrades. |
+| `collectERC20(...)` | [`:502`](core/contracts/0.8.25/vaults/StakingVault.sol#L502) | Token rescue |
+| `renounceOwnership()` | [`:475`](core/contracts/0.8.25/vaults/StakingVault.sol#L475) | Overridden to **revert**, since an ownerless vault holding validators would be unrecoverable |
+
+`ossify` is the interesting one. A vault owner who does not trust future Lido
+upgrades can freeze their implementation forever, using
+[`PinnedBeaconUtils`](core/contracts/0.8.25/vaults/lib/PinnedBeaconUtils.sol).
+That is an unusual amount of sovereignty to hand a user.
+
+### 14.3 `OperatorGrid`
+
+[`core/contracts/0.8.25/vaults/OperatorGrid.sol`](core/contracts/0.8.25/vaults/OperatorGrid.sol) — 904 lines.
+
+Caps exposure per node operator across all their vaults, so one operator cannot
+back an unbounded share of stETH. `REGISTRY_ROLE` at
+[`:91`](core/contracts/0.8.25/vaults/OperatorGrid.sol#L91). Uses ERC-7201
+namespaced storage (`ERC7201Storage`,
+[`:139`](core/contracts/0.8.25/vaults/OperatorGrid.sol#L139)) rather than the
+unstructured pattern of the older contracts.
+
+`TierParams` [`:19`](core/contracts/0.8.25/vaults/OperatorGrid.sol#L19), `Group`
+[`:111`](core/contracts/0.8.25/vaults/OperatorGrid.sol#L111), `Tier`
+[`:118`](core/contracts/0.8.25/vaults/OperatorGrid.sol#L118).
+
+| Function | Line | Purpose |
+|---|---|---|
+| `registerGroup(address,uint256)` / `updateGroupShareLimit` | [`:209`](core/contracts/0.8.25/vaults/OperatorGrid.sol#L209), [`:229`](core/contracts/0.8.25/vaults/OperatorGrid.sol#L229) | Per-operator ceiling. |
+| `registerTiers(...)` / `alterTiers(...)` | [`:266`](core/contracts/0.8.25/vaults/OperatorGrid.sol#L266), [`:335`](core/contracts/0.8.25/vaults/OperatorGrid.sol#L335) | Tiers bundle reserve ratio, thresholds and fees. |
+| `changeTier(...)` / `syncTier(address)` / `resetVaultTier(address)` | [`:431`](core/contracts/0.8.25/vaults/OperatorGrid.sol#L431), [`:508`](core/contracts/0.8.25/vaults/OperatorGrid.sol#L508), [`:580`](core/contracts/0.8.25/vaults/OperatorGrid.sol#L580) | Moving a vault between tiers; requires confirmation from both sides. |
+| `updateVaultShareLimit` / `updateVaultFees` | [`:546`](core/contracts/0.8.25/vaults/OperatorGrid.sol#L546), [`:597`](core/contracts/0.8.25/vaults/OperatorGrid.sol#L597) | Per-vault overrides. |
+| `onMintedShares` / `onBurnedShares` | [`:632`](core/contracts/0.8.25/vaults/OperatorGrid.sol#L632), [`:667`](core/contracts/0.8.25/vaults/OperatorGrid.sol#L667) | Hooks from `VaultHub` keeping group usage current. |
+| `setVaultJailStatus(address,bool)` | [`:692`](core/contracts/0.8.25/vaults/OperatorGrid.sol#L692) | "Jail" restricts a misbehaving vault. |
+| `vaultTierInfo(address)` | [`:712`](core/contracts/0.8.25/vaults/OperatorGrid.sol#L712) | Combined view. |
+| `setConfirmExpiry(uint256)` | [`:202`](core/contracts/0.8.25/vaults/OperatorGrid.sol#L202) | Expiry for two-sided confirmations. |
+
+### 14.4 `Dashboard`, `Permissions`, `NodeOperatorFee`
+
+[`Dashboard.sol`](core/contracts/0.8.25/vaults/dashboard/Dashboard.sol) — 827 lines,
+[`Permissions.sol`](core/contracts/0.8.25/vaults/dashboard/Permissions.sol) — 387,
+[`NodeOperatorFee.sol`](core/contracts/0.8.25/vaults/dashboard/NodeOperatorFee.sol) — 467.
+
+`Dashboard` is the contract that actually owns a `StakingVault`. Rather than one
+owner key, it exposes fine-grained roles, so a vault owner can delegate minting
+to one address and withdrawals to another.
+
+Roles in `Permissions` at
+[`:35-96`](core/contracts/0.8.25/vaults/dashboard/Permissions.sol#L35-L96):
+`FUND_ROLE`, `WITHDRAW_ROLE`, `MINT_ROLE`, `BURN_ROLE`, `REBALANCE_ROLE`,
+`PAUSE_BEACON_CHAIN_DEPOSITS_ROLE`, `RESUME_BEACON_CHAIN_DEPOSITS_ROLE`,
+`REQUEST_VALIDATOR_EXIT_ROLE`, `VOLUNTARY_DISCONNECT_ROLE`,
+`VAULT_CONFIGURATION_ROLE`. Plus `COLLECT_VAULT_ERC20_ROLE` on `Dashboard`
+([`:34`](core/contracts/0.8.25/vaults/dashboard/Dashboard.sol#L34)) and, on
+`NodeOperatorFee`, `NODE_OPERATOR_MANAGER_ROLE`
+([`:38`](core/contracts/0.8.25/vaults/dashboard/NodeOperatorFee.sol#L38)) and
+`NODE_OPERATOR_FEE_EXEMPT_ROLE`
+([`:46`](core/contracts/0.8.25/vaults/dashboard/NodeOperatorFee.sol#L46)).
+
+`NodeOperatorFee` accrues the operator's cut of vault rewards and gates claiming
+behind confirmation from both owner and operator, built on
+[`Confirmations`](core/contracts/0.8.25/utils/Confirmations.sol) (230 lines) and
+[`AccessControlConfirmable`](core/contracts/0.8.25/utils/AccessControlConfirmable.sol).
+
+[`VaultFactory`](core/contracts/0.8.25/vaults/VaultFactory.sol) (184 lines)
+deploys a vault and its dashboard together and wires the roles in one
+transaction.
+
+### 14.5 `LazyOracle`
+
+[`core/contracts/0.8.25/vaults/LazyOracle.sol`](core/contracts/0.8.25/vaults/LazyOracle.sol) — 683 lines.
+
+Reporting per-vault values on chain for every vault every frame would not scale.
+Instead the oracle publishes a **Merkle root** over all vault reports, and each
+vault's data is proven when needed. `UPDATE_SANITY_PARAMS_ROLE` at
+[`:131`](core/contracts/0.8.25/vaults/LazyOracle.sol#L131).
+
+| Function | Line | Purpose |
+|---|---|---|
+| `updateReportData(...)` | [`:300`](core/contracts/0.8.25/vaults/LazyOracle.sol#L300) | Publishes the new root. |
+| `updateVaultData(...)` | [`:329`](core/contracts/0.8.25/vaults/LazyOracle.sol#L329) | Proves one vault's leaf and forwards to `VaultHub.applyVaultReport`. |
+| `latestReportData` / `latestReportTimestamp` | [`:171`](core/contracts/0.8.25/vaults/LazyOracle.sol#L171), [`:182`](core/contracts/0.8.25/vaults/LazyOracle.sol#L182) | Current root. |
+| `quarantinePeriod` / `quarantineValue` / `vaultQuarantine` | [`:187`](core/contracts/0.8.25/vaults/LazyOracle.sol#L187), [`:202`](core/contracts/0.8.25/vaults/LazyOracle.sol#L202), [`:215`](core/contracts/0.8.25/vaults/LazyOracle.sol#L215) | The quarantine mechanism. |
+| `maxRewardRatioBP` / `maxLidoFeeRatePerSecond` | [`:192`](core/contracts/0.8.25/vaults/LazyOracle.sol#L192), [`:197`](core/contracts/0.8.25/vaults/LazyOracle.sol#L197) | Sanity bounds. |
+| `updateSanityParams(...)` | [`:287`](core/contracts/0.8.25/vaults/LazyOracle.sol#L287) | Role-gated. |
+| `removeVaultQuarantine(address)` | [`:379`](core/contracts/0.8.25/vaults/LazyOracle.sol#L379) | Release. |
+| `vaultInfo` / `batchVaultsInfo` / `batchValidatorStatuses` | [`:264`](core/contracts/0.8.25/vaults/LazyOracle.sol#L264), [`:243`](core/contracts/0.8.25/vaults/LazyOracle.sol#L243), [`:273`](core/contracts/0.8.25/vaults/LazyOracle.sol#L273) | UI reads. |
+| `_handleSanityChecks` / `_processTotalValue` / `_determineQuarantineState` | [`:421`](core/contracts/0.8.25/vaults/LazyOracle.sol#L421), [`:505`](core/contracts/0.8.25/vaults/LazyOracle.sol#L505), [`:590`](core/contracts/0.8.25/vaults/LazyOracle.sol#L590) | Internals. |
+
+**Quarantine** is the vault-level analogue of the sanity checker: a suspiciously
+large jump in a vault's reported value is held for `quarantinePeriod` rather than
+accepted immediately, so it cannot instantly be minted against. The comment at
+[`:58-61`](core/contracts/0.8.25/vaults/LazyOracle.sol#L58-L61) notes that changes
+verifiable on chain skip quarantine, since they need no trust.
+
+### 14.6 `PredepositGuarantee`
+
+[`core/contracts/0.8.25/vaults/predeposit_guarantee/PredepositGuarantee.sol`](core/contracts/0.8.25/vaults/predeposit_guarantee/PredepositGuarantee.sol) — 954 lines.
+
+The same front-running problem as [§11](#11-depositsecuritymodule-and-depositing),
+solved differently. A vault has no guardian committee, so instead the node
+operator posts a **bond**, makes a 1 ETH predeposit, and only after the
+withdrawal credentials are *proved* on chain does the full deposit proceed. If
+the credentials are wrong, the bond is slashed.
+
+| Function | Line | Purpose |
+|---|---|---|
+| `topUpNodeOperatorBalance(address) payable` | [`:247`](core/contracts/0.8.25/vaults/predeposit_guarantee/PredepositGuarantee.sol#L247) | Post bond. |
+| `withdrawNodeOperatorBalance(...)` | [`:292`](core/contracts/0.8.25/vaults/predeposit_guarantee/PredepositGuarantee.sol#L292) | Reclaim unlocked bond. |
+| `nodeOperatorBalance` / `unlockedBalance` | [`:181`](core/contracts/0.8.25/vaults/predeposit_guarantee/PredepositGuarantee.sol#L181), [`:190`](core/contracts/0.8.25/vaults/predeposit_guarantee/PredepositGuarantee.sol#L190) | Views. |
+| `setNodeOperatorGuarantor` / `setNodeOperatorDepositor` | [`:321`](core/contracts/0.8.25/vaults/predeposit_guarantee/PredepositGuarantee.sol#L321), [`:352`](core/contracts/0.8.25/vaults/predeposit_guarantee/PredepositGuarantee.sol#L352) | A third party may post the bond. |
+| `claimGuarantorRefund(address)` | [`:367`](core/contracts/0.8.25/vaults/predeposit_guarantee/PredepositGuarantee.sol#L367) | Guarantor exit. |
+| `predeposit(...)` | [`:397`](core/contracts/0.8.25/vaults/predeposit_guarantee/PredepositGuarantee.sol#L397) | The 1 ETH probe. |
+| `proveWCAndActivate(ValidatorWitness)` | [`:463`](core/contracts/0.8.25/vaults/predeposit_guarantee/PredepositGuarantee.sol#L463) | Prove credentials, unlock the rest. |
+| `activateValidator(bytes)` | [`:492`](core/contracts/0.8.25/vaults/predeposit_guarantee/PredepositGuarantee.sol#L492) | Post-proof activation. |
+| `proveUnknownValidator(...)` | [`:522`](core/contracts/0.8.25/vaults/predeposit_guarantee/PredepositGuarantee.sol#L522) | Adopt a validator that already points at the vault. |
+| `proveInvalidValidatorWC(...)` | [`:563`](core/contracts/0.8.25/vaults/predeposit_guarantee/PredepositGuarantee.sol#L563) | Prove fraud; slashes the bond. |
+| `topUpExistingValidators(ValidatorTopUp[])` | [`:613`](core/contracts/0.8.25/vaults/predeposit_guarantee/PredepositGuarantee.sol#L613) | EIP-7251 top-ups. |
+| `proveWCActivateAndTopUpValidators(...)` | [`:656`](core/contracts/0.8.25/vaults/predeposit_guarantee/PredepositGuarantee.sol#L656) | Combined path. |
+| `validatePubKeyWCProof` / `verifyDepositMessage` | [`:257`](core/contracts/0.8.25/vaults/predeposit_guarantee/PredepositGuarantee.sol#L257), [`:270`](core/contracts/0.8.25/vaults/predeposit_guarantee/PredepositGuarantee.sol#L270) | Proof helpers. |
+
+Proofs run through
+[`CLProofVerifier`](core/contracts/0.8.25/vaults/predeposit_guarantee/CLProofVerifier.sol)
+(222 lines), which verifies a validator's beacon state against a block root using
+[`SSZ`](core/contracts/common/lib/SSZ.sol) and
+[`GIndex`](core/contracts/common/lib/GIndex.sol). Deposit-message signatures are
+checked with [`BLS`](core/contracts/common/lib/BLS.sol) (597 lines).
+
+Supporting: [`RefSlotCache`](core/contracts/0.8.25/vaults/lib/RefSlotCache.sol)
+(166 lines) caches a value as of the previous reference slot;
+[`RecoverTokens`](core/contracts/0.8.25/vaults/lib/RecoverTokens.sol) (52) handles
+rescue with EIP-7528 ETH convention;
+[`MeIfNobodyElse`](core/contracts/0.8.25/vaults/predeposit_guarantee/MeIfNobodyElse.sol)
+(21) is a sender-or-default helper;
+[`ValidatorConsolidationRequests`](core/contracts/0.8.25/vaults/ValidatorConsolidationRequests.sol)
+(216) issues consolidations from a vault.
+
+---
