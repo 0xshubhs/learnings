@@ -192,3 +192,234 @@ outright: the guard adds a storage variable, and a drop-in replacement
 implementation must not shift the layout.
 
 ---
+
+## 2. The VAA, byte by byte
+
+A VAA (Verifiable Action Approval) is the only thing that crosses chains. It is a
+guardian-signed attestation that some emitter published some payload. The layout
+is not declared anywhere as a struct — it exists only as the sequence of reads in
+[`Messages.parseVM`](wormhole/ethereum/contracts/Messages.sol#L147-L208), so that
+function *is* the specification.
+
+### Envelope
+
+| Offset | Size | Field | Parsed at |
+|---|---|---|---|
+| `0` | 1 | `version`, must equal 1 | [`:150`](wormhole/ethereum/contracts/Messages.sol#L150) |
+| `1` | 4 | `guardianSetIndex` | [`:159`](wormhole/ethereum/contracts/Messages.sol#L159) |
+| `5` | 1 | `signersLen` (n) | [`:163`](wormhole/ethereum/contracts/Messages.sol#L163) |
+| `6` | 66·n | signature array | [`:166-176`](wormhole/ethereum/contracts/Messages.sol#L166-L176) |
+
+Each signature is 66 bytes:
+
+| Rel. offset | Size | Field |
+|---|---|---|
+| `+0` | 1 | `guardianIndex` |
+| `+1` | 32 | `r` |
+| `+33` | 32 | `s` |
+| `+65` | 1 | `v`, **stored as `v + 27`** ([`:174`](wormhole/ethereum/contracts/Messages.sol#L174)) |
+
+### Body
+
+The body begins at `6 + 66n`. Call that `B`.
+
+| Offset | Size | Field | Parsed at |
+|---|---|---|---|
+| `B+0` | 4 | `timestamp` | [`:189`](wormhole/ethereum/contracts/Messages.sol#L189) |
+| `B+4` | 4 | `nonce` | [`:192`](wormhole/ethereum/contracts/Messages.sol#L192) |
+| `B+8` | 2 | `emitterChainId` | [`:195`](wormhole/ethereum/contracts/Messages.sol#L195) |
+| `B+10` | 32 | `emitterAddress` | [`:198`](wormhole/ethereum/contracts/Messages.sol#L198) |
+| `B+42` | 8 | `sequence` | [`:201`](wormhole/ethereum/contracts/Messages.sol#L201) |
+| `B+50` | 1 | `consistencyLevel` | [`:204`](wormhole/ethereum/contracts/Messages.sol#L204) |
+| `B+51` | rest | `payload` | [`:207`](wormhole/ethereum/contracts/Messages.sol#L207) |
+
+So the body header is exactly **51 bytes**, and a minimal VAA with one signature
+is `6 + 66 + 51 = 123` bytes plus payload.
+
+### The hash is doubled
+
+```solidity
+bytes memory body = encodedVM.slice(index, encodedVM.length - index);
+vm.hash = keccak256(abi.encodePacked(keccak256(body)));
+```
+
+[`Messages.sol:185-186`](wormhole/ethereum/contracts/Messages.sol#L185-L186). The
+double `keccak256` is what guardians sign, and it is what integrators use for
+replay protection. The comment at
+[`:181-183`](wormhole/ethereum/contracts/Messages.sol#L181-L183) forbids changing
+it for exactly that reason.
+
+**`version` is outside the hash.** The comment at
+[`:152-156`](wormhole/ethereum/contracts/Messages.sol#L152-L156) is unusually
+candid: the version byte's integrity is not protected and cannot be trusted. It
+is harmless today because only version 1 is accepted at
+[`:157`](wormhole/ethereum/contracts/Messages.sol#L157), but it would become a
+problem the moment a second version is allowed.
+
+---
+
+## 3. Core: storage, setters, getters
+
+### `Structs.sol` — [4 structs](wormhole/ethereum/contracts/Structs.sol#L6-L39)
+
+An `interface` used purely as a type namespace.
+
+| Struct | Fields |
+|---|---|
+| `Provider` ([`:7-11`](wormhole/ethereum/contracts/Structs.sol#L7-L11)) | `chainId`, `governanceChainId`, `governanceContract` |
+| `GuardianSet` ([`:13-16`](wormhole/ethereum/contracts/Structs.sol#L13-L16)) | `address[] keys`, `uint32 expirationTime` |
+| `Signature` ([`:18-23`](wormhole/ethereum/contracts/Structs.sol#L18-L23)) | `r`, `s`, `v`, `guardianIndex` |
+| `VM` ([`:25-39`](wormhole/ethereum/contracts/Structs.sol#L25-L39)) | the parsed VAA, including the computed `hash` |
+
+### `State.sol` — [`WormholeState`](wormhole/ethereum/contracts/State.sol#L22-L47)
+
+| Slot | Field | Notes |
+|---|---|---|
+| 0–2 | `provider` | `chainId`+`governanceChainId` pack into slot 0; `governanceContract` takes slot 1 |
+| 3 | `guardianSets` mapping | `uint32 => GuardianSet` |
+| 4 | `guardianSetIndex` + `guardianSetExpiry` | both `uint32`, packed |
+| 5 | `sequences` mapping | `address => uint64` |
+| 6 | `consumedGovernanceActions` mapping | `bytes32 => bool` |
+| 7 | `initializedImplementations` mapping | `address => bool` |
+| 8 | `messageFee` | |
+| 9 | `evmChainId` | EIP-155 id, used for fork detection |
+
+`State` itself ([`:50-52`](wormhole/ethereum/contracts/State.sol#L50-L52)) is one
+contract holding one `WormholeState _state`. The `Events` contract at
+[`:8-19`](wormhole/ethereum/contracts/State.sol#L8-L19) declares
+`LogGuardianSetChanged` and a legacy `LogMessagePublished` that **nothing emits** —
+the live event is redeclared in `Implementation`.
+
+### `Setters.sol` — 11 internal writers
+
+All `internal`. Two carry checks worth naming.
+
+| Function | Line | Note |
+|---|---|---|
+| `updateGuardianSetIndex(uint32)` | [`:9`](wormhole/ethereum/contracts/Setters.sol#L9) | |
+| `expireGuardianSet(uint32)` | [`:13`](wormhole/ethereum/contracts/Setters.sol#L13) | Sets expiry to `block.timestamp + 86400`, a fixed 24-hour grace |
+| `storeGuardianSet(GuardianSet,uint32)` | [`:17`](wormhole/ethereum/contracts/Setters.sol#L17) | Loops every key rejecting `address(0)` with `"Invalid key"` ([`:20`](wormhole/ethereum/contracts/Setters.sol#L20)). Critical: `ecrecover` returns `address(0)` on failure, so a zero key would validate garbage |
+| `setInitialized(address)` | [`:25`](wormhole/ethereum/contracts/Setters.sol#L25) | Parameter is misspelled `implementatiom` in the source |
+| `setGovernanceActionConsumed(bytes32)` | [`:29`](wormhole/ethereum/contracts/Setters.sol#L29) | |
+| `setChainId(uint16)` | [`:33`](wormhole/ethereum/contracts/Setters.sol#L33) | |
+| `setGovernanceChainId(uint16)` | [`:37`](wormhole/ethereum/contracts/Setters.sol#L37) | |
+| `setGovernanceContract(bytes32)` | [`:41`](wormhole/ethereum/contracts/Setters.sol#L41) | |
+| `setMessageFee(uint256)` | [`:45`](wormhole/ethereum/contracts/Setters.sol#L45) | |
+| `setNextSequence(address,uint64)` | [`:49`](wormhole/ethereum/contracts/Setters.sol#L49) | |
+| `setEvmChainId(uint256)` | [`:53`](wormhole/ethereum/contracts/Setters.sol#L53) | `require(evmChainId == block.chainid, "invalid evmChainId")` — you cannot set it to a lie |
+
+### `Getters.sol` — 11 public readers
+
+Plain accessors over `_state`, except one piece of real logic:
+
+```solidity
+function isFork() public view returns (bool) {
+    return evmChainId() != block.chainid;
+}
+```
+
+[`Getters.sol:37-39`](wormhole/ethereum/contracts/Getters.sol#L37-L39). This is
+the whole fork-detection mechanism. If the chain hard-forks, the stored
+`evmChainId` no longer matches `block.chainid`, and every governance path that
+checks `isFork()` shuts itself off. It is the reason a replayed governance VAA
+cannot be used to drain a forked chain.
+
+The rest: `getGuardianSet` [`:9`](wormhole/ethereum/contracts/Getters.sol#L9),
+`getCurrentGuardianSetIndex` [`:13`](wormhole/ethereum/contracts/Getters.sol#L13),
+`getGuardianSetExpiry` [`:17`](wormhole/ethereum/contracts/Getters.sol#L17),
+`governanceActionIsConsumed` [`:21`](wormhole/ethereum/contracts/Getters.sol#L21),
+`isInitialized` [`:25`](wormhole/ethereum/contracts/Getters.sol#L25),
+`chainId` [`:29`](wormhole/ethereum/contracts/Getters.sol#L29),
+`evmChainId` [`:33`](wormhole/ethereum/contracts/Getters.sol#L33),
+`governanceChainId` [`:41`](wormhole/ethereum/contracts/Getters.sol#L41),
+`governanceContract` [`:45`](wormhole/ethereum/contracts/Getters.sol#L45),
+`messageFee` [`:49`](wormhole/ethereum/contracts/Getters.sol#L49),
+`nextSequence` [`:53`](wormhole/ethereum/contracts/Getters.sol#L53).
+
+---
+
+## 4. Core: `Messages.sol`
+
+Five functions. This contract is the security boundary of the entire protocol.
+
+### `parseAndVerifyVM(bytes calldata) public view` — [`:16`](wormhole/ethereum/contracts/Messages.sol#L16)
+
+Returns `(VM vm, bool valid, string reason)`. Parses, then verifies with
+`checkHash = false`.
+
+The `false` is safe and deliberate: `parseVM` computed `vm.hash` itself from the
+raw bytes at [`:186`](wormhole/ethereum/contracts/Messages.sol#L186), so
+re-deriving it would be redundant. The comment at
+[`:18`](wormhole/ethereum/contracts/Messages.sol#L18) says exactly that.
+
+**This is the function integrators should call.** It never reverts on an invalid
+VAA; it returns `valid = false` and a reason string.
+
+### `verifyVM(VM memory) public view` — [`:30`](wormhole/ethereum/contracts/Messages.sol#L30)
+
+Delegates to `verifyVMInternal(vm, true)`. The `true` is load-bearing: a caller
+who hands over a hand-built `VM` struct could otherwise supply a legitimately
+signed `hash` alongside a completely different body. The warning at
+[`:46-48`](wormhole/ethereum/contracts/Messages.sol#L46-L48) spells out that
+attack.
+
+### `verifyVMInternal(VM memory, bool) internal view` — [`:40`](wormhole/ethereum/contracts/Messages.sol#L40)
+
+Five checks, in order. Each returns `(false, reason)` rather than reverting.
+
+| # | Check | Line | Reason string |
+|---|---|---|---|
+| 1 | If `checkHash`, recompute `keccak256(keccak256(body))` from the struct fields and compare | [`:50-66`](wormhole/ethereum/contracts/Messages.sol#L50-L66) | `"vm.hash doesn't match body"` |
+| 2 | Guardian set is non-empty | [`:75-77`](wormhole/ethereum/contracts/Messages.sol#L75-L77) | `"invalid guardian set"` |
+| 3 | Set is current, or not yet expired | [`:80-82`](wormhole/ethereum/contracts/Messages.sol#L80-L82) | `"guardian set has expired"` |
+| 4 | `signatures.length >= quorum(keys.length)` | [`:90-92`](wormhole/ethereum/contracts/Messages.sol#L90-L92) | `"no quorum"` |
+| 5 | Every signature recovers to the right guardian | [`:95-98`](wormhole/ethereum/contracts/Messages.sol#L95-L98) | forwarded from `verifySignatures` |
+
+Check 2 exists specifically to stop the degenerate case the comment at
+[`:69-73`](wormhole/ethereum/contracts/Messages.sol#L69-L73) describes: an empty
+key set with an empty signature set would sail through quorum arithmetic.
+
+The body reconstruction in check 1 uses `abi.encodePacked` over seven fields at
+[`:51-59`](wormhole/ethereum/contracts/Messages.sol#L51-L59), matching the wire
+layout in §2 exactly.
+
+### `verifySignatures(bytes32, Signature[], GuardianSet) public pure` — [`:111`](wormhole/ethereum/contracts/Messages.sol#L111)
+
+The docblock at [`:106-110`](wormhole/ethereum/contracts/Messages.sol#L106-L110)
+is a warning label: this function does **not** check quorum, does **not** check
+expiry, and **returns true for an empty signature set**. Calling it directly
+instead of `verifyVM` is a way to accept anything.
+
+Per signature:
+
+1. `ecrecover` the hash, and `require(signatory != address(0), "ecrecover failed with signature")` at [`:119`](wormhole/ethereum/contracts/Messages.sol#L119). Required because `ecrecover` signals failure by returning zero, which is also the default storage value.
+2. `require(i == 0 || sig.guardianIndex > lastIndex, "signature indices must be ascending")` at [`:122`](wormhole/ethereum/contracts/Messages.sol#L122). **Strictly** ascending, which is what makes duplicate-signature attacks impossible: you cannot present the same guardian twice to fake quorum.
+3. `require(sig.guardianIndex < guardianCount, "guardian index out of bounds")` at [`:131`](wormhole/ethereum/contracts/Messages.sol#L131). The comment at [`:125-130`](wormhole/ethereum/contracts/Messages.sol#L125-L130) concedes this is redundant with the array bounds check that follows, and keeps it anyway as defence against future refactoring.
+4. Compare against `guardianSet.keys[sig.guardianIndex]`; mismatch returns `"VM signature invalid"` at [`:135`](wormhole/ethereum/contracts/Messages.sol#L135).
+
+### `parseVM(bytes memory) public pure virtual` — [`:147`](wormhole/ethereum/contracts/Messages.sol#L147)
+
+Pure decoding, no validation beyond `version == 1`. Layout in §2. Marked `virtual`
+so `Shutdown` and mocks can override.
+
+### `quorum(uint) public pure virtual` — [`:213`](wormhole/ethereum/contracts/Messages.sol#L213)
+
+```solidity
+require(numGuardians < 256, "too many guardians");
+return ((numGuardians * 2) / 3) + 1;
+```
+
+Integer arithmetic gives the ceiling of two-thirds plus one. For the mainnet set
+of 19 guardians: `(19*2)/3 + 1 = 12 + 1 = 13`. The `< 256` bound exists because
+`guardianIndex` is a `uint8`.
+
+| Guardians | Quorum |
+|---|---|
+| 1 | 1 |
+| 3 | 3 |
+| 7 | 5 |
+| 13 | 9 |
+| 19 | 13 |
+| 255 | 171 |
+
+---
