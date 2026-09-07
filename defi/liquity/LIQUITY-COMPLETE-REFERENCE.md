@@ -1188,3 +1188,144 @@ up front. Immutability forces defensive design.
 
 ---
 
+## 1.13 Helper and peripheral contracts
+
+### `HintHelpers` — [`v1-dev/packages/contracts/contracts/HintHelpers.sol:11-171`](v1-dev/packages/contracts/contracts/HintHelpers.sol#L11-L171)
+
+Not part of the core system; front ends call it off-chain via `eth_call` to
+compute hints.
+
+| Function | Line | Purpose |
+|---|---|---|
+| `getRedemptionHints` | [`v1-dev/packages/contracts/contracts/HintHelpers.sol:62`](v1-dev/packages/contracts/contracts/HintHelpers.sol#L62) | Returns `firstRedemptionHint`, `partialRedemptionHintNICR`, `truncatedLUSDamount` |
+| `getApproxHint` | [`v1-dev/packages/contracts/contracts/HintHelpers.sol:129`](v1-dev/packages/contracts/contracts/HintHelpers.sol#L129) | Samples `_numTrials` random Troves and returns the closest, giving an O(sqrt(n)) starting point |
+| `computeNominalCR` | [`v1-dev/packages/contracts/contracts/HintHelpers.sol:164`](v1-dev/packages/contracts/contracts/HintHelpers.sol#L164) | Public wrapper |
+| `computeCR` | [`v1-dev/packages/contracts/contracts/HintHelpers.sol:168`](v1-dev/packages/contracts/contracts/HintHelpers.sol#L168) | Public wrapper |
+
+The comment at [`v1-dev/packages/contracts/contracts/HintHelpers.sol:123-127`](v1-dev/packages/contracts/contracts/HintHelpers.sol#L123-L127) is honest about the tradeoff: the result is
+worst-case O(n) positions away from correct, but with enough trials it is close
+enough that the on-chain walk is short.
+
+### `MultiTroveGetter` — [`v1-dev/packages/contracts/contracts/MultiTroveGetter.sol:10-120`](v1-dev/packages/contracts/contracts/MultiTroveGetter.sol#L10-L120)
+
+Batch read for front ends. `getMultipleSortedTroves(int _startIdx, uint _count)`
+at [`v1-dev/packages/contracts/contracts/MultiTroveGetter.sol:30`](v1-dev/packages/contracts/contracts/MultiTroveGetter.sol#L30) walks from head or tail depending on the sign of `_startIdx`, via
+[`v1-dev/packages/contracts/contracts/MultiTroveGetter.sol:63`](v1-dev/packages/contracts/contracts/MultiTroveGetter.sol#L63) and [`v1-dev/packages/contracts/contracts/MultiTroveGetter.sol:92`](v1-dev/packages/contracts/contracts/MultiTroveGetter.sol#L92).
+
+### `Unipool` — [`v1-dev/packages/contracts/contracts/LPRewards/Unipool.sol:74-243`](v1-dev/packages/contracts/contracts/LPRewards/Unipool.sol#L74-L243)
+
+A Synthetix-style staking rewards contract for the Uniswap v2 LUSD/ETH LP token.
+`LPTokenWrapper` at [`v1-dev/packages/contracts/contracts/LPRewards/Unipool.sol:23-60`](v1-dev/packages/contracts/contracts/LPRewards/Unipool.sol#L23-L60) holds the stake accounting; `Unipool` adds the
+reward schedule.
+
+| Function | Line |
+|---|---|
+| `setParams` | [`v1-dev/packages/contracts/contracts/LPRewards/Unipool.sol:95`](v1-dev/packages/contracts/contracts/LPRewards/Unipool.sol#L95) |
+| `lastTimeRewardApplicable` | [`v1-dev/packages/contracts/contracts/LPRewards/Unipool.sol:120`](v1-dev/packages/contracts/contracts/LPRewards/Unipool.sol#L120) |
+| `rewardPerToken` | [`v1-dev/packages/contracts/contracts/LPRewards/Unipool.sol:125`](v1-dev/packages/contracts/contracts/LPRewards/Unipool.sol#L125) |
+| `earned` | [`v1-dev/packages/contracts/contracts/LPRewards/Unipool.sol:137`](v1-dev/packages/contracts/contracts/LPRewards/Unipool.sol#L137) |
+| `stake` / `withdraw` | [`v1-dev/packages/contracts/contracts/LPRewards/Unipool.sol:145`](v1-dev/packages/contracts/contracts/LPRewards/Unipool.sol#L145) / [`v1-dev/packages/contracts/contracts/LPRewards/Unipool.sol:154`](v1-dev/packages/contracts/contracts/LPRewards/Unipool.sol#L154) |
+| `claimReward` | [`v1-dev/packages/contracts/contracts/LPRewards/Unipool.sol:170`](v1-dev/packages/contracts/contracts/LPRewards/Unipool.sol#L170) |
+
+This is the canonical `rewardPerTokenStored` pattern, the same one used by
+Curve's gauges and by thousands of forks. Worth reading alongside
+[`../curve/DAO-COMPLETE-REFERENCE.md`](../curve/DAO-COMPLETE-REFERENCE.md) to see
+the additive-accumulator idea in two different codebases.
+
+### Dependencies
+
+| File | Lines | Role |
+|---|---|---|
+| [`Dependencies/SafeMath.sol`](v1-dev/packages/contracts/contracts/Dependencies/SafeMath.sol) | 161 | Checked arithmetic for 0.6 |
+| [`Dependencies/Ownable.sol`](v1-dev/packages/contracts/contracts/Dependencies/Ownable.sol) | 66 | One-shot ownership, renounced after wiring |
+| [`Dependencies/CheckContract.sol`](v1-dev/packages/contracts/contracts/Dependencies/CheckContract.sol) | 18 | Asserts an address has code |
+| [`Dependencies/BaseMath.sol`](v1-dev/packages/contracts/contracts/Dependencies/BaseMath.sol) | 7 | `DECIMAL_PRECISION` |
+| [`Dependencies/LiquityMath.sol`](v1-dev/packages/contracts/contracts/Dependencies/LiquityMath.sol) | 113 | Core math, see §1.3 |
+| [`Dependencies/LiquityBase.sol`](v1-dev/packages/contracts/contracts/Dependencies/LiquityBase.sol) | 93 | Shared constants and TCR helpers, see §1.2 |
+| [`Dependencies/AggregatorV3Interface.sol`](v1-dev/packages/contracts/contracts/Dependencies/AggregatorV3Interface.sol) | 33 | Chainlink |
+| [`Dependencies/TellorCaller.sol`](v1-dev/packages/contracts/contracts/Dependencies/TellorCaller.sol) | 60 | Tellor wrapper |
+| [`Dependencies/console.sol`](v1-dev/packages/contracts/contracts/Dependencies/console.sol) | 1907 | Hardhat debug logging, not deployed |
+
+---
+
+## 1.14 v1 reference tables
+
+### Revert strings
+
+93 distinct revert strings across the tree. The ones a caller actually hits:
+
+| String | Thrown by | Cause |
+|---|---|---|
+| `"BorrowerOps: Trove is active"` | `_requireTroveisNotActive` | Opening a Trove you already have |
+| `"BorrowerOps: Trove does not exist or is closed"` | `_requireTroveisActive` | Adjusting a Trove you do not have |
+| `"BorrowerOps: An operation that would result in ICR < MCR is not permitted"` | `_requireICRisAboveMCR` | Below 110% |
+| `"BorrowerOps: Operation must leave trove with ICR >= CCR"` | `_requireICRisAboveCCR` | Opening below 150% in Recovery Mode |
+| `"BorrowerOps: Cannot decrease your Trove's ICR in Recovery Mode"` | `_requireNewICRisAboveOldICR` | Making things worse during Recovery |
+| `"BorrowerOps: An operation that would result in TCR < CCR is not permitted"` | `_requireNewTCRisAboveCCR` | Pushing the system into Recovery |
+| `"BorrowerOps: Operation not permitted during Recovery Mode"` | `_requireNotInRecoveryMode` | Debt increase or close during Recovery |
+| `"BorrowerOps: Collateral withdrawal not permitted Recovery Mode"` | `_requireNoCollWithdrawal` | |
+| `"BorrowerOperations: Cannot withdraw and add coll"` | `_requireSingularCollChange` | Both `msg.value` and `_collWithdrawal` non-zero |
+| `"BorrowerOps: Amount repaid must not be larger than the Trove's debt"` | `_requireValidLUSDRepayment` | Over-repaying |
+| `"BorrowerOps: Caller doesnt have enough LUSD to make repayment"` | `_requireSufficientLUSDBalance` | |
+| `"Max fee percentage must be between 0.5% and 100%"` | `_requireValidMaxFeePercentage` | Fee slippage bound out of range |
+| `"TroveManager: Trove does not exist or is closed"` | `_requireTroveIsActive` | Liquidating a closed Trove |
+| `"TroveManager: Cannot redeem when TCR < MCR"` | `_requireTCRoverMCR` | System too weak to redeem |
+| `"TroveManager: Redemptions are not allowed during bootstrap phase"` | `_requireAfterBootstrapPeriod` | Within 14 days of deploy |
+| `"TroveManager: Amount must be greater than zero"` | `_requireAmountGreaterThanZero` | |
+| `"TroveManager: Requested redemption amount must be <= user's LUSD token balance"` | `_requireLUSDBalanceCoversRedemption` | |
+| `"TroveManager: Caller is not the BorrowerOperations contract"` | `_requireCallerIsBorrowerOperations` | Direct call to a gated setter |
+| `"StabilityPool: Caller is not TroveManager"` | `_requireCallerIsTroveManager` | Direct call to `offset` |
+| `"StabilityPool: Cannot withdraw while there are troves with ICR < MCR"` | `_requireNoUnderCollateralizedTroves` | Fleeing before a liquidation |
+| `"StabilityPool: User must have a non-zero deposit"` | `_requireUserHasDeposit` | |
+| `"LQTYStaking: User must have a non-zero stake"` | `_requireUserHasStake` | |
+| `"SortedTroves: List is full"` | `_insert` | Size cap reached |
+
+Reproduce the full list:
+
+```bash
+grep -rhoE '"[^"](5, 90)"' --include='*.sol' v1-dev/packages/contracts/contracts | sort -u
+```
+
+### Events
+
+| Event | Emitted by | Signals |
+|---|---|---|
+| `TroveCreated` | BorrowerOperations | New Trove opened |
+| `TroveUpdated` | BorrowerOperations, TroveManager | Any debt/coll/stake change, tagged with the operation enum |
+| `TroveLiquidated` | TroveManager | A single Trove liquidated |
+| `Liquidation` | TroveManager | Batch totals: debt, collateral, gas compensation |
+| `Redemption` | TroveManager | LUSD burned, ETH drawn, fee |
+| `BaseRateUpdated` | TroveManager | Fee model moved |
+| `LastFeeOpTimeUpdated` | TroveManager | Decay anchor advanced |
+| `TotalStakesUpdated`, `SystemSnapshotsUpdated` | TroveManager | Redistribution bookkeeping |
+| `LTermsUpdated` | TroveManager | `L_ETH` / `L_LUSDDebt` moved |
+| `TroveSnapshotsUpdated` | TroveManager | A Trove claimed its rewards |
+| `UserDepositChanged`, `ETHGainWithdrawn` | StabilityPool | Depositor activity |
+| `P_Updated`, `S_Updated`, `G_Updated` | StabilityPool | Accumulator moves |
+| `EpochUpdated`, `ScaleUpdated` | StabilityPool | Precision transitions |
+| `StakeChanged`, `StakingGainsWithdrawn` | LQTYStaking | |
+| `F_ETHUpdated`, `F_LUSDUpdated` | LQTYStaking | Fee accumulators |
+
+An indexer reconstructing positions needs `TroveUpdated` plus `LTermsUpdated`,
+because a Trove's true debt is its stored debt plus its unclaimed redistribution
+share.
+
+### v1 use cases
+
+| Intent | Call | Chain |
+|---|---|---|
+| Open a Trove | `BorrowerOperations.openTrove` | → `_triggerBorrowingFee` → `TroveManager.setTroveStatus/increaseTroveColl/increaseTroveDebt` → `SortedTroves.insert` → `ActivePool` + `LUSDToken.mint` |
+| Add collateral | `addColl` | → `_adjustTrove` → `SortedTroves.reInsert` |
+| Borrow more | `withdrawLUSD` | → `_adjustTrove` with `_isDebtIncrease = true` → fee → mint |
+| Repay | `repayLUSD` | → `_adjustTrove` → `_repayLUSD` → burn |
+| Close | `closeTrove` | → burn debt + 200 LUSD from GasPool → return collateral |
+| Liquidate one | `TroveManager.liquidate` | → `batchLiquidateTroves` → offset/redistribute → `StabilityPool.offset` |
+| Liquidate many | `liquidateTroves(n)` | Walks from the list tail |
+| Redeem | `TroveManager.redeemCollateral` | → `_redeemCollateralFromTrove` per Trove → `_updateBaseRateFromRedemption` |
+| Earn from liquidations | `StabilityPool.provideToSP` | Accrues ETH via `S`, LQTY via `G` |
+| Compound into a Trove | `StabilityPool.withdrawETHGainToTrove` | → `BorrowerOperations.moveETHGainToTrove` |
+| Earn fees | `LQTYStaking.stake` | Accrues via `F_ETH` and `F_LUSD` |
+| Reclaim surplus | `BorrowerOperations.claimCollateral` | → `CollSurplusPool.claimColl` |
+
+---
+
