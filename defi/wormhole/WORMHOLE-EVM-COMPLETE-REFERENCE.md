@@ -1149,3 +1149,120 @@ than a string revert — a parameterized custom error, which is how the reason i
 preserved without the string-literal bytecode cost.
 
 ---
+
+## 13. The wrapped token
+
+### `Token.sol` — [`BridgeToken`](wormhole/ethereum/contracts/bridge/token/Token.sol#L6-L9)
+
+An OpenZeppelin `BeaconProxy`. The beacon is the token bridge itself, which is why
+`BridgeImplementation` exposes `implementation()` at
+[`:16-18`](wormhole/ethereum/contracts/bridge/BridgeImplementation.sol#L16-L18)
+returning `tokenImplementation()`. **Upgrading the bridge's token implementation
+upgrades every wrapped token on that chain at once.**
+
+### `TokenState.sol` — [`TokenStorage.State`](wormhole/ethereum/contracts/bridge/token/TokenState.sol#L9-L41)
+
+Standard ERC-20 fields plus five EIP-712 cache slots and the origin identity:
+
+| Field | Purpose |
+|---|---|
+| `metaLastUpdatedSequence` | VAA sequence of the last `updateDetails`, for ordering |
+| `owner` | the token bridge; gates `mint`/`burn`/`updateDetails` |
+| `initialized` | one-shot guard |
+| `chainId`, `nativeContract` | the origin `(chain, address)` pair |
+| `cachedDomainSeparator`, `cachedChainId`, `cachedThis`, `cachedSalt`, `cachedHashedName` | EIP-712 memoization |
+
+`TokenState` also carries `nonces(address)` at
+[`:52`](wormhole/ethereum/contracts/bridge/token/TokenState.sol#L52) and
+`_useNonce` at
+[`:59`](wormhole/ethereum/contracts/bridge/token/TokenState.sol#L59) for permit.
+
+### `TokenImplementation.sol` — the ERC-20
+
+Standard OpenZeppelin-derived ERC-20 with three protocol additions.
+
+**`initialize(...)` `initializer public`** — [`:17`](wormhole/ethereum/contracts/bridge/token/TokenImplementation.sol#L17). Sets name, symbol, decimals, the attestation sequence, the owner (the bridge), and the origin pair, then builds the EIP-712 cache. The `initializer` modifier at [`:213-222`](wormhole/ethereum/contracts/bridge/token/TokenImplementation.sol#L213-L222) uses a plain `_state.initialized` bool.
+
+**`mint` / `burn`, both `onlyOwner`** — [`:161`](wormhole/ethereum/contracts/bridge/token/TokenImplementation.sol#L161) and [`:173`](wormhole/ethereum/contracts/bridge/token/TokenImplementation.sol#L173). Only the bridge may call them, enforced at [`:208-211`](wormhole/ethereum/contracts/bridge/token/TokenImplementation.sol#L208-L211). Note this is a **local** `onlyOwner` reading `_state.owner`, not OpenZeppelin's `Ownable`, despite the import at [`:7`](wormhole/ethereum/contracts/bridge/token/TokenImplementation.sol#L7) — that import is unused.
+
+**`updateDetails(string,string,uint64) onlyOwner`** — [`:196`](wormhole/ethereum/contracts/bridge/token/TokenImplementation.sol#L196):
+
+```solidity
+require(_state.metaLastUpdatedSequence < sequence_, "current metadata is up to date");
+```
+
+[`:197`](wormhole/ethereum/contracts/bridge/token/TokenImplementation.sol#L197).
+Strictly increasing sequence, so an old attestation VAA cannot roll a token's name
+backwards. Since the name feeds the EIP-712 domain separator, it recaches at
+[`:205`](wormhole/ethereum/contracts/bridge/token/TokenImplementation.sol#L205).
+
+**A quirk in `transferFrom`** — [`:126-134`](wormhole/ethereum/contracts/bridge/token/TokenImplementation.sol#L126-L134):
+
+```solidity
+function transferFrom(address sender_, address recipient_, uint256 amount_) public returns (bool) {
+    _transfer(sender_, recipient_, amount_);
+
+    uint256 currentAllowance = _state.allowances[sender_][_msgSender()];
+    require(currentAllowance >= amount_, "ERC20: transfer amount exceeds allowance");
+    _approve(sender_, _msgSender(), currentAllowance - amount_);
+
+    return true;
+}
+```
+
+The transfer happens **before** the allowance check. It is still safe because the
+whole call reverts atomically, but the event ordering differs from every standard
+ERC-20: a `Transfer` is emitted before the `Approval`, and a failing call emits
+neither. Anything simulating state mid-call, or a hook-bearing recipient, sees an
+order no other token produces. There is no reentrancy risk here because this token
+has no hooks.
+
+**EIP-712 / permit.** `permit` at
+[`:274`](wormhole/ethereum/contracts/bridge/token/TokenImplementation.sol#L274)
+follows the standard shape with one addition: it calls
+`_initializePermitStateIfNeeded()` first at
+[`:285`](wormhole/ethereum/contracts/bridge/token/TokenImplementation.sol#L285),
+because tokens deployed before permit existed have empty caches.
+
+The domain separator at
+[`:237-250`](wormhole/ethereum/contracts/bridge/token/TokenImplementation.sol#L237-L250)
+includes a **salt**, which most tokens omit:
+
+```solidity
+function _eip712DomainSalt() internal view returns (bytes32) {
+    return keccak256(abi.encodePacked(_state.chainId, _state.nativeContract));
+}
+```
+
+[`:348-350`](wormhole/ethereum/contracts/bridge/token/TokenImplementation.sol#L348-L350).
+The salt is the origin pair. This matters precisely because wrapper addresses are
+deterministic via `CREATE2`: the same origin token gets the *same address* on
+every EVM chain. `block.chainid` already separates them, and the salt adds a
+second, independent discriminator.
+
+`_domainSeparatorV4` at
+[`:227-235`](wormhole/ethereum/contracts/bridge/token/TokenImplementation.sol#L227-L235)
+invalidates the cache if either `address(this)` or `block.chainid` changed, which
+covers both chain forks and the proxy being read through a different address.
+
+`eip712Domain()` at
+[`:320`](wormhole/ethereum/contracts/bridge/token/TokenImplementation.sol#L320)
+implements ERC-5267, returning `hex"1F"` (binary `11111`) to signal that all five
+domain fields are in use.
+
+### `utils/Migrator.sol` — [68 lines](wormhole/ethereum/contracts/bridge/utils/Migrator.sol)
+
+A standalone one-off helper for swapping one wrapped asset for another, used
+during historical asset migrations. Not part of the transfer path and not
+referenced by the bridge.
+
+### `interfaces/IWETH.sol` — [10 lines](wormhole/ethereum/contracts/bridge/interfaces/IWETH.sol)
+
+`deposit()` and `withdraw(uint)`. That is the entire surface the bridge needs.
+
+### `interfaces/ITokenBridge.sol` — [233 lines](wormhole/ethereum/contracts/bridge/interfaces/ITokenBridge.sol)
+
+The integrator-facing ABI, re-declaring the structs and every public function.
+This is the file to import when writing a contract that talks to the bridge.
+
+---
