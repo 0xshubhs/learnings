@@ -220,3 +220,298 @@ and mocks get a row too.
 | [`upgrade/utils/OmnibusBase.sol`](core/contracts/upgrade/utils/OmnibusBase.sol) | 133 | `^0.8.25` | Base for multi-action governance omnibuses. |
 
 ---
+## 1. Architecture and `LidoLocator`
+
+### 1.1 How the pieces connect
+
+Lido has no single "protocol" contract. It has a token that is also the pool, a
+report pipeline that mutates it, and a deposit pipeline that spends it. Every
+component finds every other component through one immutable address book.
+
+```
+                    users
+                      |  submit() ETH
+                      v
+              +---------------+   handleOracleReport   +--------------+
+              |    Lido.sol   | <--------------------- |  Accounting  |
+              | (is StETH)    |                        +--------------+
+              +---------------+                               ^
+               |            |                                 | report
+               | deposit()  | withdrawals                     |
+               v            v                          +------------------+
+     +-----------------+  +------------------+         | AccountingOracle |
+     |  StakingRouter  |  | WithdrawalQueue  |         +------------------+
+     +-----------------+  +------------------+                 ^
+        |          |                                           | consensus
+        v          v                                    +---------------+
+  +-----------+  +-----------------------+              | HashConsensus |
+  | NO Registry| | other staking modules |              +---------------+
+  +-----------+  +-----------------------+
+        |
+        v  deposit data
+  +------------------------+     guardian sigs    +------------------------+
+  | Beacon deposit contract| <------------------- | DepositSecurityModule  |
+  +------------------------+                      +------------------------+
+```
+
+Everything above is resolved through [`LidoLocator`](core/contracts/0.8.9/LidoLocator.sol).
+Alongside it, v3 adds the **stVaults** subsystem ([§14](#14-stvaults)), which is a
+second, parallel way to stake that settles against the same token.
+
+### 1.2 `LidoLocator`
+
+[`core/contracts/0.8.9/LidoLocator.sol`](core/contracts/0.8.9/LidoLocator.sol) — 146 lines, solc 0.8.9.
+
+A pure address book. Every address is `public immutable`, so a lookup is a code
+read rather than an `SLOAD`; the contract itself sits behind an
+`OssifiableProxy`, so the set can be replaced by deploying a new implementation.
+
+**Storage.** None. 23 immutables, declared at
+[`:46-69`](core/contracts/0.8.9/LidoLocator.sol#L46-L69): `accountingOracle`,
+`depositSecurityModule`, `elRewardsVault`, `lido`, `oracleReportSanityChecker`,
+`postTokenRebaseReceiver`, `burner`, `stakingRouter`, `treasury`,
+`validatorsExitBusOracle`, `withdrawalQueue`, `withdrawalVault`,
+`oracleDaemonConfig`, `validatorExitDelayVerifier`,
+`triggerableWithdrawalsGateway`, `consolidationGateway`, `accounting`,
+`predepositGuarantee`, `wstETH`, `vaultHub`, `vaultFactory`, `lazyOracle`,
+`operatorGrid`.
+
+The last seven are new in v3 and are what the vaults subsystem hangs off.
+
+| Function | Line | Notes |
+|---|---|---|
+| `constructor(Config memory _config)` | [`:77`](core/contracts/0.8.9/LidoLocator.sol#L77) | Assigns all 23 immutables, each through `_assertNonZero`. A single zero address in the config bricks deployment, which is the intent. |
+| `coreComponents()` | [`:104`](core/contracts/0.8.9/LidoLocator.sol#L104) | Returns the five addresses a typical integrator needs in one call, saving five external calls. |
+| `oracleReportComponents()` | [`:122`](core/contracts/0.8.9/LidoLocator.sol#L122) | Returns the set `Accounting` needs during a report. |
+| `_assertNonZero(address)` | [`:142`](core/contracts/0.8.9/LidoLocator.sol#L142) | `internal pure`. Reverts `ZeroAddress()` on zero, else returns the input. |
+
+**Gotcha.** `postTokenRebaseReceiver` is the one address allowed to be zero in
+practice; check the constructor before assuming otherwise. Because the whole set
+is immutable, adding a component means a new implementation and a proxy upgrade,
+which is why the v3 upgrade ([§18](#18-upgrade-machinery-tooling-vendored-openzeppelin))
+deploys a fresh locator rather than mutating one.
+
+---
+
+## 2. `StETH` — the shares math
+
+[`core/contracts/0.4.24/StETH.sol`](core/contracts/0.4.24/StETH.sol) — 590 lines, solc 0.4.24.
+
+`StETH` is abstract. It implements the token; `Lido` supplies the total pooled
+ether. This is the single most important contract in the protocol to understand,
+because every other number in Lido is denominated in its shares.
+
+### 2.1 The idea
+
+A holder never owns a balance. They own **shares**, and their balance is derived:
+
+```
+balanceOf(a) = shares[a] * totalPooledEther / totalShares
+```
+
+Staking rewards arrive by increasing `totalPooledEther` while `totalShares` stays
+put, so every balance grows at once with no per-holder writes. That is what
+"rebasing" means here, and it is why `_mintShares` deliberately emits no
+`Transfer` from the zero address: minting shares dilutes existing holders rather
+than increasing supply, and representing that faithfully would need one event per
+holder. The comment at
+[`:538-545`](core/contracts/0.4.24/StETH.sol#L538-L545) says exactly this.
+
+### 2.2 Storage, and the v3 packing change
+
+Balances (`shares`) and `allowances` are conventional mappings, because
+unstructured storage for reference types in Solidity 0.4 is, as the source puts
+it, "non-trivial and error-prone"
+([`:84-86`](core/contracts/0.4.24/StETH.sol#L84-L86)).
+
+Total shares live in one unstructured slot:
+
+```solidity
+bytes32 internal constant TOTAL_SHARES_POSITION_LOW128 =
+    0x6038150aecaa250d524370a0fdcdec13f2690e0723eaf277f41d7cae26b359e6;
+uint256 constant internal UINT128_HIGH_MASK = ~uint256(0) << 128;
+```
+
+[`:92-98`](core/contracts/0.4.24/StETH.sol#L92-L98). Verified:
+`cast keccak "lido.StETH.totalAndExternalShares"` returns exactly that value.
+
+The name is the v3 change. **The slot is now split.** The low 128 bits hold
+`totalShares`; the high 128 bits hold *external* shares, meaning shares minted
+against stVaults rather than against ETH in the pool. `_getTotalShares`
+([`:473`](core/contracts/0.4.24/StETH.sol#L473)) masks to the low half, and
+`_mintShares` enforces the boundary:
+
+```solidity
+newTotalShares = _getTotalShares().add(_sharesAmount);
+require(newTotalShares & UINT128_HIGH_MASK == 0, "SHARES_OVERFLOW");
+```
+
+[`:522-523`](core/contracts/0.4.24/StETH.sol#L522-L523). A v2 reader expecting a
+plain `uint256` at this slot will misread it; anything decoding Lido storage
+directly must mask.
+
+### 2.3 The conversion functions
+
+All three take `uint128`-bounded inputs and revert on overflow.
+
+**`getSharesByPooledEth(uint256 _ethAmount) public view`** —
+[`:317`](core/contracts/0.4.24/StETH.sol#L317). Requires `_ethAmount < UINT128_MAX`
+(`"ETH_TOO_LARGE"`), then returns `_ethAmount * totalShares / totalPooledEther`.
+**Rounds down.**
+
+**`getPooledEthByShares(uint256 _sharesAmount) public view`** —
+[`:329`](core/contracts/0.4.24/StETH.sol#L329). The inverse:
+`_sharesAmount * totalPooledEther / totalShares`. Requires
+`_sharesAmount < UINT128_MAX` (`"SHARES_TOO_LARGE"`). **Rounds down.**
+
+**`getPooledEthBySharesRoundUp(uint256 _sharesAmount) public view`** —
+[`:342`](core/contracts/0.4.24/StETH.sol#L342). Same value via
+`Math256.ceilDiv`. **Rounds up.** The docstring states the guarantee it exists
+for: at `shareRate >= 0.5`, `getSharesByPooledEth(getPooledEthBySharesRoundUp(1))`
+is 1, so a one-share round trip does not evaporate.
+
+**Why rounding down everywhere else matters.** Both directions truncate, so a
+`transfer(x)` moves `getSharesByPooledEth(x)` shares, which is at most `x` worth
+and usually a wei less. This is the origin of the famous "stETH balance is off by
+1 wei" behaviour. It is not a bug; it is the protocol refusing to round in the
+user's favour. Any integration comparing `balanceOf` before and after a transfer
+for exact equality will fail intermittently.
+
+The rate itself is indirected through two overridable hooks,
+`_getShareRateNumerator` ([`:410`](core/contracts/0.4.24/StETH.sol#L410), returns
+`_getTotalPooledEther()`) and `_getShareRateDenominator`
+([`:419`](core/contracts/0.4.24/StETH.sol#L419), returns `_getTotalShares()`).
+`_getTotalPooledEther` is abstract at
+[`:403`](core/contracts/0.4.24/StETH.sol#L403) and implemented by `Lido`.
+
+### 2.4 ERC-20 surface
+
+| Function | Line | Behaviour |
+|---|---|---|
+| `name()` / `symbol()` / `decimals()` | [`:133`](core/contracts/0.4.24/StETH.sol#L133), [`:141`](core/contracts/0.4.24/StETH.sol#L141), [`:148`](core/contracts/0.4.24/StETH.sol#L148) | `pure`. "Liquid staked Ether 2.0", `stETH`, 18. |
+| `totalSupply()` | [`:158`](core/contracts/0.4.24/StETH.sol#L158) | Returns `_getTotalPooledEther()`, **not** a stored supply. |
+| `getTotalPooledEther()` | [`:167`](core/contracts/0.4.24/StETH.sol#L167) | Same value, explicit name. |
+| `balanceOf(address)` | [`:177`](core/contracts/0.4.24/StETH.sol#L177) | `getPooledEthByShares(shares[a])`. Derived, never stored. |
+| `transfer(address,uint256)` | [`:196`](core/contracts/0.4.24/StETH.sol#L196) | Converts to shares, then `_transferShares`. |
+| `allowance` / `approve` | [`:207`](core/contracts/0.4.24/StETH.sol#L207), [`:226`](core/contracts/0.4.24/StETH.sol#L226) | Allowances are denominated in **stETH, not shares**, so an approval's share-value drifts with the rate. |
+| `transferFrom` | [`:252`](core/contracts/0.4.24/StETH.sol#L252) | `_spendAllowance` then `_transfer`. |
+| `increaseAllowance` / `decreaseAllowance` | [`:270`](core/contracts/0.4.24/StETH.sol#L270), [`:288`](core/contracts/0.4.24/StETH.sol#L288) | Standard; `decreaseAllowance` reverts `"ALLOWANCE_BELOW_ZERO"` on underflow. |
+| `getTotalShares()` / `sharesOf(address)` | [`:301`](core/contracts/0.4.24/StETH.sol#L301), [`:308`](core/contracts/0.4.24/StETH.sol#L308) | The rate-independent views. Integrations should prefer these. |
+| `transferShares(address,uint256)` | [`:365`](core/contracts/0.4.24/StETH.sol#L365) | Moves shares directly, sidestepping the rounding in §2.3. Returns the stETH equivalent. |
+| `transferSharesFrom(address,address,uint256)` | [`:388`](core/contracts/0.4.24/StETH.sol#L388) | Allowance-checked variant; the allowance spent is the *stETH* value of the shares. |
+
+### 2.5 Internal share mechanics
+
+**`_transferShares(address _sender, address _recipient, uint256 _sharesAmount) internal`** —
+[`:494`](core/contracts/0.4.24/StETH.sol#L494). Four checks:
+`"TRANSFER_FROM_ZERO_ADDR"`, `"TRANSFER_TO_ZERO_ADDR"`,
+`"TRANSFER_TO_STETH_CONTRACT"`, then `_whenNotStopped()`. Then
+`"BALANCE_EXCEEDED"` if short. Writes both mapping entries. **Emits nothing** —
+callers emit via `_emitTransferEvents`.
+
+**`_mintShares(address _recipient, uint256 _sharesAmount) internal returns (uint256)`** —
+[`:518`](core/contracts/0.4.24/StETH.sol#L518). Rejects zero address and the token
+itself, computes the new total, enforces the 128-bit boundary, writes the low half
+of the packed slot, credits the recipient. Note it does **not** check the pause;
+the docstring says this is delegated to callers.
+
+**`_burnShares(address _account, uint256 _sharesAmount) internal returns (uint256)`** —
+[`:547`](core/contracts/0.4.24/StETH.sol#L547). `"BURN_FROM_ZERO_ADDR"`,
+`"BALANCE_EXCEEDED"`, then decrements both. Also does not check the pause.
+
+**Event helpers.** `_emitTransferEvents`
+([`:562`](core/contracts/0.4.24/StETH.sol#L562)) emits `Transfer` and
+`TransferShares` as a pair; `_emitTransferAfterMintingShares`
+([`:570`](core/contracts/0.4.24/StETH.sol#L570)) emits the mint as a transfer from
+zero *in token terms*; `_emitSharesBurnt`
+([`:577`](core/contracts/0.4.24/StETH.sol#L577)) emits `SharesBurnt` with the
+pre- and post-rebase token amounts, which differ because the burn itself moves
+the rate. `_mintInitialShares` ([`:586`](core/contracts/0.4.24/StETH.sol#L586))
+seeds the very first shares.
+
+**Events.** `TransferShares(address indexed from, address indexed to, uint256 sharesValue)`
+at [`:105`](core/contracts/0.4.24/StETH.sol#L105), and
+`SharesBurnt(address indexed account, uint256 preRebaseTokenAmount, uint256 postRebaseTokenAmount, uint256 sharesAmount)`
+at [`:123`](core/contracts/0.4.24/StETH.sol#L123). An indexer that watches only
+ERC-20 `Transfer` will see balances change with no event during a rebase; watch
+the rebase event on `Lido` instead ([§5](#5-lidosol--every-function)).
+
+---
+
+## 3. `StETHPermit` and `EIP712StETH`
+
+### 3.1 `StETHPermit`
+
+[`core/contracts/0.4.24/StETHPermit.sol`](core/contracts/0.4.24/StETHPermit.sol) — 178 lines, solc 0.4.24.
+
+EIP-2612 for a 0.4.24 contract, which cannot compute an EIP-712 domain separator
+conveniently, so the hashing is delegated to a 0.8.9 helper.
+
+```solidity
+bytes32 internal constant PERMIT_TYPEHASH =
+    keccak256("Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)");
+```
+
+[`:83`](core/contracts/0.4.24/StETHPermit.sol#L83). The helper's address lives at
+`EIP712_STETH_POSITION` ([`:75`](core/contracts/0.4.24/StETHPermit.sol#L75)).
+
+| Function | Line | Notes |
+|---|---|---|
+| `permit(owner, spender, value, deadline, v, r, s)` | [`:99`](core/contracts/0.4.24/StETHPermit.sol#L99) | Reverts `"DEADLINE_EXPIRED"` past the deadline, builds the struct hash, asks the helper to wrap it, verifies via `SignatureUtils.isValidSignature` (so **ERC-1271 contract wallets work**), then `_approve`. |
+| `nonces(address)` | [`:121`](core/contracts/0.4.24/StETHPermit.sol#L121) | Per-owner counter. |
+| `DOMAIN_SEPARATOR()` | [`:129`](core/contracts/0.4.24/StETHPermit.sol#L129) | Delegates to the helper. |
+| `eip712Domain()` | [`:143`](core/contracts/0.4.24/StETHPermit.sol#L143) | ERC-5267 discovery. |
+| `_useNonce(address)` | [`:155`](core/contracts/0.4.24/StETHPermit.sol#L155) | `internal`, returns then increments. |
+| `_initializeEIP712StETH(address)` | [`:163`](core/contracts/0.4.24/StETHPermit.sol#L163) | One-shot; reverts if already set or zero. |
+| `getEIP712StETH()` | [`:175`](core/contracts/0.4.24/StETHPermit.sol#L175) | Reads the helper address. |
+
+### 3.2 `EIP712StETH`
+
+[`core/contracts/0.8.9/EIP712StETH.sol`](core/contracts/0.8.9/EIP712StETH.sol) — 124 lines, solc 0.8.9.
+
+Stateless and immutable, deployed once and pointed at the stETH address.
+
+| Function | Line | Notes |
+|---|---|---|
+| `domainSeparatorV4(address _stETH)` | [`:71`](core/contracts/0.8.9/EIP712StETH.sol#L71) | Cached separator if chain id and address are unchanged, else rebuilt. |
+| `_buildDomainSeparator(...)` | [`:79`](core/contracts/0.8.9/EIP712StETH.sol#L79) | `internal pure`. Name, version, chain id, verifying contract. |
+| `hashTypedDataV4(address _stETH, bytes32 _structHash)` | [`:103`](core/contracts/0.8.9/EIP712StETH.sol#L103) | The `\x19\x01` prefix wrapper. |
+| `eip712Domain(address _stETH)` | [`:111`](core/contracts/0.8.9/EIP712StETH.sol#L111) | ERC-5267 fields. |
+
+**Gotcha.** The domain's `verifyingContract` is the **stETH** address, not this
+helper. Signing against the helper's address produces a signature that will not
+verify.
+
+---
+
+## 4. `WstETH`
+
+[`core/contracts/0.6.12/WstETH.sol`](core/contracts/0.6.12/WstETH.sol) — 118 lines, solc 0.6.12.
+
+A plain, non-rebasing ERC-20 (with permit) whose balance *is* a share count. This
+exists because rebasing tokens break most DeFi: an AMM pool holding stETH would
+silently accrue rewards into the pool rather than to LPs, and lending markets
+cannot use a balance that moves without a transfer. Wrapping converts "my balance
+grows" into "my token is worth more", which composes.
+
+| Function | Line | Behaviour |
+|---|---|---|
+| `constructor(IStETH _stETH)` | [`:34`](core/contracts/0.6.12/WstETH.sol#L34) | `ERC20("Wrapped liquid staked Ether 2.0", "wstETH")` plus permit. Stores the stETH address. |
+| `wrap(uint256 _stETHAmount)` | [`:53`](core/contracts/0.6.12/WstETH.sol#L53) | Rejects zero (`"wstETH: can't wrap zero stETH"`), computes `getSharesByPooledEth`, mints that many wstETH, pulls the stETH in. Returns wstETH minted. |
+| `unwrap(uint256 _wstETHAmount)` | [`:69`](core/contracts/0.6.12/WstETH.sol#L69) | Rejects zero, burns, transfers out `getPooledEthByShares`. Returns stETH out. |
+| `getWstETHByStETH(uint256)` | [`:90`](core/contracts/0.6.12/WstETH.sol#L90) | View passthrough to `getSharesByPooledEth`. |
+| `getStETHByWstETH(uint256)` | [`:99`](core/contracts/0.6.12/WstETH.sol#L99) | View passthrough to `getPooledEthByShares`. |
+| `stEthPerToken()` | [`:107`](core/contracts/0.6.12/WstETH.sol#L107) | `getPooledEthByShares(1 ether)`. The canonical exchange rate. |
+| `tokensPerStEth()` | [`:115`](core/contracts/0.6.12/WstETH.sol#L115) | The inverse. |
+
+There is also a `receive()` that stakes bare ETH via `Lido.submit` and wraps in
+one step; confirm its presence in your deployment before relying on it, since it
+is the one function here that varies between networks.
+
+**Cross-reference.** LI.FI ships a dedicated `LidoWrapper` periphery contract for
+exactly this conversion; see
+[`../lifi/LIBRARIES-PERIPHERY-COMPLETE-REFERENCE.md`](../lifi/LIBRARIES-PERIPHERY-COMPLETE-REFERENCE.md).
+That contract unwraps the *entire* stETH balance of the wrapper rather than the
+requested amount, which is worth knowing if you route through it.
+
+---
