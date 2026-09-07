@@ -367,7 +367,7 @@ Every check exists for a reason:
 
 | Check | Line | Defends against |
 |---|---|---|
-| `depositRoot` matches on-chain | [`:468`](core/contracts/0.8.9/DepositSecurityModule.sol#L470) | any new deposit landing between signing and execution, including the attacker's |
+| `depositRoot` matches on-chain | [`:470`](core/contracts/0.8.9/DepositSecurityModule.sol#L470) | any new deposit landing between signing and execution, including the attacker's |
 | module `nonce` matches | [`:474`](core/contracts/0.8.9/DepositSecurityModule.sol#L474) | the key set changing after guardians vetted it |
 | quorum of signatures | [`:477`](core/contracts/0.8.9/DepositSecurityModule.sol#L477) | a single compromised guardian |
 | min deposit block distance | [`:478`](core/contracts/0.8.9/DepositSecurityModule.sol#L478) | rapid repeated deposits outrunning guardian review |
@@ -933,3 +933,161 @@ it exists because permissionless vaults removed the option of just trusting a
 committee.
 
 ---
+
+## 7. Where the risk lives
+
+### 7.1 The oracle is the protocol
+
+Every stETH balance is a function of a number a quorum of oracle members agreed
+on. There is no on-chain source of truth for validator balances, and there cannot
+be one without a beacon-state proof for the entire validator set.
+
+The sanity checker bounds a single bad report but does not prevent a sustained
+one. A colluding quorum reporting rewards slightly high, every frame, indefinitely,
+stays inside `annualBalanceIncreaseBPLimit` while steadily minting fee shares
+against value that does not exist. The defences are the membership set itself, the
+second-opinion oracle wired in via `clBalanceOraclesErrorUpperBPLimit`, and the
+DAO's ability to replace members.
+
+Compare with what you have read elsewhere. Aave v2's oracle calls `latestAnswer()`
+with no staleness check at all. Liquity v2 uses two prices and takes whichever is
+worse for the actor. Lido's oracle is more defended than Aave v2's and structurally
+more powerful than either, because it does not report a *price*, it reports the
+protocol's entire asset base.
+
+### 7.2 Losses socialise, always
+
+A slashed validator reduces the consensus-layer balance, which reduces
+`_getInternalEther()`, which reduces every holder's `balanceOf`. There is no
+tranching and no insurance fund in the base protocol. Every stETH holder is
+uniformly exposed to every operator's mistakes.
+
+Contrast the three loss models now in this repo:
+
+| Protocol | Who absorbs a loss |
+|---|---|
+| Liquity | the stability pool first, then all remaining Troves by redistribution |
+| Aave | the liquidated borrower; bad debt becomes protocol deficit |
+| Lido | every stETH holder, immediately and proportionally |
+
+Lido's is the bluntest. It is also the only one of the three where the loss
+originates off-chain and cannot be liquidated against.
+
+### 7.3 The peg is a market price, not a redemption
+
+This is the most commonly misunderstood risk. stETH is **not** redeemable for ETH
+on demand. It is redeemable through a queue whose latency depends on the beacon
+chain's exit churn, and in bunker mode not even that.
+
+So the stETH/ETH ratio you see on a DEX is a market price reflecting time
+preference and perceived risk, and it can and did trade below 1. In June 2022,
+before withdrawals existed at all, it traded to roughly 0.94 and forced
+liquidations across leveraged positions.
+
+Contrast Liquity, where redeemability is the peg mechanism: anyone may redeem
+LUSD for exactly one dollar of collateral at any moment, which arbitrages the
+price back. See `liquity/LIQUITY-DEEP-DIVE.md`. Lido has no such instant
+arbitrage, so the peg holds by expectation rather than by construction.
+
+### 7.4 Governance and upgrade surface
+
+Lido is upgradeable, Aragon-based, and DAO-governed. The DAO can replace oracle
+members, vet and unvet operators, change every limit in the sanity checker, and
+upgrade implementations. That is a very large surface compared with what you read
+last round:
+
+| Protocol | Governance power over live positions |
+|---|---|
+| Morpho Blue | four owner functions, two of them monotonic; markets immutable once created |
+| Liquity | none; contracts renounce ownership after wiring |
+| Lido | broad, including upgrades and oracle membership |
+
+Neither extreme is simply correct. Liquity cannot fix a bad oracle; Lido can. Lido
+can also be captured; Liquity cannot. Lido's position is defensible precisely
+because it is managing off-chain infrastructure that needs a human in the loop.
+
+### 7.5 The residual deposit vector
+
+The DSM makes front-running detectable, not impossible. It depends on guardians
+actually watching and on the quorum being honest. A quorum of compromised
+guardians could sign an attestation for a deposit whose root is about to change.
+The mitigating factor is that any single guardian can pause unilaterally
+([`DepositSecurityModule.sol:368`](core/contracts/0.8.9/DepositSecurityModule.sol#L368)),
+so the attacker needs the entire committee silent, not merely a majority
+cooperative.
+
+---
+
+## 8. Lido versus the rest of this repo
+
+| Dimension | Lido | Aave v3 | Morpho Blue | Liquity |
+|---|---|---|---|---|
+| User-facing unit | rebasing stETH | rebasing aToken | non-rebasing shares | non-rebasing LUSD/BOLD |
+| Stored unit | shares | `scaledBalance` | `supplyShares` | debt + stake |
+| Non-rebasing wrapper | wstETH | StataTokenV2 | not needed | not needed |
+| First-depositor defence | burn first deposit to `0xdead` | virtual balance | never reads `balanceOf` | n/a |
+| Who bears loss | all stETH holders | the borrower, then protocol deficit | the market's suppliers | stability pool, then all Troves |
+| Oracle | own quorum reporting the whole asset base | Chainlink price feeds | per-market, chosen at creation | Chainlink + Tellor fallback (v1), dual-price (v2) |
+| Governance reach | upgrades, oracle set, all limits | risk params, upgrades | 4 owner functions | none after deployment |
+| Exit path | queue bounded by beacon churn | withdraw if liquidity | withdraw if liquidity | instant redemption at face value |
+
+Reading down the "Lido" column, the pattern is that Lido carries **more trusted
+infrastructure than anything else here**, because it is the only protocol in the
+set whose assets live somewhere the EVM cannot see. Every unusual piece of
+machinery, the guardian committee, the oracle quorum, the sanity checker, the BLS
+verifier, exists to compensate for that one fact.
+
+---
+
+## 9. Exercises to trace yourself
+
+1. **The rate override.** Read `_getShareRateNumerator` and
+   `_getShareRateDenominator` in [`Lido.sol:1296-1307`](core/contracts/0.4.24/Lido.sol#L1296-L1307),
+   then the base versions in [`StETH.sol:410-421`](core/contracts/0.4.24/StETH.sol#L410-L421).
+   Construct a pool with non-zero external shares and compute `balanceOf` both
+   ways. Quantify the precision difference and explain which is correct.
+
+2. **Deposit ordering.** In `_submit`
+   ([`Lido.sol:1253-1267`](core/contracts/0.4.24/Lido.sol#L1253-L1267)), `msg.value`
+   is already in `address(this).balance` when `getSharesByPooledEth` runs. Prove
+   the conversion still uses the pre-deposit rate by finding every storage read on
+   that path. Then work out what would break if `_setBufferedEther` were moved
+   above the conversion.
+
+3. **Derive the fee.** Without looking, derive `x = fS / (E - f)` from "the minted
+   shares must be worth exactly `f` at the post-mint rate". Check against
+   [`Accounting.sol:331`](core/contracts/0.8.9/Accounting.sol#L331). Then find the
+   equivalent 1/6 formula in Uniswap V2's `_mintFee` and explain why one has a
+   subtraction in the denominator and the other a square root.
+
+4. **Rebase ordering.** List the nine steps of `_applyOracleReportContext`
+   ([`Accounting.sol:360-427`](core/contracts/0.8.9/Accounting.sol#L360-L427)) and
+   mark which change the share rate. Explain the comment at
+   [`:404-405`](core/contracts/0.8.9/Accounting.sol#L404-L405) and construct the
+   bug that would result from minting fees before burning withdrawal-queue shares.
+
+5. **Consensus can be lost.** Read
+   [`HashConsensus.sol:905-949`](core/contracts/0.8.9/oracle/HashConsensus.sol#L905-L949).
+   With quorum 5 and 9 members, write the sequence where consensus is reached and
+   then lost within one frame. Why does `DuplicateReport` exist given the sorted
+   signature check already prevents double-counting elsewhere?
+
+6. **Withdrawal discount.** For a request of 100 shares at rate 1.05, finalized
+   after a negative rebase to 1.02, compute the payout via
+   [`WithdrawalQueueBase.sol:508-510`](core/contracts/0.8.9/WithdrawalQueueBase.sol#L508-L510).
+   Then do it for a *positive* rebase to 1.08 and explain why the answer is not
+   symmetric.
+
+7. **stVault as CDP (cross-protocol).** Map every field of `VaultConnection`
+   ([`VaultHub.sol:48-75`](core/contracts/0.8.25/vaults/VaultHub.sol#L48-L75)) onto
+   its Aave v3 equivalent in `aave/V3-PROTOCOL-COMPLETE-REFERENCE.md`. Which Aave
+   concept has no stVault counterpart, and why does its absence make sense here?
+
+8. **Two answers to front-running (cross-protocol).** The DSM stops deposit
+   front-running with a guardian quorum; `PredepositGuarantee` stops the same
+   attack with a 1 ETH bond. Read
+   [`DepositSecurityModule.sol:460-488`](core/contracts/0.8.9/DepositSecurityModule.sol#L460-L488)
+   and [`PredepositGuarantee.sol:397`](core/contracts/0.8.25/vaults/predeposit_guarantee/PredepositGuarantee.sol#L397).
+   State the threat model each assumes, and explain why the vault path could not
+   reuse the committee approach. Then compare with how Morpho Blue avoids needing
+   either.

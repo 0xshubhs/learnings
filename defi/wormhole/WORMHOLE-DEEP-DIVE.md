@@ -1046,3 +1046,267 @@ escape hatch for a legitimate fork, and its own check
 ([`:161`](wormhole/ethereum/contracts/Governance.sol#L161)) pins
 `rci.evmChainId == block.chainid` so the recovery VAA is only usable on the
 intended side.
+
+---
+
+## 5. The same protocol in Rust
+
+Everything in sections 1 through 4 exists again in
+[`wormhole/solana/bridge/program/src/`](wormhole/solana/bridge/program/src), in
+Rust, doing the same job against a completely different execution model.
+
+This section is not exhaustive. It picks four places where Solana's account model
+**forces** a different design and explains why. The goal is that you can read
+Solana code afterwards, not write it.
+
+### 5.0 The three facts you need first
+
+**1. Programs are stateless; accounts hold state.** An EVM contract owns its
+storage. A Solana program owns nothing. Every byte it touches arrives as an
+account passed in by the caller, and the program must *verify* that the accounts
+it received are the ones it expected. That verification is the security model.
+
+**2. A PDA is a deterministic address derived from seeds.** Where Solidity writes
+`mapping(bytes32 => bool)`, Solana derives an address from seeds and checks
+whether an account exists there. A PDA has no private key, so only the owning
+program can sign for it.
+
+**3. Transactions are bounded and small.** ~1232 bytes and a compute budget. You
+cannot loop over 13 `ecrecover` calls and 13 storage reads in one instruction.
+
+Fact 3 is the one that reshapes VAA verification entirely.
+
+### 5.1 Verification is split across transactions
+
+On EVM, `parseAndVerifyVM` is one call. On Solana it is a **multi-transaction
+protocol** with an intermediate account holding partial progress.
+
+```
+  EVM                          SOLANA
+  ───                          ──────
+  parseAndVerifyVM(bytes)      tx 1: [secp256k1 ix][verify_signatures ix]  ─┐
+    ├ parse                    tx 2: [secp256k1 ix][verify_signatures ix]   ├─► SignatureSet
+    ├ check set                ...                                          │   account
+    ├ check quorum             tx N: [secp256k1 ix][verify_signatures ix]  ─┘   accumulates
+    ├ 13× ecrecover
+    └ done, one tx             tx N+1: post_vaa  ──► reads SignatureSet,
+                                                     checks quorum,
+                                                     writes PostedVAA account
+
+                               tx N+2: your program reads PostedVAA
+```
+
+**Signatures are not verified by the Wormhole program at all.** They are verified
+by Solana's native `secp256k1_program`, and the Wormhole program's job is to
+*inspect the transaction it is sitting in* and confirm that the neighbouring
+instruction did the right work.
+
+[`verify_signature.rs:91-108`](wormhole/solana/bridge/program/src/api/verify_signature.rs#L91-L108):
+
+```rust
+let current_instruction =
+    solana_program::sysvar::instructions::load_current_index_checked(&accs.instruction_acc)?;
+if current_instruction == 0 {
+    return Err(InstructionAtWrongIndex.into());
+}
+
+// The previous ix must be a secp verification instruction
+let secp_ix_index = (current_instruction - 1) as u8;
+let secp_ix = solana_program::sysvar::instructions::load_instruction_at_checked(
+    secp_ix_index as usize,
+    &accs.instruction_acc,
+)
+.map_err(|_| ProgramError::InvalidAccountData)?;
+
+// Check that the instruction is actually for the secp program
+if secp_ix.program_id != solana_program::secp256k1_program::id() {
+    return Err(InvalidSecpInstruction.into());
+}
+```
+
+This has no EVM analogue whatsoever. There is no "read the previous opcode" in
+Solidity. **Introspection of sibling instructions is a first-class Solana
+pattern**, and section 7 explains how getting it wrong cost $326M.
+
+The program then re-parses the secp instruction's own data layout to learn which
+addresses were proven and over which message
+([`:115-152`](wormhole/solana/bridge/program/src/api/verify_signature.rs#L115-L152)),
+insisting every signature covered the *same* message
+([`:141-146`](wormhole/solana/bridge/program/src/api/verify_signature.rs#L141-L146))
+and that the message is exactly 32 bytes
+([`:157-160`](wormhole/solana/bridge/program/src/api/verify_signature.rs#L157-L160)).
+
+Finally it records progress into the `SignatureSet`
+([`:196-215`](wormhole/solana/bridge/program/src/api/verify_signature.rs#L196-L215)):
+
+```rust
+let key = accs.guardian_set.keys[s.signer_index as usize];
+// Check key in ix
+if key != secp_ixs[s.sig_index as usize].address {
+    return Err(ProgramError::InvalidArgument.into());
+}
+
+// Overwritten content should be zeros except double signs by the signer or harmless replays
+accs.signature_set.signatures[s.signer_index as usize] = true;
+```
+
+**Note the data structure.** EVM uses an *array of signatures* and enforces
+strictly ascending indices to prevent double-counting (section 1.4). Solana uses
+a **bitmap indexed by guardian index**, `signatures: vec![false; keys.len()]`
+([`:171`](wormhole/solana/bridge/program/src/api/verify_signature.rs#L171)).
+Setting the same bit twice is idempotent, so duplicates are structurally
+impossible and no ordering rule is needed. That is not a stylistic difference; it
+falls out of the fact that state persists across transactions, so a bitmap can be
+accumulated where an array could not.
+
+The first call creates the account and pins its parameters; later calls must
+match ([`:170-194`](wormhole/solana/bridge/program/src/api/verify_signature.rs#L170-L194)):
+
+```rust
+if accs.signature_set.guardian_set_index != accs.guardian_set.index {
+    return Err(GuardianSetMismatch.into());
+}
+
+if accs.signature_set.hash != msg_hash {
+    return Err(InvalidHash.into());
+}
+```
+
+Without those two checks an attacker could accumulate signatures for VAA A and
+then swap in VAA B's hash.
+
+### 5.2 Quorum, and the same formula written differently
+
+[`post_vaa.rs:122-138`](wormhole/solana/bridge/program/src/api/post_vaa.rs#L122-L138):
+
+```rust
+let signature_count: usize = accs.signature_set.signatures.iter().filter(|v| **v).count();
+
+// Calculate how many signatures are required to reach consensus. This calculation is in
+// expanded form to ease auditing.
+let required_consensus_count = {
+    let len = accs.guardian_set.keys.len();
+    // Fixed point number transformation with one decimal to deal with rounding.
+    let len = (len * 10) / 3;
+    // Multiplication by two to get a 2/3 quorum.
+    let len = len * 2;
+    // Division to bring number back into range.
+    len / 10 + 1
+};
+
+if signature_count < required_consensus_count {
+    return Err(PostVAAConsensusFailed.into());
+}
+```
+
+Compare with EVM's `((numGuardians * 2) / 3) + 1`. These are **not the same
+expression**. Solana computes `((n*10/3)*2)/10 + 1`; EVM computes `(n*2)/3 + 1`.
+Integer division at different points can diverge. For n=19: Solana gives
+`(190/3)*2/10 + 1 = 63*2/10 + 1 = 126/10 + 1 = 12 + 1 = 13`. EVM gives
+`38/3 + 1 = 12 + 1 = 13`. They agree here, and the comment's *"expanded form to
+ease auditing"* is doing real work — but two implementations of a consensus
+threshold written as different expressions is exactly the kind of thing worth
+differential-testing.
+
+Note also `signature_count` counts **set bits**, not array length. The bitmap
+makes the count trivially sound.
+
+### 5.3 Replay protection: a PDA instead of a mapping
+
+EVM: `mapping(bytes32 => bool) completedTransfers`, keyed on `vm.hash`.
+
+Solana has no mappings. Instead it derives an address from seeds and the *account
+either exists or does not*. [`claim.rs:108-120`](wormhole/solana/bridge/program/src/accounts/claim.rs#L108-L120):
+
+```rust
+pub struct ClaimDerivationData {
+    pub emitter_address: [u8; 32],
+    pub emitter_chain: u16,
+    pub sequence: u64,
+}
+
+impl<'b> Seeded<&ClaimDerivationData> for Claim<'b> {
+    fn seeds(data: &ClaimDerivationData) -> Vec<Vec<u8>> {
+        return vec![
+            data.emitter_address.to_vec(),
+            data.emitter_chain.to_be_bytes().to_vec(),
+            data.sequence.to_be_bytes().to_vec(),
+        ];
+    }
+}
+```
+
+**The key differs from EVM's.** Solana keys on the triple
+`(emitter_address, emitter_chain, sequence)`; EVM keys on `vm.hash`. Both
+uniquely identify a message (section 2.1), but the mechanism differs: creating a
+PDA that already exists fails at the runtime level, so "mark as consumed" is
+"create the account" and "check if consumed" is "try to create it".
+
+Existence-as-a-boolean has a cost EVM does not have: **someone must pay rent**.
+Every claim account is rent-exempt lamports locked forever, which is why the
+program also ships `close_posted_message` and
+`close_signature_set_and_posted_vaa` instructions — reclaiming rent is a first-class
+concern, and nothing in the EVM contracts corresponds to it at all.
+
+The posted VAA is itself a PDA keyed on the message hash,
+[`posted_vaa.rs:34-38`](wormhole/solana/bridge/program/src/accounts/posted_vaa.rs#L34-L38):
+
+```rust
+fn seeds(data: &PostedVAADerivationData) -> Vec<Vec<u8>> {
+    vec![b"PostedVAA".to_vec(), data.payload_hash.to_vec()]
+}
+```
+
+So `post_vaa` is idempotent by construction — if the account exists, it returns
+early ([`post_vaa.rs:112-114`](wormhole/solana/bridge/program/src/api/post_vaa.rs#L112-L114)).
+
+And sequence numbers, which on EVM are `mapping(address => uint64)`, are their own
+PDA per emitter, [`sequence.rs:28-37`](wormhole/solana/bridge/program/src/accounts/sequence.rs#L28-L37):
+
+```rust
+fn seeds(data: &SequenceDerivationData) -> Vec<Vec<u8>> {
+    vec![
+        "Sequence".as_bytes().to_vec(),
+        data.emitter_key.to_bytes().to_vec(),
+    ]
+}
+```
+
+### 5.4 The emitter, and why Solana can do what EVM cannot
+
+Recall section 2.1: on EVM the emitter is forced to `msg.sender` because the
+chain cannot prove delegated authority. Solana can, and the account struct shows
+it, [`post_message.rs:36-53`](wormhole/solana/bridge/program/src/api/post_message.rs#L36-L53):
+
+```rust
+pub struct PostMessage<'b> {
+    /// Bridge config needed for fee calculation.
+    pub bridge: Mut<Bridge<'b, { AccountState::Initialized }>>,
+
+    /// Account to store the posted message
+    pub message: Signer<Mut<UninitializedMessage<'b>>>,
+
+    /// Emitter of the VAA
+    pub emitter: Signer<MaybeMut<Info<'b>>>,
+
+    /// Tracker for the emitter sequence
+    pub sequence: Mut<Sequence<'b>>,
+    ...
+}
+```
+
+`emitter` is a **`Signer`**, an arbitrary account that signed the transaction.
+Because a program can sign for its own PDAs, a Solana program can emit under a
+PDA address it controls — the whitepaper's *"if the chain allows proving that the
+caller controls or is authorized by said address (i.e. Solana PDAs)"* branch.
+
+The practical consequence for anyone reading VAAs: **an emitter address from
+Solana is a 32-byte pubkey that may be a PDA, and it is not derived from
+`msg.sender` semantics.** Your `verifyBridgeVM`-equivalent check must be against
+a registered address, never against any assumed derivation.
+
+Also note `message` is a `Signer` too, and `Uninitialized` — a fresh keypair per
+message, created in the same transaction. Where EVM emits a log and forgets,
+Solana **allocates an account per message** and pays rent for it. Messages are
+state on Solana and ephemera on EVM, which is the single starkest illustration
+of the two models.
