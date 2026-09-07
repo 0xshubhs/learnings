@@ -1417,3 +1417,194 @@ payload.
 | [`nft/mock/MockNFTBridgeImplementation.sol`](wormhole/ethereum/contracts/nft/mock/MockNFTBridgeImplementation.sol), [`nft/mock/MockNFTImplementation.sol`](wormhole/ethereum/contracts/nft/mock/MockNFTImplementation.sol) | upgrade doubles |
 
 ---
+
+## 15. `BytesLib`
+
+[510 lines](wormhole/ethereum/contracts/libraries/external/BytesLib.sol), GNU-LGPL
+v3, by Gonçalo Sá. Every VAA and every payload in this codebase is decoded through
+it. All of it is inline assembly.
+
+### The readers
+
+Ten typed readers, each with the identical shape: a bounds `require`, then a
+single `mload` with a shift.
+
+| Function | Line | Bound | Revert string |
+|---|---|---|---|
+| `toAddress` | [`:297`](wormhole/ethereum/contracts/libraries/external/BytesLib.sol#L297) | `+20` | `toAddress_outOfBounds` |
+| `toUint8` | [`:308`](wormhole/ethereum/contracts/libraries/external/BytesLib.sol#L308) | `+1` | `toUint8_outOfBounds` |
+| `toUint16` | [`:319`](wormhole/ethereum/contracts/libraries/external/BytesLib.sol#L319) | `+2` | `toUint16_outOfBounds` |
+| `toUint32` | [`:330`](wormhole/ethereum/contracts/libraries/external/BytesLib.sol#L330) | `+4` | `toUint32_outOfBounds` |
+| `toUint64` | [`:341`](wormhole/ethereum/contracts/libraries/external/BytesLib.sol#L341) | `+8` | `toUint64_outOfBounds` |
+| `toUint96` | [`:352`](wormhole/ethereum/contracts/libraries/external/BytesLib.sol#L352) | `+12` | `toUint96_outOfBounds` |
+| `toUint128` | [`:363`](wormhole/ethereum/contracts/libraries/external/BytesLib.sol#L363) | `+16` | `toUint128_outOfBounds` |
+| `toUint256` | [`:374`](wormhole/ethereum/contracts/libraries/external/BytesLib.sol#L374) | `+32` | `toUint256_outOfBounds` |
+| `toBytes32` | [`:385`](wormhole/ethereum/contracts/libraries/external/BytesLib.sol#L385) | `+32` | `toBytes32_outOfBounds` |
+
+The pattern, taking `toUint16` as representative:
+
+```solidity
+require(_bytes.length >= _start + 2, "toUint16_outOfBounds");
+uint16 tempUint;
+assembly {
+    tempUint := mload(add(add(_bytes, 0x2), _start))
+}
+```
+
+`_bytes` points at the length word, so `add(_bytes, 0x20)` would be the data
+start. Adding only `0x2` instead reads a word that *ends* at the target offset,
+and the implicit truncation to `uint16` keeps the low two bytes. That is why each
+reader adds its own width rather than `0x20`.
+
+**These bounds checks are the only thing standing between a malformed VAA and an
+out-of-bounds memory read.** Every parser in this repo relies on them, and none
+performs its own length validation before reading — the `require(encoded.length == index)`
+checks come *after* all the reads.
+
+### `slice(bytes, uint, uint)` — [`:228`](wormhole/ethereum/contracts/libraries/external/BytesLib.sol#L228)
+
+Two guards at
+[`:237-238`](wormhole/ethereum/contracts/libraries/external/BytesLib.sol#L237-L238):
+
+```solidity
+require(_length + 31 >= _length, "slice_overflow");
+require(_bytes.length >= _start + _length, "slice_outOfBounds");
+```
+
+The first is an overflow check written for pre-0.8 Solidity, where `+31` could
+wrap. Under 0.8 it is dead code — the addition would revert first — but it is
+harmless and was left in place.
+
+The body copies in 32-byte words and then masks the tail, allocating from the free
+memory pointer and rounding up to a word boundary.
+
+`slice` is what extracts the VAA body at
+[`Messages.sol:185`](wormhole/ethereum/contracts/Messages.sol#L185) and the
+payload at [`:207`](wormhole/ethereum/contracts/Messages.sol#L207).
+
+### The rest
+
+`concat` [`:13`](wormhole/ethereum/contracts/libraries/external/BytesLib.sol#L13)
+and `concatStorage` [`:91`](wormhole/ethereum/contracts/libraries/external/BytesLib.sol#L91)
+join byte arrays in memory and storage respectively; `equal`
+[`:396`](wormhole/ethereum/contracts/libraries/external/BytesLib.sol#L396) and
+`equalStorage` [`:439`](wormhole/ethereum/contracts/libraries/external/BytesLib.sol#L439)
+compare them. **None of the four is used by the Wormhole contracts** — they are
+carried along as part of the vendored library.
+
+---
+
+## 16. Delegated guardians and manager set
+
+Two newer, standalone, immutable contracts. Neither is proxied, and neither is
+part of the core message path.
+
+### `WormholeDelegatedGuardians.sol` — [248 lines](wormhole/ethereum/contracts/delegated_guardians/WormholeDelegatedGuardians.sol)
+
+Per-chain delegated guardian sets with their own threshold, described in
+`whitepapers/0017_delegated_guardian_sets.md`. Guardians delegate signing
+authority for a specific chain to a smaller set, so a chain can have its own
+security parameters without changing the global set.
+
+Structs: `ConfigPayload`
+[`:15`](wormhole/ethereum/contracts/delegated_guardians/WormholeDelegatedGuardians.sol#L15),
+`DelegatedGuardianPayload`
+[`:20`](wormhole/ethereum/contracts/delegated_guardians/WormholeDelegatedGuardians.sol#L20),
+`DelegatedGuardianSet`
+[`:26`](wormhole/ethereum/contracts/delegated_guardians/WormholeDelegatedGuardians.sol#L26).
+
+| Function | Line | Purpose |
+|---|---|---|
+| `submitConfig(bytes)` | [`:72`](wormhole/ethereum/contracts/delegated_guardians/WormholeDelegatedGuardians.sol#L72) | Governed; sets configs for several chains at once |
+| `getConfig()` | [`:89`](wormhole/ethereum/contracts/delegated_guardians/WormholeDelegatedGuardians.sol#L89) | All current sets |
+| `getConfig(uint16)` | [`:99`](wormhole/ethereum/contracts/delegated_guardians/WormholeDelegatedGuardians.sol#L99) | One chain's current set |
+| `getHistoricalConfig(uint16)` | [`:104`](wormhole/ethereum/contracts/delegated_guardians/WormholeDelegatedGuardians.sol#L104) | Full history for a chain |
+| `getHistoricalConfigLength(uint16)` | [`:108`](wormhole/ethereum/contracts/delegated_guardians/WormholeDelegatedGuardians.sol#L108) | |
+| `getHistoricalConfig(uint16,uint256)` | [`:112`](wormhole/ethereum/contracts/delegated_guardians/WormholeDelegatedGuardians.sol#L112) | One historical entry |
+| `chainIdsLength()` / `getChainIds()` / `getChainId(uint256)` | [`:116`](wormhole/ethereum/contracts/delegated_guardians/WormholeDelegatedGuardians.sol#L116), [`:120`](wormhole/ethereum/contracts/delegated_guardians/WormholeDelegatedGuardians.sol#L120), [`:124`](wormhole/ethereum/contracts/delegated_guardians/WormholeDelegatedGuardians.sol#L124) | Enumeration |
+| `_processGovernanceConfig` | [`:128`](wormhole/ethereum/contracts/delegated_guardians/WormholeDelegatedGuardians.sol#L128) | internal |
+| `_decodeConfigPayload` | [`:144`](wormhole/ethereum/contracts/delegated_guardians/WormholeDelegatedGuardians.sol#L144) | private |
+| `_verifyGovernanceVAA` | [`:183`](wormhole/ethereum/contracts/delegated_guardians/WormholeDelegatedGuardians.sol#L183) | internal |
+| `_replayProtect` | [`:210`](wormhole/ethereum/contracts/delegated_guardians/WormholeDelegatedGuardians.sol#L210) | internal |
+
+Ten custom errors at
+[`:44-53`](wormhole/ethereum/contracts/delegated_guardians/WormholeDelegatedGuardians.sol#L44-L53),
+including `NotSignedByCurrentGuardianSet` — this contract keeps the core's strict
+current-set requirement. Retaining full history rather than overwriting is what
+lets a verifier check a VAA against the config that was live when it was signed.
+
+### `delegated_manager_set/DelegatedManagerSet.sol` — [166 lines](wormhole/ethereum/contracts/delegated_manager_set/DelegatedManagerSet.sol)
+
+Module constant at
+[`:20`](wormhole/ethereum/contracts/delegated_manager_set/DelegatedManagerSet.sol#L20):
+`0x...44656C6567617465644D616E61676572`, ASCII `"DelegatedManager"`.
+
+| Function | Line |
+|---|---|
+| `verifyGovernanceVm(bytes)` | [`:45`](wormhole/ethereum/contracts/delegated_manager_set/DelegatedManagerSet.sol#L45) |
+| `parseManagerSetUpdate(bytes)` | [`:78`](wormhole/ethereum/contracts/delegated_manager_set/DelegatedManagerSet.sol#L78) |
+| `submitNewManagerSet(bytes)` | [`:114`](wormhole/ethereum/contracts/delegated_manager_set/DelegatedManagerSet.sol#L114) |
+| `getManagerSet(...)` | [`:146`](wormhole/ethereum/contracts/delegated_manager_set/DelegatedManagerSet.sol#L146) |
+| `getCurrentManagerSetIndex()` | [`:154`](wormhole/ethereum/contracts/delegated_manager_set/DelegatedManagerSet.sol#L154) |
+
+Nine custom errors at
+[`:26-34`](wormhole/ethereum/contracts/delegated_manager_set/DelegatedManagerSet.sol#L26-L34).
+Its ABI is [`IDelegatedManagerSet.sol`](wormhole/ethereum/contracts/delegated_manager_set/interfaces/IDelegatedManagerSet.sol).
+
+---
+
+## 17. Custom consistency level
+
+Three small files letting an integrator declare its own finality requirement,
+rather than accepting the bridge-wide `finality()`.
+
+[`CustomConsistencyLevel.sol`](wormhole/ethereum/contracts/custom_consistency_level/CustomConsistencyLevel.sol),
+version string `"CustomConsistencyLevel-0.0.1"` at
+[`:6`](wormhole/ethereum/contracts/custom_consistency_level/CustomConsistencyLevel.sol#L6),
+is a two-function registry: `configure(bytes32)` at
+[`:19`](wormhole/ethereum/contracts/custom_consistency_level/CustomConsistencyLevel.sol#L19)
+stores a packed config word against `msg.sender`, and `getConfiguration(address)`
+at [`:27`](wormhole/ethereum/contracts/custom_consistency_level/CustomConsistencyLevel.sol#L27)
+reads it back.
+
+Keying on `msg.sender` means an emitter can only ever configure itself, so no
+access control is needed. The contract is immutable and holds no funds.
+
+[`ConfigMakers.sol`](wormhole/ethereum/contracts/custom_consistency_level/libraries/ConfigMakers.sol)
+packs the word. `TYPE_ADDITIONAL_BLOCKS = 1` at
+[`:9`](wormhole/ethereum/contracts/custom_consistency_level/libraries/ConfigMakers.sol#L9)
+is the only type defined; `makeAdditionalBlocksConfig` at
+[`:15`](wormhole/ethereum/contracts/custom_consistency_level/libraries/ConfigMakers.sol#L15)
+builds "wait N additional blocks beyond the standard consistency level".
+
+[`TestCustomConsistencyLevel.sol`](wormhole/ethereum/contracts/custom_consistency_level/TestCustomConsistencyLevel.sol)
+is a worked example of an integrator using it, and
+[`ICustomConsistencyLevel.sol`](wormhole/ethereum/contracts/custom_consistency_level/interfaces/ICustomConsistencyLevel.sol)
+is the ABI.
+
+Nothing in the core reads this registry. Guardians read it off chain and adjust
+how long they wait before signing.
+
+---
+
+## 18. Mocks and test contracts
+
+Not deployed, but they document intended behaviour.
+
+| Contract | Lines | What it demonstrates |
+|---|---|---|
+| [`mock/MockBatchedVAASender.sol`](wormhole/ethereum/contracts/mock/MockBatchedVAASender.sol) | 53 | Several `publishMessage` calls in one transaction, each getting its own sequence |
+| [`mock/MockImplementation.sol`](wormhole/ethereum/contracts/mock/MockImplementation.sol) | 17 | Upgrade target for testing `submitContractUpgrade` |
+| [`bridge/mock/MockBridgeImplementation.sol`](wormhole/ethereum/contracts/bridge/mock/MockBridgeImplementation.sol) | 25 | Same, for the token bridge |
+| [`bridge/mock/MockFeeToken.sol`](wormhole/ethereum/contracts/bridge/mock/MockFeeToken.sol) | 177 | A fee-on-transfer ERC-20. Its existence is why `_transferTokens` uses balance deltas |
+| [`bridge/mock/MockTokenBridgeIntegration.sol`](wormhole/ethereum/contracts/bridge/mock/MockTokenBridgeIntegration.sol) | 48 | A payload-3 recipient, i.e. how to build on contract-controlled transfers |
+| [`bridge/mock/MockTokenImplementation.sol`](wormhole/ethereum/contracts/bridge/mock/MockTokenImplementation.sol) | 12 | Wrapped-token upgrade target, exercising the shared beacon |
+| [`bridge/mock/MockWETH9.sol`](wormhole/ethereum/contracts/bridge/mock/MockWETH9.sol) | 81 | WETH double for the wrap/unwrap paths |
+| [`nft/mock/MockNFTBridgeImplementation.sol`](wormhole/ethereum/contracts/nft/mock/MockNFTBridgeImplementation.sol) | 21 | NFT bridge upgrade target |
+| [`nft/mock/MockNFTImplementation.sol`](wormhole/ethereum/contracts/nft/mock/MockNFTImplementation.sol) | 12 | Wrapped NFT upgrade target |
+
+`MockFeeToken` is the most instructive: the balance-delta accounting at
+[`Bridge.sol:436-447`](wormhole/ethereum/contracts/bridge/Bridge.sol#L436-L447)
+exists because of it.
+
+---
