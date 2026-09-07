@@ -1053,3 +1053,138 @@ special-casing.
 
 ---
 
+## 1.9 Tokens
+
+### `LUSDToken` — [`v1-dev/packages/contracts/contracts/LUSDToken.sol:27-306`](v1-dev/packages/contracts/contracts/LUSDToken.sol#L27-L306)
+
+A hand-rolled ERC-20 with EIP-2612 permit. It does **not** inherit OpenZeppelin;
+the whole implementation is inline.
+
+**Minting is restricted to three addresses**, fixed at construction:
+`borrowerOperationsAddress`, `troveManagerAddress`, `stabilityPoolAddress`.
+
+| Function | Line | Caller |
+|---|---|---|
+| `mint` | [`v1-dev/packages/contracts/contracts/LUSDToken.sol:99`](v1-dev/packages/contracts/contracts/LUSDToken.sol#L99) | BorrowerOperations only |
+| `burn` | [`v1-dev/packages/contracts/contracts/LUSDToken.sol:104`](v1-dev/packages/contracts/contracts/LUSDToken.sol#L104) | BorrowerOperations, TroveManager, StabilityPool |
+| `sendToPool` | [`v1-dev/packages/contracts/contracts/LUSDToken.sol:109`](v1-dev/packages/contracts/contracts/LUSDToken.sol#L109) | StabilityPool |
+| `returnFromPool` | [`v1-dev/packages/contracts/contracts/LUSDToken.sol:114`](v1-dev/packages/contracts/contracts/LUSDToken.sol#L114) | TroveManager, StabilityPool |
+
+Standard ERC-20 surface at [`v1-dev/packages/contracts/contracts/LUSDToken.sol:121`](v1-dev/packages/contracts/contracts/LUSDToken.sol#L121)–[`v1-dev/packages/contracts/contracts/LUSDToken.sol:158`](v1-dev/packages/contracts/contracts/LUSDToken.sol#L158). EIP-2612 `permit` at [`v1-dev/packages/contracts/contracts/LUSDToken.sol:171`](v1-dev/packages/contracts/contracts/LUSDToken.sol#L171),
+`domainSeparator` at [`v1-dev/packages/contracts/contracts/LUSDToken.sol:163`](v1-dev/packages/contracts/contracts/LUSDToken.sol#L163), `nonces` at [`v1-dev/packages/contracts/contracts/LUSDToken.sol:194`](v1-dev/packages/contracts/contracts/LUSDToken.sol#L194), and a `_chainID` helper at
+[`v1-dev/packages/contracts/contracts/LUSDToken.sol:200`](v1-dev/packages/contracts/contracts/LUSDToken.sol#L200) so the domain separator is rebuilt if the chain forks.
+
+**Transfer restrictions** at [`v1-dev/packages/contracts/contracts/LUSDToken.sol:262-283`](v1-dev/packages/contracts/contracts/LUSDToken.sol#L262-L283): LUSD cannot be sent to the zero
+address, to the token contract itself, or to the core protocol addresses. This
+prevents users from accidentally destroying funds by sending LUSD to a pool that
+has no way to return it.
+
+### `LQTYToken` — [`v1-dev/packages/contracts/contracts/LQTY/LQTYToken.sol:50-366`](v1-dev/packages/contracts/contracts/LQTY/LQTYToken.sol#L50-L366)
+
+Fixed supply of 100 million, all minted at deployment. No inflation, no minting
+function.
+
+| Constant / function | Line | Meaning |
+|---|---|---|
+| `ONE_YEAR_IN_SECONDS` | [`v1-dev/packages/contracts/contracts/LQTY/LQTYToken.sol:83`](v1-dev/packages/contracts/contracts/LQTY/LQTYToken.sol#L83) | Vesting granularity |
+| `getDeploymentStartTime` | [`v1-dev/packages/contracts/contracts/LQTY/LQTYToken.sol:167`](v1-dev/packages/contracts/contracts/LQTY/LQTYToken.sol#L167) | Anchor for the one-year lockup |
+| `getLpRewardsEntitlement` | [`v1-dev/packages/contracts/contracts/LQTY/LQTYToken.sol:171`](v1-dev/packages/contracts/contracts/LQTY/LQTYToken.sol#L171) | LP-incentive allocation |
+| `sendToLQTYStaking` | [`v1-dev/packages/contracts/contracts/LQTY/LQTYToken.sol:223`](v1-dev/packages/contracts/contracts/LQTY/LQTYToken.sol#L223) | Called by `LQTYStaking.stake` |
+| `permit` | [`v1-dev/packages/contracts/contracts/LQTY/LQTYToken.sol:239`](v1-dev/packages/contracts/contracts/LQTY/LQTYToken.sol#L239) | EIP-2612 |
+
+`_requireValidRecipient` at [`v1-dev/packages/contracts/contracts/LQTY/LQTYToken.sol:299`](v1-dev/packages/contracts/contracts/LQTY/LQTYToken.sol#L299) blocks transfers to the token or staking
+address, and during the first year blocks the multisig from transferring, which
+enforces the team lockup in code rather than by promise.
+
+---
+
+## 1.10 `LQTYStaking` — [`v1-dev/packages/contracts/contracts/LQTY/LQTYStaking.sol:15-247`](v1-dev/packages/contracts/contracts/LQTY/LQTYStaking.sol#L15-L247)
+
+Stakers of LQTY receive the protocol's borrowing and redemption fees. Same
+accumulator pattern as the Stability Pool, but additive rather than
+multiplicative, because a staker's principal never takes a haircut.
+
+| Variable | Role |
+|---|---|
+| `F_ETH` | Cumulative ETH fee per unit staked |
+| `F_LUSD` | Cumulative LUSD fee per unit staked |
+| `snapshots[user]` | The user's snapshot of both |
+
+| Function | Line | Notes |
+|---|---|---|
+| `stake` | [`v1-dev/packages/contracts/contracts/LQTY/LQTYStaking.sol:94`](v1-dev/packages/contracts/contracts/LQTY/LQTYStaking.sol#L94) | Pays out pending gains first, then adds |
+| `unstake` | [`v1-dev/packages/contracts/contracts/LQTY/LQTYStaking.sol:131`](v1-dev/packages/contracts/contracts/LQTY/LQTYStaking.sol#L131) | Pays out, then subtracts; `_requireUserHasStake` at [`v1-dev/packages/contracts/contracts/LQTY/LQTYStaking.sol:236`](v1-dev/packages/contracts/contracts/LQTY/LQTYStaking.sol#L236) |
+| `increaseF_ETH` | [`v1-dev/packages/contracts/contracts/LQTY/LQTYStaking.sol:166`](v1-dev/packages/contracts/contracts/LQTY/LQTYStaking.sol#L166) | TroveManager only, on redemption |
+| `increaseF_LUSD` | [`v1-dev/packages/contracts/contracts/LQTY/LQTYStaking.sol:176`](v1-dev/packages/contracts/contracts/LQTY/LQTYStaking.sol#L176) | BorrowerOperations only, on borrow |
+| `getPendingETHGain` | [`v1-dev/packages/contracts/contracts/LQTY/LQTYStaking.sol:188`](v1-dev/packages/contracts/contracts/LQTY/LQTYStaking.sol#L188) | `stake * (F_ETH - snapshot) / 1e18` |
+| `getPendingLUSDGain` | [`v1-dev/packages/contracts/contracts/LQTY/LQTYStaking.sol:198`](v1-dev/packages/contracts/contracts/LQTY/LQTYStaking.sol#L198) | Same shape |
+| `_updateUserSnapshots` | [`v1-dev/packages/contracts/contracts/LQTY/LQTYStaking.sol:210`](v1-dev/packages/contracts/contracts/LQTY/LQTYStaking.sol#L210) | |
+| `_sendETHGainToUser` | [`v1-dev/packages/contracts/contracts/LQTY/LQTYStaking.sol:216`](v1-dev/packages/contracts/contracts/LQTY/LQTYStaking.sol#L216) | Low-level send with success check |
+
+The gain formula at [`v1-dev/packages/contracts/contracts/LQTY/LQTYStaking.sol:192-196`](v1-dev/packages/contracts/contracts/LQTY/LQTYStaking.sol#L192-L196) is the additive twin of the Stability Pool's
+`(S_now - S_snap) / P_snap`. No `P` is needed because nothing dilutes a staker.
+
+## 1.11 `CommunityIssuance` — [`v1-dev/packages/contracts/contracts/LQTY/CommunityIssuance.sol:14-132`](v1-dev/packages/contracts/contracts/LQTY/CommunityIssuance.sol#L14-L132)
+
+Issues LQTY to Stability Pool depositors on a decaying schedule.
+
+| Constant | Line | Value |
+|---|---|---|
+| `ISSUANCE_FACTOR` | [`v1-dev/packages/contracts/contracts/LQTY/CommunityIssuance.sol:37`](v1-dev/packages/contracts/contracts/LQTY/CommunityIssuance.sol#L37) | `999998681227695000` |
+| `LQTYSupplyCap` | [`v1-dev/packages/contracts/contracts/LQTY/CommunityIssuance.sol:45`](v1-dev/packages/contracts/contracts/LQTY/CommunityIssuance.sol#L45) | 32,000,000 LQTY |
+
+`_getCumulativeIssuanceFraction` at [`v1-dev/packages/contracts/contracts/LQTY/CommunityIssuance.sol:107`](v1-dev/packages/contracts/contracts/LQTY/CommunityIssuance.sol#L107) computes
+`1 - ISSUANCE_FACTOR^minutesPassed` using `LiquityMath._decPow`. The factor gives
+a **one-year half-life**: half the 32 million is issued in year one, half the
+remainder in year two, and so on. `issueLQTY` at [`v1-dev/packages/contracts/contracts/LQTY/CommunityIssuance.sol:91`](v1-dev/packages/contracts/contracts/LQTY/CommunityIssuance.sol#L91) is callable only by the
+Stability Pool ([`v1-dev/packages/contracts/contracts/LQTY/CommunityIssuance.sol:129`](v1-dev/packages/contracts/contracts/LQTY/CommunityIssuance.sol#L129)) and returns the newly issued amount, which the pool
+folds into `G`.
+
+---
+
+## 1.12 `PriceFeed` — [`v1-dev/packages/contracts/contracts/PriceFeed.sol:23-572`](v1-dev/packages/contracts/contracts/PriceFeed.sol#L23-L572)
+
+The most defensive contract in v1. Chainlink is primary, Tellor is the fallback,
+and the contract encodes an explicit state machine over their combined health.
+
+| Constant | Line | Value |
+|---|---|---|
+| `ETHUSD_TELLOR_REQ_ID` | [`v1-dev/packages/contracts/contracts/PriceFeed.sol:35`](v1-dev/packages/contracts/contracts/PriceFeed.sol#L35) | 1 |
+| `TARGET_DIGITS` | [`v1-dev/packages/contracts/contracts/PriceFeed.sol:38`](v1-dev/packages/contracts/contracts/PriceFeed.sol#L38) | 18 |
+| `TELLOR_DIGITS` | [`v1-dev/packages/contracts/contracts/PriceFeed.sol:39`](v1-dev/packages/contracts/contracts/PriceFeed.sol#L39) | 6 |
+| `TIMEOUT` | [`v1-dev/packages/contracts/contracts/PriceFeed.sol:42`](v1-dev/packages/contracts/contracts/PriceFeed.sol#L42) | 4 hours |
+| `MAX_PRICE_DEVIATION_FROM_PREVIOUS_ROUND` | [`v1-dev/packages/contracts/contracts/PriceFeed.sol:45`](v1-dev/packages/contracts/contracts/PriceFeed.sol#L45) | 50% |
+| `MAX_PRICE_DIFFERENCE_BETWEEN_ORACLES` | [`v1-dev/packages/contracts/contracts/PriceFeed.sol:51`](v1-dev/packages/contracts/contracts/PriceFeed.sol#L51) | 5% |
+
+### `fetchPrice()` — [`v1-dev/packages/contracts/contracts/PriceFeed.sol:129`](v1-dev/packages/contracts/contracts/PriceFeed.sol#L129)
+
+**Not a view.** It writes `lastGoodPrice` and `status`, so it is a state
+transition, not a read.
+
+The status enum has five states: `chainlinkWorking`, `usingTellorChainlinkUntrusted`,
+`bothOraclesUntrusted`, `usingTellorChainlinkFrozen`,
+`usingChainlinkTellorUntrusted`. `fetchPrice` is a large branch over
+`(status, chainlinkHealth, tellorHealth)` that decides which source to trust and
+what to transition to.
+
+### The health checks
+
+| Check | Line | Fails when |
+|---|---|---|
+| `_chainlinkIsBroken` | [`v1-dev/packages/contracts/contracts/PriceFeed.sol:346`](v1-dev/packages/contracts/contracts/PriceFeed.sol#L346) | Current or previous response is bad |
+| `_badChainlinkResponse` | [`v1-dev/packages/contracts/contracts/PriceFeed.sol:350`](v1-dev/packages/contracts/contracts/PriceFeed.sol#L350) | No success, zero round ID, zero/negative price, or future timestamp |
+| `_chainlinkIsFrozen` | [`v1-dev/packages/contracts/contracts/PriceFeed.sol:363`](v1-dev/packages/contracts/contracts/PriceFeed.sol#L363) | Older than 4 hours |
+| `_chainlinkPriceChangeAboveMax` | [`v1-dev/packages/contracts/contracts/PriceFeed.sol:367`](v1-dev/packages/contracts/contracts/PriceFeed.sol#L367) | Moved more than 50% in one round |
+| `_tellorIsBroken` | [`v1-dev/packages/contracts/contracts/PriceFeed.sol:385`](v1-dev/packages/contracts/contracts/PriceFeed.sol#L385) | Bad response |
+| `_tellorIsFrozen` | [`v1-dev/packages/contracts/contracts/PriceFeed.sol:396`](v1-dev/packages/contracts/contracts/PriceFeed.sol#L396) | Older than 4 hours |
+| `_bothOraclesSimilarPrice` | [`v1-dev/packages/contracts/contracts/PriceFeed.sol:425`](v1-dev/packages/contracts/contracts/PriceFeed.sol#L425) | Disagree by more than 5% |
+
+`_scaleChainlinkPriceByDigits` at [`v1-dev/packages/contracts/contracts/PriceFeed.sol:441`](v1-dev/packages/contracts/contracts/PriceFeed.sol#L441) normalises to 18 decimals.
+
+**Contrast with Aave v2**, whose `AaveOracle` calls `latestAnswer()` with no
+staleness check at all, so a frozen feed is undetectable. Liquity, with no
+governance able to intervene after the fact, had to encode every failure mode
+up front. Immutability forces defensive design.
+
+---
+
