@@ -1608,3 +1608,188 @@ Not deployed, but they document intended behaviour.
 exists because of it.
 
 ---
+
+## 19. Selector tables
+
+Computed with `cast sig`, not transcribed.
+
+### Core (`Wormhole` proxy)
+
+| Selector | Signature |
+|---|---|
+| `0xb19a437e` | `publishMessage(uint32,bytes,uint8)` |
+| `0xc0fd8bde` | `parseAndVerifyVM(bytes)` |
+| `0x875be02a` | `verifyVM((uint8,uint32,uint32,uint16,bytes32,uint64,uint8,bytes,uint32,(bytes32,bytes32,uint8,uint8)[],bytes32))` |
+| `0xa9e11893` | `parseVM(bytes)` |
+| `0xa0cce1b3` | `verifySignatures(bytes32,(bytes32,bytes32,uint8,uint8)[],(address[],uint32))` |
+| `0xf8ce560a` | `quorum(uint256)` |
+| `0x5cb8cae2` | `submitContractUpgrade(bytes)` |
+| `0xf42bc641` | `submitSetMessageFee(bytes)` |
+| `0x6606b4e0` | `submitNewGuardianSet(bytes)` |
+| `0x93df337e` | `submitTransferFees(bytes)` |
+| `0x178149e7` | `submitRecoverChainId(bytes)` |
+| `0xf951975a` | `getGuardianSet(uint32)` |
+| `0x1cfe7951` | `getCurrentGuardianSetIndex()` |
+| `0x1a90a219` | `messageFee()` |
+| `0x4cf842b5` | `nextSequence(address)` |
+| `0x9a8a0592` | `chainId()` |
+| `0x64d42b17` | `evmChainId()` |
+| `0xe039f224` | `isFork()` |
+| `0x2c3c02a4` | `governanceActionIsConsumed(bytes32)` |
+
+### Token bridge (`TokenBridge` proxy)
+
+| Selector | Signature |
+|---|---|
+| `0x0f5287b0` | `transferTokens(address,uint256,uint16,bytes32,uint256,uint32)` |
+| `0xc5a5ebda` | `transferTokensWithPayload(address,uint256,uint16,bytes32,uint32,bytes)` |
+| `0x9981509f` | `wrapAndTransferETH(uint16,bytes32,uint256,uint32)` |
+| `0xbee9cdfc` | `wrapAndTransferETHWithPayload(uint16,bytes32,uint32,bytes)` |
+| `0xc6878519` | `completeTransfer(bytes)` |
+| `0xff200cde` | `completeTransferAndUnwrapETH(bytes)` |
+| `0xc3f511c1` | `completeTransferWithPayload(bytes)` |
+| `0x1c8475e4` | `completeTransferAndUnwrapETHWithPayload(bytes)` |
+| `0xc48fa115` | `attestToken(address,uint32)` |
+| `0xe8059810` | `createWrapped(bytes)` |
+| `0xf768441f` | `updateWrapped(bytes)` |
+| `0xa5799f93` | `registerChain(bytes)` |
+| `0x25394645` | `upgrade(bytes)` |
+| `0xc6b9744d` | `submitSetPauserAddresses(bytes)` |
+| `0x8456cb59` | `pause()` |
+| `0x62a5af3b` | `freeze()` |
+| `0x3f4ba83a` | `unpause()` |
+| `0x149b9e34` | `unpauseExpired()` |
+| `0x5c975abb` | `paused()` |
+| `0x1ff1e286` | `wrappedAsset(uint16,bytes32)` |
+| `0xaa4efa5b` | `isTransferCompleted(bytes32)` |
+| `0xb96c7e4d` | `outstandingBridged(address)` |
+| `0xad66a5f1` | `bridgeContracts(uint16)` |
+
+`pause()`, `unpause()` and `paused()` match the OpenZeppelin `Pausable`
+selectors, so existing tooling recognises them.
+
+### Wrapped token (`TokenImplementation`)
+
+| Selector | Signature |
+|---|---|
+| `0x40c10f19` | `mint(address,uint256)` |
+| `0x9dc29fac` | `burn(address,uint256)` |
+| `0xa18cd7c6` | `updateDetails(string,string,uint64)` |
+| `0x3d6c043b` | `nativeContract()` |
+| `0xd505accf` | `permit(address,address,uint256,uint256,uint8,bytes32,bytes32)` |
+| `0x3644e515` | `DOMAIN_SEPARATOR()` |
+| `0x7ecebe00` | `nonces(address)` |
+
+Plus the standard ERC-20 set. `chainId()` on the token shares `0x9a8a0592` with
+the bridge's, since the signature is identical.
+
+---
+
+## 20. Storage layouts
+
+### Core, `WormholeState` at slot 0
+
+| Slot | Contents |
+|---|---|
+| 0 | `provider.chainId` (uint16) + `provider.governanceChainId` (uint16), packed |
+| 1 | `provider.governanceContract` (bytes32) |
+| 2 | `guardianSets` mapping root |
+| 3 | `guardianSetIndex` (uint32) + `guardianSetExpiry` (uint32), packed |
+| 4 | `sequences` mapping root |
+| 5 | `consumedGovernanceActions` mapping root |
+| 6 | `initializedImplementations` mapping root |
+| 7 | `messageFee` |
+| 8 | `evmChainId` |
+
+Derived by hand from
+[`State.sol:22-47`](wormhole/ethereum/contracts/State.sol#L22-L47) and standard
+Solidity packing rules; `forge inspect` was not run against this tree.
+
+### Token bridge, `BridgeStorage.State` at slot 0
+
+| Slot | Contents |
+|---|---|
+| 0 | `wormhole` (address payable) |
+| 1 | `tokenImplementation` (address) |
+| 2 | `provider.chainId` + `governanceChainId` + `finality` (uint8) + `paused` (bool), packed |
+| 3 | `provider.governanceContract` |
+| 4 | `provider.WETH` |
+| 5 | `consumedGovernanceActions` |
+| 6 | `completedTransfers` |
+| 7 | `initializedImplementations` |
+| 8 | `wrappedAssets` |
+| 9 | `isWrappedAsset` |
+| 10 | `outstandingBridged` |
+| 11 | `bridgeImplementations` |
+| 12 | `evmChainId` |
+| 13 | `_status` (from `ReentrancyGuard`) |
+
+Slot 13 is called out by name in the
+[`BridgePauserStorage` comment](wormhole/ethereum/contracts/bridge/BridgePauserStorage.sol#L5-L12),
+which confirms this layout.
+
+### Pauser roles, ERC-7201 namespace
+
+Base slot `0x685f7dd8ace9c4fb94a4997fcd733e0d769273ee87b95731641e14d0cc4a6700`.
+
+| Offset | Contents |
+|---|---|
+| `+0` | `pauser` |
+| `+1` | `unpauser` |
+| `+2` | `freezer` (address) + `pauseExpiry` (uint64), packed |
+
+### Proxy slots
+
+Both proxies are OpenZeppelin `ERC1967Proxy`, so:
+
+| Slot | Meaning |
+|---|---|
+| `0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc` | implementation, `keccak256("eip1967.proxy.implementation") - 1` |
+| `0xb53127684a568b3173ae13b9f8a6016e243e63b6e8ee1178d6a717850b5d6103` | admin (unused here; upgrades go through governance) |
+
+Both contracts deliberately place their own state at slot 0 upward, which does
+not collide with the ERC-1967 slots.
+
+---
+
+## 21. Events reference
+
+### Core
+
+| Event | Where | Indexed | Notes |
+|---|---|---|---|
+| `LogMessagePublished(address indexed sender, uint64 sequence, uint32 nonce, bytes payload, uint8 consistencyLevel)` | [`Implementation.sol:12`](wormhole/ethereum/contracts/Implementation.sol#L12) | `sender` | **The event the guardians watch.** Everything cross-chain starts here |
+| `ContractUpgraded(address indexed oldContract, address indexed newContract)` | [`Governance.sol:18`](wormhole/ethereum/contracts/Governance.sol#L18) | both | |
+| `GuardianSetAdded(uint32 indexed index)` | [`Governance.sol:19`](wormhole/ethereum/contracts/Governance.sol#L19) | `index` | **Declared but never emitted.** `submitNewGuardianSet` emits nothing |
+| `LogGuardianSetChanged(uint32,uint32)` | [`State.sol:9`](wormhole/ethereum/contracts/State.sol#L9) | none | Legacy, never emitted |
+| `LogMessagePublished(address,uint32,bytes)` | [`State.sol:14`](wormhole/ethereum/contracts/State.sol#L14) | none | Legacy 3-arg version, shadowed by the real one |
+
+An indexer that filters on `sender` gets one emitter's stream cheaply. `sequence`
+is **not** indexed, so following a specific message means decoding data.
+
+### Token bridge
+
+| Event | Where | Indexed |
+|---|---|---|
+| `TransferRedeemed(uint16 indexed emitterChainId, bytes32 indexed emitterAddress, uint64 indexed sequence)` | [`Bridge.sol:29`](wormhole/ethereum/contracts/bridge/Bridge.sol#L29) | all three |
+| `Paused(address indexed by, uint256 pauseExpiry)` | [`Bridge.sol:39`](wormhole/ethereum/contracts/bridge/Bridge.sol#L39) | `by` |
+| `Frozen(address indexed by, uint256 pauseExpiry)` | [`Bridge.sol:44`](wormhole/ethereum/contracts/bridge/Bridge.sol#L44) | `by` |
+| `Unpaused(address indexed by)` | [`Bridge.sol:47`](wormhole/ethereum/contracts/bridge/Bridge.sol#L47) | `by` |
+| `UnpauseExpired(address indexed by)` | [`Bridge.sol:50`](wormhole/ethereum/contracts/bridge/Bridge.sol#L50) | `by` |
+| `PauserAddressesSet(address indexed pauser, address indexed freezer, address indexed unpauser)` | [`BridgeGovernance.sol:79`](wormhole/ethereum/contracts/bridge/BridgeGovernance.sol#L79) | all three |
+| `ContractUpgraded(address indexed oldContract, address indexed newContract)` | [`BridgeGovernance.sol:178`](wormhole/ethereum/contracts/bridge/BridgeGovernance.sol#L178) | both |
+
+`TransferRedeemed` indexes all three fields, so `(emitterChainId, emitterAddress,
+sequence)` uniquely identifies a redemption without touching the data section.
+**There is no corresponding `TransferInitiated`** — the outbound side is visible
+only through the core's `LogMessagePublished`, which is why indexers must decode
+the payload to distinguish a transfer from an attestation.
+
+### Wrapped token
+
+Standard `Transfer` and `Approval`, declared locally at
+[`TokenImplementation.sol:14-15`](wormhole/ethereum/contracts/bridge/token/TokenImplementation.sol#L14-L15).
+Mints appear as `Transfer(address(0), to, amount)` and burns as
+`Transfer(from, address(0), amount)`.
+
+---

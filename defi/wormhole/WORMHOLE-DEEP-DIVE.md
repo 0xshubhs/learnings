@@ -1503,7 +1503,7 @@ static INVALID_SIGNATURES: &[&str; 16] = &[
 
 Sixteen `SignatureSet` accounts, permanently rejected at
 [`:206-209`](wormhole/solana/bridge/program/src/api/post_vaa.rs#L206-L209). Right
-beside it sits another artifact, [`:157-160`](wormhole/solana/bridge/program/src/api/post_vaa.rs#L157-L160):
+beside it sits another artifact, [`:163-167`](wormhole/solana/bridge/program/src/api/post_vaa.rs#L163-L167):
 
 ```rust
 // IMPORTANT - this is a fix for mainnet wormhole
