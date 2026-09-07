@@ -1007,7 +1007,7 @@ The proxy is
 [`Wormhole.sol`](wormhole/ethereum/contracts/Wormhole.sol), a bare `ERC1967Proxy`
 constructed pointing at `Setup`, which does one-time wiring and then immediately
 `_upgradeTo(implementation)`
-([`Setup.sol:36`](wormhole/ethereum/contracts/Setup.sol#L36)).
+([`Setup.sol:37`](wormhole/ethereum/contracts/Setup.sol#L37)).
 
 `initialize()` is guarded by a per-implementation flag rather than a version
 number, [`Implementation.sol:64-75`](wormhole/ethereum/contracts/Implementation.sol#L64-L75),
