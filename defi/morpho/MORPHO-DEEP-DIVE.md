@@ -419,3 +419,522 @@ This is the same trick as Uniswap v4's `Extsload`: pay for storage layout
 knowledge off-chain, save bytecode on-chain.
 
 ---
+
+## 3. The accounting
+
+### Shares and the virtual offset
+
+All four conversions live in 18 lines
+([`morpho-blue/src/libraries/SharesMathLib.sol:27-44`](morpho-blue/src/libraries/SharesMathLib.sol#L27-L44)),
+and every one of them adds a constant to both sides of the ratio:
+
+```solidity
+uint256 internal constant VIRTUAL_SHARES = 1e6;
+uint256 internal constant VIRTUAL_ASSETS = 1;
+
+function toSharesDown(uint256 assets, uint256 totalAssets, uint256 totalShares) internal pure returns (uint256) {
+    return assets.mulDivDown(totalShares + VIRTUAL_SHARES, totalAssets + VIRTUAL_ASSETS);
+}
+```
+
+**Why this defeats the donation attack.** The classic first-depositor exploit
+against a naive vault runs like this. The attacker deposits 1 wei and receives
+1 share, so the pool is `1 asset / 1 share`. They then *donate* 10,000 tokens
+directly to the contract, making it `10,001 assets / 1 share`. A victim
+depositing 10,000 tokens now computes `10,000 * 1 / 10,001 = 0` shares by
+integer division, and the attacker redeems their single share for everything.
+
+The attack needs the share price to be movable to an arbitrary height from a
+starting point of one. The virtual offset makes that impossible. Redo the
+arithmetic with `VIRTUAL_SHARES = 1e6` and `VIRTUAL_ASSETS = 1`: the empty market
+starts at `(0 + 1) assets / (0 + 1e6) shares`, so the very first depositor
+receives a million shares per asset, not one. After the same 10,000-token
+donation the ratio is `10,001 / (1e6 + 1e6)`, and the victim's 10,000 tokens
+still buy `10,000 * 2e6 / 10,001 ≈ 1.999e6` shares. The attacker's slice of the
+pool is unchanged. The offset costs the attacker a factor of `1e6` in capital to
+move the price one step, which makes the attack strictly unprofitable rather than
+merely harder.
+
+Two consequences the source is candid about
+([`SharesMathLib.sol:17-19`](morpho-blue/src/libraries/SharesMathLib.sol#L17-L19)):
+the virtual shares can never be redeemed, and the assets backing virtual *borrow*
+shares "behave like unrealizable bad debt". Both are rounding dust, deliberately
+stranded.
+
+**Compare with Aave.** Aave solves the same class of problem differently, with
+`virtualUnderlyingBalance`
+([`DataTypes.sol:73`](../aave/aave-v3-origin/src/contracts/protocol/libraries/types/DataTypes.sol#L73)),
+a tracked balance that ignores direct token donations entirely. Aave's approach
+is to make the contract blind to gifts; Morpho's is to make gifts economically
+pointless. Aave's needs a storage slot per reserve and bookkeeping on every
+transfer path; Morpho's needs two `constant`s and costs nothing.
+
+### `wTaylorCompounded` — continuous compounding on a budget
+
+[`morpho-blue/src/libraries/MathLib.sol:38-44`](morpho-blue/src/libraries/MathLib.sol#L38-L44):
+
+```solidity
+function wTaylorCompounded(uint256 x, uint256 n) internal pure returns (uint256) {
+    uint256 firstTerm = x * n;
+    uint256 secondTerm = mulDivDown(firstTerm, firstTerm, 2 * WAD);
+    uint256 thirdTerm = mulDivDown(secondTerm, firstTerm, 3 * WAD);
+
+    return firstTerm + secondTerm + thirdTerm;
+}
+```
+
+**The derivation.** Continuously compounded growth over `n` seconds at rate `x`
+per second is `e^(xn)`, and the *interest* is `e^(xn) − 1`. Expanding the
+exponential:
+
+```
+e^z − 1 = z + z²/2! + z³/3! + z⁴/4! + …      where z = x·n
+```
+
+The function keeps the first three terms. `firstTerm` is `z`, `secondTerm` is
+`z²/2` (computed as `z·z/2` in WAD), `thirdTerm` is `z³/6` (computed as
+`(z²/2)·z/3`, since `(z²/2)/3 = z³/6`). Truncation is downward at each `mulDivDown`,
+so the result always *understates* interest — in the borrower's favour, which is
+the safe direction for an approximation that could otherwise let debt exceed
+what the model justifies.
+
+**Error bound.** The tail is `Σ(k≥4) z^k/k! < z⁴/4! · 1/(1−z/5)` for `z < 5`. At
+a 100% APR rate accruing over a full day, `z = 1.0 · (1/365) ≈ 0.00274`, and the
+first omitted term is `z⁴/24 ≈ 2.3e-12` — twelve decimal places down, utterly
+negligible. Even at an extreme `z = 0.5` (a position untouched long enough to
+accrue 50% in one accrual), the error is `0.5⁴/24 ≈ 0.26%`, still an
+understatement. The approximation degrades gracefully precisely because every
+omitted term is positive.
+
+**Compare with Aave.** Aave's `calculateCompoundedInterest`
+([`MathUtils.sol:79-84`](../aave/aave-v3-origin/src/contracts/protocol/libraries/math/MathUtils.sol#L79-L84))
+does the same job with the same number of terms, written as a nested Horner form:
+
+```solidity
+uint256 x = (rate * exp) / SECONDS_PER_YEAR;
+return WadRayMath.RAY + x + x.rayMul(x / 2 + x.rayMul(x / 6));
+```
+
+Expand it: `1 + x + x·(x/2 + x·(x/6)) = 1 + x + x²/2 + x³/6`. Identical
+mathematics. Two differences worth noting. Aave returns the *ratio* (`RAY + …`)
+because it multiplies an index by it; Morpho returns the *interest fraction*
+because it multiplies a balance by it. And Aave divides the annual rate by
+`SECONDS_PER_YEAR` inside the function, whereas Morpho's IRM already returns a
+per-second rate. Aave's own comment
+([`MathUtils.sol:62-70`](../aave/aave-v3-origin/src/contracts/protocol/libraries/math/MathUtils.sol#L62-L70))
+is unusually frank that the polynomial diverges badly at absurd inputs, and
+explains why they accept it.
+
+### The market id
+
+[`MarketParamsLib.sol:13`](morpho-blue/src/libraries/MarketParamsLib.sol#L13)
+hard-codes `MARKET_PARAMS_BYTES_LENGTH = 5 * 32`, then hashes exactly that many
+bytes from the struct's memory pointer. Because `MarketParams` is five
+word-sized fields with no dynamic types, its memory layout is exactly 160
+contiguous bytes and the assembly `keccak256(marketParams, 160)` is safe. Add a
+sixth field and the constant silently becomes wrong — which is a good argument
+for why this struct will never gain a field.
+
+### Struct layout
+
+[`IMorpho.sol:16-33`](morpho-blue/src/interfaces/IMorpho.sol#L16-L33):
+
+| Struct | Field | Type | Slots |
+|---|---|---|---|
+| `Position` | `supplyShares` | `uint256` | slot 0 (full) |
+| | `borrowShares` | `uint128` | slot 1, low half |
+| | `collateral` | `uint128` | slot 1, high half |
+| `Market` | `totalSupplyAssets` | `uint128` | slot 0, low |
+| | `totalSupplyShares` | `uint128` | slot 0, high |
+| | `totalBorrowAssets` | `uint128` | slot 1, low |
+| | `totalBorrowShares` | `uint128` | slot 1, high |
+| | `lastUpdate` | `uint128` | slot 2, low |
+| | `fee` | `uint128` | slot 2, high |
+
+A `Position` is two slots; a whole `Market` is three. Every read in
+`_accrueInterest` or `_isHealthy` touches at most those three. `supplyShares` is
+the only `uint256` — because supply shares carry the `1e6` virtual multiplier and
+can grow large, whereas borrow shares are bounded by `uint128` casts via
+`toUint128` ([`UtilsLib.sol:27-30`](morpho-blue/src/libraries/UtilsLib.sol#L27-L30)),
+which reverts rather than truncating.
+
+Contrast with Aave's `ReserveData`, which is a dozen fields plus a packed
+configuration word plus two external token contracts holding the actual balances.
+
+---
+
+## 4. The callback pattern
+
+Four of Morpho's functions hand control to `msg.sender` **before** pulling
+tokens, and one hands it over before demanding repayment. The interfaces are all
+in [`morpho-blue/src/interfaces/IMorphoCallbacks.sol`](morpho-blue/src/interfaces/IMorphoCallbacks.sol):
+
+| Callback | Fired by | Line | Fired before |
+|---|---|---|---|
+| `onMorphoSupply` | `supply` | [`Morpho.sol:192`](morpho-blue/src/Morpho.sol#L192) | `safeTransferFrom` of loan token |
+| `onMorphoRepay` | `repay` | [`Morpho.sol:293`](morpho-blue/src/Morpho.sol#L293) | `safeTransferFrom` of loan token |
+| `onMorphoSupplyCollateral` | `supplyCollateral` | [`Morpho.sol:317`](morpho-blue/src/Morpho.sol#L317) | `safeTransferFrom` of collateral |
+| `onMorphoLiquidate` | `liquidate` | [`Morpho.sol:412`](morpho-blue/src/Morpho.sol#L412) | `safeTransferFrom` of repayment |
+| `onMorphoFlashLoan` | `flashLoan` | [`Morpho.sol:429`](morpho-blue/src/Morpho.sol#L429) | `safeTransferFrom` of repayment |
+
+Each is gated on `if (data.length > 0)`, so the cost is one `CALLDATASIZE` check
+when unused.
+
+**Why the ordering is the whole trick.** State is already written when the
+callback fires. So inside `onMorphoSupplyCollateral` your collateral is already
+credited, which means you can already borrow against it — and you can use the
+borrowed funds to acquire the very collateral you are about to be charged for.
+That is one-transaction leverage with no flash loan and no intermediary:
+
+```
+User calls supplyCollateral(market, 5 WETH, user, data)
+  |
+  |-- position.collateral += 5 WETH          (credited already)
+  |-- emit SupplyCollateral
+  |-- onMorphoSupplyCollateral(5 WETH, data) --> back in user's contract
+  |     |-- Morpho.borrow(market, 9000 USDC, 0, user, user)
+  |     |     `-- health check passes: collateral is already there
+  |     |-- swap 9000 USDC -> 3 WETH on a DEX
+  |     `-- (user now holds the WETH needed to settle)
+  |
+  `-- safeTransferFrom(user, Morpho, 5 WETH)  <-- settles with 2 own + 3 bought
+```
+
+Deleveraging is the mirror image through `onMorphoRepay`: your debt is already
+reduced when the callback fires, so you can withdraw the freed collateral, sell
+it, and use the proceeds to fund the repayment that is about to be pulled.
+
+A collateral swap is the same shape again: `supplyCollateral` the new asset,
+inside the callback `withdrawCollateral` the old one and sell it.
+
+**What this replaces.** Aave needs a *contract per operation*. In
+`aave/v2-protocol/contracts/adapters/` there is a `BaseUniswapAdapter`, a
+`UniswapLiquiditySwapAdapter`, a `UniswapRepayAdapter`, a
+`FlashLiquidationAdapter`, a `ParaSwapLiquiditySwapAdapter` — hundreds of lines
+each, every one a bespoke flash-loan choreography with its own approval handling
+and its own audit surface. Aave v2 also had flash-loan "mode 1/2", which lets a
+flash loan terminate as a debt position instead of being repaid, precisely
+because the callback alone was not expressive enough.
+
+Morpho needs none of them. There is one generic hook per operation, and the
+periphery becomes optional convenience rather than required plumbing. The
+bundlers repo is exactly that convenience layer, and it is thin: `MorphoBundler`
+implements all four callbacks by simply re-entering its own multicall
+([`morpho-blue-bundlers/src/MorphoBundler.sol:261-266`](morpho-blue-bundlers/src/MorphoBundler.sol#L261-L266)),
+so a callback body is just "more bundled actions".
+
+**The safety argument.** Handing control to `msg.sender` mid-function is the
+pattern that makes reentrancy dangerous, and Morpho has no `nonReentrant`
+modifier anywhere. §8 works through why that is sound here.
+
+---
+
+## 5. Where the removed complexity went
+
+Nothing disappeared. It moved to places where you can decline it.
+
+### MetaMorpho: curation as a market, not a vote
+
+[`metamorpho/src/MetaMorpho.sol`](metamorpho/src/MetaMorpho.sol) is 911 lines —
+longer than Morpho itself — and it is an ERC-4626 vault that spreads deposits
+across Blue markets. This is where "which markets are safe?" gets answered.
+
+**Four roles**, deliberately unequal
+([`:67-73`](metamorpho/src/MetaMorpho.sol#L67-L73)):
+
+| Role | Storage | Can do |
+|---|---|---|
+| `owner` | (from `Ownable`) | Set every other role, set fee and timelock |
+| `curator` | [`:67`](metamorpho/src/MetaMorpho.sol#L67) | Submit caps, submit market removals |
+| allocators | [`:70`](metamorpho/src/MetaMorpho.sol#L70) | Reorder queues, `reallocate` between approved markets |
+| `guardian` | [`:73`](metamorpho/src/MetaMorpho.sol#L73) | **Revoke** pending changes during the timelock |
+
+The asymmetry is the design. Adding risk is slow and vetoable; removing risk is
+instant. `submitCap` ([`:273`](metamorpho/src/MetaMorpho.sol#L273)) only queues a
+`PendingUint192`; it takes effect via `acceptCap`
+([`:470`](metamorpho/src/MetaMorpho.sol#L470)) behind the `afterTimelock`
+modifier ([`:176`](metamorpho/src/MetaMorpho.sol#L176)). The timelock is bounded
+to between 1 day and 2 weeks
+([`metamorpho/src/libraries/ConstantsLib.sol:10-13`](metamorpho/src/libraries/ConstantsLib.sol#L10-L13)).
+Meanwhile an allocator can pull funds out of a market immediately, and the
+guardian can kill a pending cap increase with no delay.
+
+**Two queues**, both capped at 30 entries
+([`ConstantsLib.sol:16`](metamorpho/src/libraries/ConstantsLib.sol#L16)):
+`supplyQueue` is the order deposits fill markets
+([`:100`](metamorpho/src/MetaMorpho.sol#L100)), `withdrawQueue` is the order
+withdrawals drain them ([`:103`](metamorpho/src/MetaMorpho.sol#L103)).
+`_supplyMorpho` ([`:775-804`](metamorpho/src/MetaMorpho.sol#L775-L804)) walks the
+supply queue filling each market up to its `cap`, and reverts `AllCapsReached` if
+the deposit does not fit. Both loops wrap the Morpho call in `try/catch` — *"Using
+try/catch to skip markets that revert"* — so one broken market cannot brick the
+whole vault.
+
+`totalAssets` ([`:589-593`](metamorpho/src/MetaMorpho.sol#L589-L593)) is a plain
+loop over the withdraw queue summing `expectedSupplyAssets`. That is why the
+queue length is capped at 30: it bounds the gas of every ERC-4626 view.
+
+The vault fee is taken as shares on interest only, with the same pre-fee
+denominator trick as Morpho's market fee
+([`:898-911`](metamorpho/src/MetaMorpho.sol#L898-L911)), and is capped at 50%
+([`ConstantsLib.sol:19`](metamorpho/src/libraries/ConstantsLib.sol#L19)).
+
+**The governance point.** In Aave, if you dislike a risk parameter your recourse
+is to win a DAO vote. In Morpho, your recourse is to withdraw from this curator's
+vault and deposit in another. Curation becomes a competitive market with exit
+rather than a political process with voice. Whether that is better depends on
+whether depositors actually evaluate curators — see §7.
+
+### Oracles: the market's trust anchor, chosen at creation
+
+[`morpho-blue/src/interfaces/IOracle.sol:14`](morpho-blue/src/interfaces/IOracle.sol#L14)
+is the entire oracle contract requirement:
+
+```solidity
+function price() external view returns (uint256);
+```
+
+One function, returning the price of one collateral token in loan tokens, scaled
+by `1e36`. No `latestRoundData`, no staleness field, no round id. Whatever
+sanity-checking exists must live inside the oracle, because core will not do it.
+The interface docstring is blunt about ownership of that risk
+([`IOracle.sol:8`](morpho-blue/src/interfaces/IOracle.sol#L8)): *"It is the
+user's responsibility to select markets with safe oracles."*
+
+`MorphoChainlinkOracleV2` ([`morpho-blue-oracles/src/morpho-chainlink/MorphoChainlinkOracleV2.sol:151-156`](morpho-blue-oracles/src/morpho-chainlink/MorphoChainlinkOracleV2.sol#L151-L156))
+is the reference implementation, and it is a *composition* engine: up to two
+Chainlink feeds on the base side, two on the quote side, plus an optional
+ERC-4626 vault on each side to handle share-price assets.
+
+```solidity
+function price() external view returns (uint256) {
+    return SCALE_FACTOR.mulDiv(
+        BASE_VAULT.getAssets(BASE_VAULT_CONVERSION_SAMPLE) * BASE_FEED_1.getPrice() * BASE_FEED_2.getPrice(),
+        QUOTE_VAULT.getAssets(QUOTE_VAULT_CONVERSION_SAMPLE) * QUOTE_FEED_1.getPrice() * QUOTE_FEED_2.getPrice()
+    );
+}
+```
+
+All the decimal reconciliation is folded into `SCALE_FACTOR`, computed once in
+the constructor. The derivation is spelled out in a 25-line comment
+([`:113-137`](morpho-blue-oracles/src/morpho-chainlink/MorphoChainlinkOracleV2.sol#L113-L137))
+ending at
+`SCALE_FACTOR = 1e(36 + dQ1 + fpQ1 + fpQ2 − dB1 − fpB1 − fpB2)`. Doing this at
+deploy time rather than per call is why `price()` is four multiplications.
+
+The wstETH adapter
+([`morpho-blue-oracles/src/wsteth-exchange-rate-adapter/WstEthStEthExchangeRateChainlinkAdapter.sol:26-29`](morpho-blue-oracles/src/wsteth-exchange-rate-adapter/WstEthStEthExchangeRateChainlinkAdapter.sol#L26-L29))
+is a nice illustration of what "oracle" can mean here — it is not a price feed at
+all, it is Lido's own exchange rate dressed as one:
+
+```solidity
+function latestRoundData() external view returns (uint80, int256, uint256, uint256, uint80) {
+    return (0, int256(ST_ETH.getPooledEthByShares(1 ether)), 0, 0, 0);
+}
+```
+
+It returns zero for `roundId`, `startedAt`, `updatedAt` and `answeredInRound`.
+Any consumer checking staleness would reject it; Morpho does not check, so it
+works. That is the trade in miniature.
+
+### The IRM: pluggable, and allowed to have state
+
+[`morpho-blue/src/interfaces/IIrm.sol:13-18`](morpho-blue/src/interfaces/IIrm.sol#L13-L18)
+requires two functions: `borrowRate` (non-view, may write) and `borrowRateView`
+(view). Morpho calls the mutating one from `_accrueInterest`
+([`Morpho.sol:488`](morpho-blue/src/Morpho.sol#L488)) and once at market creation
+([`:163`](morpho-blue/src/Morpho.sol#L163)) so a stateful model can initialise.
+
+The interface is deliberately permissive: the IRM receives the full `Market`
+struct and may keep its own history, which is how Morpho's adaptive-curve model
+targets a utilisation over time rather than reading it off a fixed kink. What an
+IRM may *not* do is re-enter Morpho — that is listed as a market-creation
+assumption ([`IMorpho.sol:113`](morpho-blue/src/interfaces/IMorpho.sol#L113)),
+not enforced in code.
+
+Aave's equivalent is a single blessed strategy contract per reserve
+([`DefaultReserveInterestRateStrategyV2.sol:124`](../aave/aave-v3-origin/src/contracts/misc/DefaultReserveInterestRateStrategyV2.sol#L124)),
+swappable by the risk admin. Morpho's is fixed per market but freely chosen at
+creation from the owner's whitelist.
+
+### Bundlers: the UX layer
+
+[`morpho-blue-bundlers/src/BaseBundler.sol:51-59`](morpho-blue-bundlers/src/BaseBundler.sol#L51-L59)
+is a `multicall` that records the initiator for the duration of the call:
+
+```solidity
+function multicall(bytes[] memory data) external payable {
+    require(_initiator == UNSET_INITIATOR, ErrorsLib.ALREADY_INITIATED);
+    _initiator = msg.sender;
+    _multicall(data);
+    _initiator = UNSET_INITIATOR;
+}
+```
+
+The `protected` modifier ([`:31`](morpho-blue-bundlers/src/BaseBundler.sol#L31))
+then rejects any call arriving outside that window, which is what stops someone
+calling an individual bundler action directly with someone else's approvals.
+`MorphoBundler` layers permit, supply, borrow, repay and flash-loan actions on
+top, and the migration bundlers move whole positions out of Aave v2, Aave v3,
+Compound v2 and Compound v3 in one transaction
+([`morpho-blue-bundlers/src/migration/`](morpho-blue-bundlers/src/migration/)).
+
+---
+
+## 6. Liquidation
+
+The whole function is [`Morpho.sol:347-417`](morpho-blue/src/Morpho.sol#L347-L417),
+about seventy lines. Aave's `executeLiquidationCall` starts at
+[`LiquidationLogic.sol:166`](../aave/aave-v3-origin/src/contracts/protocol/libraries/logic/LiquidationLogic.sol#L166)
+and runs past line 460, with a second helper at
+[`:583`](../aave/aave-v3-origin/src/contracts/protocol/libraries/logic/LiquidationLogic.sol#L583)
+and a deficit routine at
+[`:76`](../aave/aave-v3-origin/src/contracts/protocol/libraries/logic/LiquidationLogic.sol#L76).
+
+### The incentive factor
+
+[`Morpho.sol:365-369`](morpho-blue/src/Morpho.sol#L365-L369):
+
+```solidity
+// The liquidation incentive factor is min(maxLiquidationIncentiveFactor, 1/(1 - cursor*(1 - lltv))).
+uint256 liquidationIncentiveFactor = UtilsLib.min(
+    MAX_LIQUIDATION_INCENTIVE_FACTOR,
+    WAD.wDivDown(WAD - LIQUIDATION_CURSOR.wMulDown(WAD - marketParams.lltv))
+);
+```
+
+With `LIQUIDATION_CURSOR = 0.3e18` and `MAX_LIQUIDATION_INCENTIVE_FACTOR = 1.15e18`
+([`ConstantsLib.sol:11-14`](morpho-blue/src/libraries/ConstantsLib.sol#L11-L14)),
+the LIF is a **pure function of LLTV**. Nobody sets it:
+
+| `lltv` | `1 − lltv` | LIF | Liquidator margin |
+|---|---|---|---|
+| 0.98 | 0.02 | 1.0060 | 0.60% |
+| 0.945 | 0.055 | 1.0168 | 1.68% |
+| 0.86 | 0.14 | 1.0438 | 4.38% |
+| 0.77 | 0.23 | 1.0742 | 7.42% |
+| 0.625 | 0.375 | 1.1268 → capped **1.15** | 15% |
+| 0.30 | 0.70 | 1.2658 → capped **1.15** | 15% |
+
+The shape is right: a riskier market (lower LLTV, bigger gap to insolvency) pays
+a bigger bounty, because the collateral it holds is more volatile and the
+liquidator's inventory risk is larger. The cap stops the bounty from eating the
+borrower alive in very low-LLTV markets.
+
+Aave instead stores a per-asset `liquidationBonus` in the config bitmap
+([`ReserveConfiguration.sol:15`](../aave/aave-v3-origin/src/contracts/protocol/libraries/configuration/ReserveConfiguration.sol#L15))
+that the risk admin tunes, and then takes a cut of it for the protocol via
+`liquidationProtocolFee`
+([`LiquidationLogic.sol:614-622`](../aave/aave-v3-origin/src/contracts/protocol/libraries/logic/LiquidationLogic.sol#L614-L622)).
+Morpho derives the number and keeps none of it.
+
+### Direction: seize-exact or repay-exact
+
+Same XOR pattern as everywhere else
+([`:356`](morpho-blue/src/Morpho.sol#L356)) — specify `seizedAssets` or
+`repaidShares`, never both. The two branches invert each other
+([`:371-380`](morpho-blue/src/Morpho.sol#L371-L380)):
+
+```solidity
+if (seizedAssets > 0) {
+    uint256 seizedAssetsQuoted = seizedAssets.mulDivUp(collateralPrice, ORACLE_PRICE_SCALE);
+    repaidShares = seizedAssetsQuoted.wDivUp(liquidationIncentiveFactor)
+        .toSharesUp(market[id].totalBorrowAssets, market[id].totalBorrowShares);
+} else {
+    seizedAssets = repaidShares.toAssetsDown(market[id].totalBorrowAssets, market[id].totalBorrowShares)
+        .wMulDown(liquidationIncentiveFactor)
+        .mulDivDown(ORACLE_PRICE_SCALE, collateralPrice);
+}
+```
+
+Every rounding favours the protocol: seize-exact rounds the repayment *up*,
+repay-exact rounds the seizure *down*.
+
+**There is no close factor.** A liquidator may repay the entire debt in one call.
+Aave caps a single liquidation at 50% unless the health factor is below
+`CLOSE_FACTOR_HF_THRESHOLD = 0.95e18`
+([`LiquidationLogic.sol:43`](../aave/aave-v3-origin/src/contracts/protocol/libraries/logic/LiquidationLogic.sol#L43),
+[`:49`](../aave/aave-v3-origin/src/contracts/protocol/libraries/logic/LiquidationLogic.sol#L49)),
+and further insists the leftovers exceed `MIN_LEFTOVER_BASE`
+([`:64`](../aave/aave-v3-origin/src/contracts/protocol/libraries/logic/LiquidationLogic.sol#L64))
+to avoid stranding dust positions.
+
+Why can Morpho skip all that? Because a close factor protects a borrower whose
+*whole cross-collateral portfolio* would otherwise be sold to cover one bad leg.
+A Morpho position is one collateral against one debt in one isolated market;
+there is nothing else to protect. Partial liquidation is still possible, it is
+just not mandated.
+
+### Bad debt, socialised in eight lines
+
+[`Morpho.sol:392-403`](morpho-blue/src/Morpho.sol#L392-L403):
+
+```solidity
+if (position[id][borrower].collateral == 0) {
+    badDebtShares = position[id][borrower].borrowShares;
+    badDebtAssets = UtilsLib.min(
+        market[id].totalBorrowAssets,
+        badDebtShares.toAssetsUp(market[id].totalBorrowAssets, market[id].totalBorrowShares)
+    );
+
+    market[id].totalBorrowAssets -= badDebtAssets.toUint128();
+    market[id].totalSupplyAssets -= badDebtAssets.toUint128();
+    market[id].totalBorrowShares -= badDebtShares.toUint128();
+    position[id][borrower].borrowShares = 0;
+}
+```
+
+The trigger is simply "collateral hit zero and debt remains". The loss is written
+off *immediately*, in the same transaction, by reducing `totalSupplyAssets`.
+Every supplier in that market takes a proportional haircut instantly — their
+share count is unchanged, but each share is now worth less.
+
+Aave cannot do this, because its suppliers are pooled across the whole market and
+an instant write-down would be a bank run trigger. So it books the shortfall into
+`reserve.deficit`
+([`LiquidationLogic.sol:538`](../aave/aave-v3-origin/src/contracts/protocol/libraries/logic/LiquidationLogic.sol#L538))
+and covers it later out of treasury or Umbrella via `executeEliminateDeficit`
+([`:76`](../aave/aave-v3-origin/src/contracts/protocol/libraries/logic/LiquidationLogic.sol#L76),
+[`:119`](../aave/aave-v3-origin/src/contracts/protocol/libraries/logic/LiquidationLogic.sol#L119)).
+That is a whole subsystem — accrual, tracking, an elimination path, a funding
+source — that exists because losses cannot be localised. Morpho's isolation makes
+the write-down cheap enough to do inline.
+
+### Call ordering
+
+[`:410-414`](morpho-blue/src/Morpho.sol#L410-L414) — collateral goes out
+**first**, then the callback, then the repayment is pulled:
+
+```solidity
+IERC20(marketParams.collateralToken).safeTransfer(msg.sender, seizedAssets);
+if (data.length > 0) IMorphoLiquidateCallback(msg.sender).onMorphoLiquidate(repaidAssets, data);
+IERC20(marketParams.loanToken).safeTransferFrom(msg.sender, address(this), repaidAssets);
+```
+
+So a liquidator needs **no capital**: receive the WETH, sell it inside the
+callback, repay the USDC from the proceeds. Aave's equivalent is the separate
+`FlashLiquidationAdapter` contract.
+
+### Worked example, continuing §0
+
+Bob: 10 WETH collateral, 24,000 USDC debt, ETH at $2,700, `lltv = 0.86`,
+LIF = 1.0438.
+
+**Partial.** Liquidator repays 10,000 USDC. Seized =
+`10,000 × 1.0438 × 1e36 / 2.7e24 = 3.866 WETH` ($10,438). Bob keeps 6.134 WETH
+($16,562) against 14,000 USDC debt; `maxBorrow = 6.134 × 2700 × 0.86 = 14,243`,
+so he is healthy again by a hair.
+
+**Full.** Liquidator repays all 24,000. Seized =
+`24,000 × 1.0438 × 1e36 / 2.7e24 = 9.278 WETH` ($25,051). Bob keeps 0.722 WETH.
+No bad debt, because collateral did not reach zero.
+
+**Insolvent.** Now suppose ETH gapped to $2,300 before anyone acted. Bob's 10 WETH
+is worth $23,000 against 24,000 debt. A liquidator seizing everything gets
+$23,000 of WETH for `23,000 / 1.0438 = 22,035` USDC repaid — still profitable.
+Collateral is now zero with 1,965 USDC of debt outstanding, so the branch above
+fires: `totalBorrowAssets` and `totalSupplyAssets` both drop by 1,965, and the
+market's suppliers eat it immediately. If Alice was the only supplier of
+100,000 USDC, her position is now worth 98,035.
+
+---
