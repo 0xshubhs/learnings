@@ -36,7 +36,7 @@ Companion documents, which this one does not duplicate:
 - [§17 Complete events reference](#17-complete-events-reference)
 - [§18 Use-case index](#18-use-case-index)
 - [§19 v3 → v4 API migration table](#19-v3--v4-api-migration-table)
-- [§20 Gas snapshots and audits](#20-gas-snapshots-and-audits)
+- [§20 Gas, audits and security notes](#20-gas-audits-and-security-notes)
 
 ---
 
@@ -2411,3 +2411,490 @@ Plus standard ERC-20 `Transfer`/`Approval` and ERC-4626 `Deposit`/`Withdraw` fro
 `TokenizationSpoke`, and OZ `AccessManager` events from `AccessManagerEnumerable`.
 
 ---
+
+## §18 Use-case index
+
+Each entry names the entry point and follows the call chain to the storage write.
+`→` is a call; indentation is depth. Every line number was checked against the
+source.
+
+### Supply
+
+```
+User → Spoke.supply(reserveId, amount, onBehalfOf)                Spoke.sol:225
+  nonReentrant, onlyPositionManager(onBehalfOf)                        :229
+  |- _reserves.get(reserveId)                          ReserveList.sol (reverts if unlisted)
+  |- _validateSupply(reserve.flags)                                    :232
+  |     rejects paused / frozen                          ReserveFlagsMap.sol:80,87
+  |- IERC20(underlying).safeTransferFrom(msg.sender, address(hub), amount)  :234
+  |     tokens go straight to the HUB, never to the Spoke
+  |- hub.add(assetId, amount)                                     Hub.sol:200
+  |    |- asset.accrue()                                AssetLogic.sol (index catch-up)
+  |    |- _validateAdd(asset, spoke, amount)                       Hub.sol:205
+  |    |     spoke active, not halted, addCap not exceeded
+  |    |- balance >= liquidity + amount  else InsufficientTransferred  :209
+  |    |- shares = asset.toAddedSharesDown(amount)                     :210
+  |    |     ERC-4626 round-DOWN, 1e6 virtual offset  SharesMath.sol:13-14
+  |    |- asset.addedShares += shares; spoke.addedShares += shares     :212-213
+  |    |- asset.liquidity += amount                                    :214
+  |    |- asset.updateDrawnRate(assetId)                               :216
+  |    '- emit Add(assetId, spoke, shares, amount)                     :218
+  |- userPosition.suppliedShares += suppliedShares                     :236
+  '- emit Supply(reserveId, caller, user, shares, amount)              :238
+```
+
+Note what does **not** happen: no health-factor check, and no collateral flag is
+set. Supplying is always safe, and using the position as collateral is a separate
+call (see below). This is the clearest structural difference from v3, where
+`SupplyLogic.executeSupply` auto-enables collateral.
+
+### Withdraw
+
+```
+User → Spoke.withdraw(reserveId, amount, onBehalfOf)              Spoke.sol:244
+  |- _validateWithdraw(reserve.flags)   (paused only; frozen still allows exit)  :251
+  |- withdrawnAmount = min(amount, hub.previewRemoveByShares(assetId, shares))   :255-258
+  |     capping by the user's own shares is what makes amount = type(uint).max work
+  |- hub.remove(assetId, withdrawnAmount, msg.sender)              Hub.sol:224
+  |     transfers underlying from Hub to the caller
+  |- userPosition.suppliedShares -= withdrawnShares                    :261
+  |- if collateral: _refreshAndValidateUserAccountData(onBehalfOf)     :263-264
+  |     reverts if the withdrawal would leave the position unhealthy
+  |  '- _notifyRiskPremiumUpdate(onBehalfOf, newRiskPremium)           :265
+  '- emit Withdraw(...)                                                :268
+```
+
+### Borrow
+
+```
+User → Spoke.borrow(reserveId, amount, onBehalfOf)                Spoke.sol:274
+  |- _validateBorrow(reserve.flags)   (paused / frozen / borrowable)   :282
+  |- hub.draw(assetId, amount, msg.sender)                        Hub.sol:249
+  |    |- asset.accrue()                                               :253
+  |    |- _validateDraw(asset, spoke, amount, to)                      :254
+  |    |     spoke active/not halted, drawCap not exceeded
+  |    |- amount <= liquidity  else InsufficientLiquidity(liquidity)   :257
+  |    |- drawnShares = asset.toDrawnSharesUp(amount)                  :259
+  |    |     ray index, round UP against the borrower
+  |    |- asset.drawnShares += ; spoke.drawnShares +=                  :260-261
+  |    |- asset.liquidity -= amount                                    :262
+  |    |- asset.updateDrawnRate(assetId)                               :264
+  |    |- IERC20(underlying).safeTransfer(to, amount)                  :266
+  |    '- emit Draw(...)                                               :268
+  |- userPosition.drawnShares += drawnShares                           :287
+  |- if first borrow in this reserve: borrowCount < MAX_USER_RESERVES_LIMIT :287-294
+  |- newRiskPremium = _refreshAndValidateUserAccountData(onBehalfOf)   :296
+  |     health check AND recomputation of the premium from collateral mix
+  |- _notifyRiskPremiumUpdate(onBehalfOf, newRiskPremium)              :297
+  |     → Hub.refreshPremium for every reserve the user borrows   Hub.sol:362
+  '- emit Borrow(...)                                                  :299
+```
+
+### Repay
+
+```
+User → Spoke.repay(reserveId, amount, onBehalfOf)                 Spoke.sol:305
+  |- drawnIndex = hub.getAssetDrawnIndex(assetId)                      :314
+  |- (drawnDebtRestored, premiumDebtRayRestored)
+  |     = userPosition.calculateRestoreAmount(drawnIndex, amount)      :315
+  |     splits the payment across principal and accrued premium
+  |- restoredShares = drawnDebtRestored.rayDivDown(drawnIndex)         :317
+  |- premiumDelta = userPosition.calculatePremiumDelta(...)            :319-324
+  |     UserPositionUtils.sol:54 — recomputes shares + signed offset
+  |- safeTransferFrom(msg.sender, address(hub), totalDebtRestored)     :327
+  |- hub.restore(assetId, drawnDebtRestored, premiumDelta)        Hub.sol:274
+  |- userPosition.applyPremiumDelta(premiumDelta)                      :334
+  |- userPosition.drawnShares -= restoredShares                        :335
+  |- if drawnShares == 0: positionStatus.setBorrowing(reserveId,false) :336-338
+  '- emit Repay(...)                                                   :341
+```
+
+`repay` runs **no** health check. Reducing debt cannot make a position unhealthy,
+so the expensive `_refreshAndValidateUserAccountData` is skipped. That is why
+`repay: full` costs 123k gas against `borrow: first` at 269k
+(`snapshots/Spoke.Operations.json`).
+
+### Toggle collateral
+
+```
+User → Spoke.setUsingAsCollateral(reserveId, flag, onBehalfOf)    Spoke.sol:391
+  |- early-return if already in the requested state                    :398
+  |- _validateSetUsingAsCollateral(...)                                :401
+  |- positionStatus.setUsingAsCollateral(reserveId, flag)              :402
+  |- enabling  → _refreshDynamicConfig(onBehalfOf, reserveId)          :405
+  |- disabling → _refreshAndValidateUserAccountData + premium update   :407-408
+  '- emit SetUsingAsCollateral(...)                                    :411
+```
+
+Enabling is cheap and cannot fail a health check; disabling must prove the
+position survives without that collateral.
+
+### Liquidate
+
+```
+Liquidator → Spoke.liquidationCall(collId, debtId, user, debtToCover, receiveShares)
+                                                                  Spoke.sol:347
+  |- userAccountData = _calculateUserAccountData(user)                 :354
+  |- LiquidationLogic.liquidateUser({reserves, userPositions,
+  |     positionStatus, dynamicConfig, params})                        :367
+  |    |- health factor < 1 check, close factor, bonus     LiquidationLogic.sol
+  |    |- _executeLiquidation                                          :342-446
+  |    |     debt side  → Hub.restore
+  |    |     coll side  → Hub.transferShares (receiveShares)
+  |    |                  or Hub.remove     (receive underlying)
+  |    '- emit LiquidationCall                                         :425
+  |- if isUserInDeficit → LiquidationLogic.notifyReportDeficit(...)    :375-377
+  |     → Hub.reportDeficit for every borrowed reserve            Hub.sol:304
+  '- else → _notifyRiskPremiumUpdate(user, newRiskPremium)             :386
+```
+
+### Register a Spoke on a Hub
+
+```
+Governor → Hub.addSpoke(assetId, spoke, config)                   Hub.sol:158
+  restricted → AccessManager check on the selector
+  |- assetId < _assetCount  else AssetNotListed()                      :163
+  |- spoke != address(0)    else InvalidAddress()                      :164
+  |- _addSpoke(assetId, spoke)                                         :165 → :707
+  |     '- emit AddSpoke(assetId, spoke)                               :707
+  '- _updateSpokeConfig(assetId, spoke, config)                        :166 → :717
+        '- emit UpdateSpokeConfig(assetId, spoke, config)              :717
+```
+
+No liquidity moves. This is the whole point of hub-and-spoke: a new market is a
+registry entry against liquidity that already exists.
+
+### Set caps, or halt a Spoke in an emergency
+
+Both are the same call, because caps and the kill switches live in one struct
+(`IHub.sol:94-100`):
+
+```solidity
+struct SpokeConfig {
+  uint40 addCap;
+  uint40 drawCap;
+  uint24 riskPremiumThreshold;
+  bool active;
+  bool halted;
+}
+```
+
+```
+Governor → Hub.updateSpokeConfig(assetId, spoke, config)          Hub.sol:170
+  '- _updateSpokeConfig → emit UpdateSpokeConfig                       :717
+```
+
+`active = false` retires a Spoke; `halted = true` is the emergency stop. Both are
+checked by `_validateAdd` / `_validateDraw` on the way in. Note the asymmetry:
+halting blocks new `add` and `draw`, but `remove` and `restore` keep working, so
+users can always exit and repay. The Spoke has its own finer-grained switches in
+`ReserveFlagsMap` — `paused`, `frozen`, `borrowable`, `receiveSharesEnabled`
+(`ReserveFlagsMap.sol:10-16`).
+
+### Set an interest rate strategy
+
+```
+Governor → Hub.setInterestRateData(assetId, irData)               Hub.sol:181
+  restricted
+  '- → AssetInterestRateStrategy.setInterestRateData          (:58, emits
+        UpdateInterestRateData)                    IAssetInterestRateStrategy.sol:29
+```
+
+### Sweep idle liquidity to a reinvestment strategy, and reclaim it
+
+```
+ReinvestmentController → Hub.sweep(assetId, amount)               Hub.sol:406
+  |- asset.accrue()                                                    :410
+  |- _validateSweep(asset, msg.sender, amount)                         :411
+  |     caller must be the asset's registered reinvestment controller
+  |- amount <= liquidity else InsufficientLiquidity(liquidity)         :414
+  |- asset.liquidity -= amount ; asset.swept += amount                 :416,:417
+  |- asset.updateDrawnRate(assetId)                                    :419
+  |- safeTransfer(msg.sender, amount)                                  :421
+  '- emit Sweep(assetId, controller, amount)                           :423
+
+ReinvestmentController → Hub.reclaim(assetId, amount)             Hub.sol:427
+  the mirror image; emits Reclaim                                      :442
+```
+
+`swept` stays inside `totalAddedAssets`, so suppliers keep their claim on
+capital that is out working. That is also the risk: a controller that cannot
+return funds leaves the claim unbacked. See §20.
+
+### Mint protocol fee shares
+
+```
+FeeMinter → Hub.mintFeeShares(assetId)                            Hub.sol:190
+  restricted
+  |- asset.accrue()                                                    :194
+  |- _mintFeeShares(asset, assetId)                                    :194 → :779
+  |     mints new added-shares to the fee receiver, diluting suppliers
+  |     by exactly the accrued fee
+  '- asset.updateDrawnRate(assetId)                                    :195
+```
+
+### Delegate to a position manager
+
+Two steps, and they are independent. Governance authorises the *contract*; the
+user authorises it for *their own* position.
+
+```
+Governor → Spoke.updatePositionManager(positionManager, active)   Spoke.sol:219
+User     → Spoke.setUserPositionManager(positionManager, approve) Spoke.sol:433
+```
+
+Then the manager acts through its own entry points, which call back into the
+Spoke with `onBehalfOf` set:
+
+```
+Manager → TakerPositionManager.borrowOnBehalfOf(...)   TakerPositionManager.sol:223
+  '- → Spoke.borrow(reserveId, amount, onBehalfOf)               Spoke.sol:274
+        onlyPositionManager(onBehalfOf) passes                        :278
+```
+
+`approveBorrow` (`:76`) and `approveWithdraw` (`:38`) set the per-manager
+allowances; `renounceBorrowAllowance` (`:139`) and `renounceWithdrawAllowance`
+(`:114`) revoke them. `Spoke.renouncePositionManagerRole` (`:460`) lets a manager
+walk away from a user unilaterally.
+
+### Sign a gasless action
+
+```
+Relayer → Spoke.setUserPositionManagersWithSig(params, signature)  Spoke.sol:438
+  |- _verifyAndConsumeIntent({signer: params.onBehalfOf,
+  |     intentHash: params.hash(), nonce, deadline, signature})        :442
+  |     EIP-712 hashing in EIP712Hash.sol; nonce burned on use
+  '- loop → _setUserPositionManager(...)                               :451-457
+```
+
+`TakerPositionManager` has the same pattern for allowances
+(`approveWithdrawWithSig:54`, `approveBorrowWithSig:92`), and `SignatureGateway`
+(`SignatureGateway.sol`) is the shared verifier. Reserve-level ERC-2612 permits go
+through `Spoke.permitReserve` (`:469`), which is designed to be batched via
+multicall — the snapshots show `permitReserve + supply (multicall)` at 151,663 gas.
+
+### List an asset via governance
+
+```
+Governance executor → AaveV4Payload.execute()             AaveV4Payload.sol:28
+  |- _executeAccessManagerActions()                                    :30 → :376
+  |- _executeHubActions()                                              :31 → :264
+  |    |- HubEngine.executeHubAssetListings(hubAssetListings())  HubEngine.sol:30
+  |    |     → Hub.addAsset, then _deployAndRegisterTokenizationSpoke  :225
+  |    |- executeHubAssetConfigUpdates                                 :54
+  |    |- executeHubSpokeToAssetsAdditions                             :99
+  |    '- executeHubSpokeConfigUpdates                                 :126
+  |- _executeSpokeActions()                                            :32 → :327
+  |    |- SpokeEngine.executeSpokeReserveListings              SpokeEngine.sol:18
+  |    '- executeSpokeReserveConfigUpdates                             :37
+  '- _executePositionManagerActions()                                  :33 → :409
+```
+
+A payload overrides only the getters it needs (`hubAssetListings:39`,
+`spokeReserveListings:133`, and the twenty-odd others); the base contract's
+`execute` runs everything in a fixed order. The emergency getters
+(`hubAssetHalts:83`, `hubAssetDeactivations:89`, `hubSpokeDeactivations:111`) make
+a shutdown payload as routine as a listing payload.
+
+### Deploy a market
+
+`AaveV4DeployOrchestration.sol:517 lines` runs the whole sequence. See §12 for the
+ordered procedure list and the resulting address map.
+
+---
+
+## §19 v3 → v4 API migration table
+
+Every external function of v3.6 `Pool`
+(`aave/aave-v3-origin/src/contracts/protocol/pool/Pool.sol`) against its v4
+counterpart. "Hub" and "Spoke" are `src/hub/Hub.sol` and `src/spoke/Spoke.sol`.
+
+The shape of the change: **users talk to a Spoke, Spokes talk to a Hub.** A v3
+integration that held a `Pool` address now needs a `Spoke` address, and the
+`asset` address argument becomes a `reserveId`.
+
+### User actions
+
+| v3.6 `Pool` | v4 | Notes |
+|---|---|---|
+| `supply(asset, amount, onBehalfOf, referralCode)` `:118` | `Spoke.supply(reserveId, amount, onBehalfOf)` `:225` | `referralCode` dropped. Does **not** auto-enable collateral any more. |
+| `supplyWithPermit(...)` `:141` | `Spoke.permitReserve` `:469` + `supply`, batched | Split into two calls; multicall them. |
+| `deposit(...)` `:799` | — | The v2-era alias is gone. |
+| `withdraw(asset, amount, to)` `:179` | `Spoke.withdraw(reserveId, amount, onBehalfOf)` `:244` | Recipient is `msg.sender`, not a `to` argument. |
+| `borrow(asset, amount, rateMode, referral, onBehalfOf)` `:203` | `Spoke.borrow(reserveId, amount, onBehalfOf)` `:274` | No `interestRateMode`; stable rate was already dead in 3.2. |
+| `repay(asset, amount, rateMode, onBehalfOf)` `:231` | `Spoke.repay(reserveId, amount, onBehalfOf)` `:305` | Payment splits across principal and premium automatically. |
+| `repayWithPermit(...)` `:258` | `permitReserve` + `repay`, batched | |
+| `repayWithATokens(...)` `:304` | — | No equivalent found in `src/`. |
+| `setUserUseReserveAsCollateral(asset, flag)` `:330` | `Spoke.setUsingAsCollateral(reserveId, flag, onBehalfOf)` `:391` | Gains an `onBehalfOf`. |
+| `liquidationCall(coll, debt, user, debtToCover, receiveAToken)` `:348` | `Spoke.liquidationCall(collReserveId, debtReserveId, user, debtToCover, receiveShares)` `:347` | `receiveAToken` → `receiveShares`. |
+| `flashLoan(...)` `:375`, `flashLoanSimple(...)` `:412` | **Removed** | `grep -ri flashloan src/` returns nothing. |
+| `setUserEMode(categoryId)` `:754`, `getUserEMode` `:768` | **Removed** | No e-mode in v4. Risk premium prices collateral quality continuously instead; a distinct risk regime is a separate Spoke. |
+| `approvePositionManager(...)` `:840` | `Spoke.setUserPositionManager(pm, approve)` `:433`, or `setUserPositionManagersWithSig` `:438` | v4 adds the signature path. |
+| `renouncePositionManagerRole(...)` `:852` | `Spoke.renouncePositionManagerRole(onBehalfOf)` `:460` | |
+
+### Views
+
+| v3.6 `Pool` | v4 |
+|---|---|
+| `getUserAccountData(user)` `:470` | `Spoke.getUserAccountData(user)` `:633` |
+| `getReserveData(asset)` `:438` | `Spoke.getReserve(reserveId)` `:536` + `Hub` asset getters `:496-563` |
+| `getConfiguration(asset)` `:501` | `Spoke.getReserveConfig(reserveId)` `:541` |
+| `getUserConfiguration(user)` `:508` | `Spoke.getUserReserveStatus(...)` `:563`, `getUserPosition` `:619` |
+| `getReserveNormalizedIncome(asset)` `:515` | **No equivalent.** Supply is shares, not an index: `Hub.previewRemoveByShares` `:471` |
+| `getReserveNormalizedVariableDebt(asset)` `:522` | `Hub.getAssetDrawnIndex(assetId)` `:508` |
+| `getVirtualUnderlyingBalance(asset)` `:463` | `Hub.getAssetLiquidity(assetId)` `:558` |
+| `getReservesList()` `:529`, `getReservesCount()` `:551` | `Spoke.getReserveCount()` `:500`, `Hub.getAssetCount()` `:451` |
+| `getReserveDeficit(asset)` `:903` | `Hub.getAssetDeficitRay(assetId)` `:563` |
+| `getReserveAToken` `:908`, `getReserveVariableDebtToken` `:913` | **Removed.** No per-reserve token contracts; balances live in Spoke storage. `TokenizationSpoke` is opt-in ERC-4626, not a mandatory aToken. |
+| `getEModeCategory*` `:705-749` | **Removed** |
+| `getFlashLoanLogic` … `getSupplyLogic` `:918-938` | **Removed.** No external logic libraries to link. |
+
+### Admin
+
+| v3.6 | v4 |
+|---|---|
+| `initReserve(...)` `:602` | `Hub.addAsset` `:47` + `Spoke.addReserve` `:121` — two levels now |
+| `setConfiguration(...)` `:635` | `Hub.updateAssetConfig` `:115`, `Spoke.updateReserveConfig` `:168` |
+| `updateFlashloanPremium(...)` `:645` | **Removed** |
+| `configureEModeCategory*` `:652-696` | **Removed** |
+| `mintToTreasury(assets)` `:433` | `Hub.mintFeeShares(assetId)` `:190` |
+| `syncIndexesState` `:625`, `syncRatesState` `:630` | Implicit: every mutating Hub call runs `asset.accrue()` then `updateDrawnRate` |
+| `eliminateReserveDeficit(...)` `:822` | `Hub.eliminateDeficit(...)` `:333` |
+| `setLiquidationGracePeriod(...)` `:780` | **No equivalent found** |
+| `rescueTokens(...)` `:789` | **No equivalent found** |
+| `finalizeTransfer(...)` `:576` | **Removed.** aTokens were transferable and needed a hook; v4 supply positions are Spoke storage. `Hub.transferShares` `:392` moves shares between *Spokes*, not users. |
+| ACL via `ACLManager` | OZ `AccessManager` — `AccessManagerEnumerable.sol`, roles in `Roles.sol` |
+
+### Concepts with no v4 counterpart
+
+Verified absent by grep over `src/` (excluding `dependencies/`): **flash loans**,
+**e-mode**, **isolation mode**, **siloed borrowing**, **grace periods**,
+**`rescueTokens`**, **aTokens / variable debt tokens as ERC-20s**, and
+**`liquidityIndex`**. The occurrences of "isolate" in
+`src/spoke/libraries/PositionStatusMap.sol:209-243` are bit-manipulation helpers
+(`isolateBorrowing`, `isolateCollateral`), unrelated to v3 isolation mode.
+
+New in v4 with no v3 ancestor: the **Hub/Spoke split** itself, **risk premium**
+(§0 claim 2), **`sweep`/`reclaim`** reinvestment, **`transferShares`** between
+Spokes, and **dynamic reserve config** keyed per user
+(`Spoke.addDynamicReserveConfig:191`).
+
+---
+
+## §20 Gas, audits and security notes
+
+### Gas
+
+`aave/v4-aave/snapshots/` holds eleven JSON files produced by the test suite. They
+are the cheapest way to sanity-check any claim in this document about which paths
+are expensive.
+
+**`Hub.Operations.json`** — the Hub alone, no Spoke:
+
+| Operation | Gas |
+|---|---:|
+| `add` | 91,610 |
+| `add: with transfer` | 112,942 |
+| `draw` | 109,072 |
+| `remove: full` | 80,564 |
+| `restore: full` | 81,488 |
+| `mintFeeShares` | 87,668 |
+| `reportDeficit` | 116,908 |
+| `transferShares` | 74,540 |
+
+**`Spoke.Operations.json`** — the full user path, Spoke through Hub:
+
+| Operation | Gas |
+|---|---:|
+| `supply: 0 borrows, collateral enabled` | 110,724 |
+| `supply: 0 borrows, collateral disabled` | 127,753 |
+| `borrow: first` | 269,297 |
+| `borrow: second action, same reserve` | 212,163 |
+| `repay: full` | 123,355 |
+| `repay: partial` | 142,713 |
+| `withdraw: non collateral` | 111,299 |
+| `withdraw: 1 borrow, partial` | 221,298 |
+| `withdraw: 2 borrows, partial` | 270,470 |
+| `usingAsCollateral: 1 borrow, enable` | 42,504 |
+| `usingAsCollateral: 1 borrow, disable` | 168,699 |
+| `usingAsCollateral: 2 borrows, disable` | 241,825 |
+| `liquidationCall: full` | 361,233 |
+| `liquidationCall (reportDeficit): full` | 366,749 |
+
+Three things these numbers tell you that the code alone does not:
+
+1. **Cost scales with the number of borrowed reserves, not supplied ones.**
+   `withdraw` goes 111k → 221k → 270k as borrows go 0 → 1 → 2, because
+   `_notifyRiskPremiumUpdate` (`Spoke.sol:822`) walks every borrowed reserve
+   (`:830-843`) and calls `Hub.refreshPremium` on each. Disabling collateral shows
+   the same slope: 168k at one borrow, 241k at two.
+2. **Direction is asymmetric.** Enabling collateral is 42k; disabling the same
+   position is 168k. Enabling cannot fail a health check, disabling must prove one.
+3. **The risk premium is a real tax.** `Spoke.Operations.ZeroRiskPremium.json` runs
+   the identical suite with the premium at zero: `borrow: first` drops from 269,297
+   to 199,509, about 70k or 26%. The mechanism is the early return at
+   `Spoke.sol:824-826` — when the new premium and the stored one are both zero,
+   `_notifyRiskPremiumUpdate` skips the whole per-reserve loop. 70k is therefore the
+   standing cost of pricing collateral quality per user.
+
+One inversion worth noting: with a zero premium, `liquidationCall: full` is
+*cheaper* (328,352 vs 361,233) but `liquidationCall (reportDeficit): full` is
+*dearer* (374,581 vs 366,749). Deriving why would need the test source, which I did
+not read; treat the pair as an observation, not an explanation.
+
+### Audits
+
+Ten reports in `aave/v4-aave/audits/`, spanning October 2025 to April 2026. Four
+firms, and the Certora work is formal verification rather than review:
+
+| Date | Firm | Scope |
+|---|---|---|
+| 2025-10-20 | Blackthorn | Aave V4 |
+| 2025-11-06 | Trail of Bits | Aave V4 |
+| 2026-01-28 | ChainSecurity | Aave V4 |
+| 2026-02-10 | ChainSecurity | TokenizationSpoke |
+| 2026-02-24 | Blackthorn | Aave V4 |
+| 2026-03-09 | Certora | Hub — formal verification |
+| 2026-03-09 | Certora | Libraries — formal verification |
+| 2026-03-09 | Certora | Spoke — formal verification |
+| 2026-03-23 | ChainSecurity | Aave V4 |
+| 2026-04-13 | Certora | TokenizationSpoke — formal verification |
+
+These are PDFs and were **not** read for this document. Everything here is derived
+from source. They matter for one specific gap: the four Hub accounting invariants
+in `docs/overview.md` are maintained structurally, through paired writes and
+rounding direction, rather than by any runtime `require`. §4 maps each invariant to
+the lines that maintain it, but proving they hold globally is what the Certora Hub
+report exists for. If you need that assurance, read it rather than trusting this
+document.
+
+### Security notes
+
+- **Trust runs Spoke → Hub, not both ways.** The Hub does not trust Spokes with
+  arbitrary premium claims: `riskPremiumThreshold` in `SpokeConfig`
+  (`IHub.sol:97`) caps the premium-to-drawn ratio a Spoke can report, and premium
+  edits must conserve value at the instant they are made (§0 claim 2). That cap is
+  the main structural defense against a compromised or buggy Spoke.
+- **Spokes are upgradeable, the Hub is not.** A malicious Spoke upgrade can harm
+  its own users' positions freely; what it cannot do is exceed its caps or mint
+  liquidity it never added. Scope your trust to the Spoke you use.
+- **Share-price manipulation** is blunted by the 1e6 virtual assets/shares offset
+  in `SharesMath.sol:13-14`, the standard ERC-4626 inflation defense, plus
+  round-down on `add` (`Hub.sol:210`) and round-up on `draw` (`:259`), both
+  favouring the protocol.
+- **Reinvestment is the weakest link.** `sweep` (`:406`) moves real tokens out to a
+  controller while suppliers' claims stay whole, because `swept` remains inside
+  `totalAddedAssets`. The docs say the Governor absorbs strategy losses; no code in
+  `src/` enforces that. Treat it as governance policy, not a protocol guarantee.
+- **Oracles are per-Spoke** (`src/spoke/AaveOracle.sol`), so a bad price feed is
+  contained to one Spoke's users rather than the shared liquidity — but that Spoke
+  can still draw against the Hub on a wrong valuation, up to its `drawCap`. Caps
+  are the containment, not the oracle.
+- **Deficit is socialised per Spoke, then per asset.** `Hub.reportDeficit` (`:304`)
+  records it; `Hub.eliminateDeficit` (`:333`) lets another Spoke burn its own shares
+  to cover it. Until someone does, the deficit sits against the asset.
+- **`AccessManager` delays cut both ways.** A timelock on admin functions protects
+  users from a captured governor but also slows the emergency `halted` flip. That
+  is why `halted` blocks entry while still permitting `remove` and `restore` — the
+  safe direction stays open even when the switch is slow.
+

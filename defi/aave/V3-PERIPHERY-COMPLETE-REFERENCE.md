@@ -2568,3 +2568,579 @@ they document intended behaviour and each one usually exists to pin a specific e
 **[3.7]** `SequencerOracle` was deleted along with the price oracle sentinel.
 
 ---
+<a name="13-deployments"></a>
+
+## 13. Deployments — how a whole market is built
+
+`src/deployments/` (42 files, 1,714 lines) is a **Solidity-native deployment pipeline**. There
+is no TypeScript orchestrator: a Forge script calls one library function and an entire Aave
+market exists. The trick that makes this work is the **batch constructor pattern** — deployment
+work happens in a contract's `constructor`, so a single `new AaveV3XBatch(...)` both deploys a
+group of contracts and returns their addresses through a getter.
+
+### 13.1 Why the batch pattern exists
+
+A naive script would do a hundred `new` calls from one transaction and blow past the block gas
+limit. Splitting them across separate transactions means the script must thread addresses
+between steps by hand. The batch pattern splits the work into ~10 contracts, each of which
+deploys its slice in its own constructor and exposes a typed report struct:
+
+```
+new AaveV3PoolBatch(provider, irStrategy)   // constructor deploys Pool + PoolConfigurator impls
+  └── .getPoolReport() → PoolReport{ poolImplementation, poolConfiguratorImplementation }
+```
+
+Every batch is a thin shell over a **procedure** — `AaveV3PoolBatch` is
+`AaveV3PoolProcedure` plus a constructor and a getter. Procedures hold the reusable logic;
+batches package it for one-shot deployment. That separation lets the test suite call the
+procedures directly without paying for the batch wrapper.
+
+### 13.2 The three-layer structure
+
+| Layer | Path | What lives there |
+|---|---|---|
+| **Procedures** | `contracts/procedures/` (14 files) | `internal` functions that do the actual `new` calls |
+| **Batches** | `projects/aave-v3-batched/batches/` (10 files) | Constructor + getter shells over the procedures |
+| **Orchestration** | `projects/aave-v3-batched/AaveV3BatchOrchestration.sol` (317 lines) | The single library that sequences all batches |
+
+Plus `contracts/utilities/` (5 files) for CREATE2 and FFI helpers, `interfaces/` (6 files) for
+the report structs, `inputs/` (2 files) for per-network configuration, and two
+`LibraryReportStorage` / `MarketReportStorage` bases.
+
+### 13.3 `AaveV3BatchOrchestration.deployAaveV3` — the whole market in one call
+
+`projects/aave-v3-batched/AaveV3BatchOrchestration.sol:39-132`. A `library`, so it is
+`delegatecall`ed into the deploying script and everything it creates is owned by that script's
+address until ownership is transferred at step 8.
+
+```solidity
+function deployAaveV3(
+  address deployer,
+  Roles memory roles,
+  MarketConfig memory config,
+  DeployFlags memory flags,
+  MarketReport memory deployedContracts
+) internal returns (MarketReport memory)
+```
+
+All eleven intermediate reports are held in one `DeployAaveV3Variables` struct (`:24-37`) —
+a stack-depth workaround, not a design statement.
+
+The ordering is forced by dependency, and it is worth reading as a dependency graph:
+
+| # | Step | Line | Deploys | Needs |
+|---|---|---|---|---|
+| 1 | `_deploySetupContract` | `:134-142` | `AaveV3SetupBatch` → `PoolAddressesProvider`, the default IR strategy, `PoolAddressesProviderRegistry` | — |
+| 2 | `_deployGettersBatch1` | `:144-154` | `WalletBalanceProvider`, `UiIncentiveDataProviderV3`, `UiPoolDataProviderV3` | price aggregators from config |
+| 3 | `_deployPoolImplementations` | `:225-239` | `PoolInstance` **or** `L2PoolInstance`, `PoolConfiguratorInstance` | provider, IR strategy |
+| 4 | `_deployPeripherals` | `:241-255` | `AaveOracle`, `Collector` + proxy, dust bin, `EmissionManager`, `RewardsController` impl | provider, setup batch address |
+| 5 | `_deployMisc` | `:219-223` | a second `DefaultReserveInterestRateStrategyV2` | provider |
+| 6 | `setupBatch.setupAaveV3Market` | `:76-83` | **wires everything**: proxies, ACL, roles | steps 1–4 |
+| 7 | `_deployGettersBatch2` | `:156-183` | `WrappedTokenGatewayV3`, `L2Encoder`, `AaveProtocolDataProvider` | the live pool proxy |
+| 8 | `setProtocolDataProvider` + `transferMarketOwnership` | `:93-95` | — | step 7 |
+| 9 | `_deployTokens` | `:257-269` | `ATokenInstance`, `VariableDebtTokenInstance` implementations | pool proxy, rewards proxy, treasury |
+| 10 | `_deployHelpersBatch1` | `:185-203` | `AaveV3ConfigEngine` | everything above |
+| 11 | `_deployHelpersBatch2` | `:205-217` | `TransparentProxyFactory`, `StataTokenV2` impl, `StataTokenFactory` + proxy | pool, rewards controller |
+| 12 | `_generateMarketReport` | `:271-316` | — | flattens ten reports into one `MarketReport` |
+
+Two ordering facts that are easy to miss:
+
+- **Step 5 deploys a second interest rate strategy.** Step 1 already created one at
+  `AaveV3SetupProcedure.sol:38-40`. Line `:74` then immediately overwrites the step-5 result
+  with the step-1 address: `variables.miscReport.defaultInterestRateStrategy =
+  variables.initialReport.interestRateStrategy;`. The `AaveV3MiscBatch` deployment is therefore
+  **discarded** — dead gas kept for report-shape compatibility.
+- **Ownership is transferred at step 8, before tokens and helpers.** Steps 9–11 deploy only
+  implementation contracts and factories, which need no market privileges.
+
+### 13.4 `AaveV3SetupProcedure` — the wiring step
+
+`contracts/procedures/AaveV3SetupProcedure.sol` (209 lines) is the only procedure that does
+more than `new`. It is where a pile of unconnected contracts becomes a market.
+
+**`_initialDeployment`** (`:29-49`) — deploys `PoolAddressesProvider(marketId, address(this))`,
+taking ownership itself so it can configure freely, then the IR strategy, then registers with
+the registry via `_deployPoolAddressesProviderRegistry` (`:84-104`), which reuses an existing
+registry if one was passed and deploys a fresh one otherwise.
+
+**`_setupPoolAddressesProvider`** (`:106-137`) — the heart of it:
+
+```solidity
+provider.setPriceOracle(input.aaveOracle);
+provider.setPoolImpl(input.poolImplementation);
+provider.setPoolConfiguratorImpl(input.poolConfiguratorImplementation);
+
+report.poolProxy = address(provider.getPool());
+report.poolConfiguratorProxy = address(provider.getPoolConfigurator());
+```
+
+`setPoolImpl` is what actually **creates the proxy** on first call (see
+[`V3-PROTOCOL-COMPLETE-REFERENCE.md`](V3-PROTOCOL-COMPLETE-REFERENCE.md) §19 for
+`PoolAddressesProvider._updateImpl`); `getPool()` then reads the address back. The rewards
+controller is registered under `keccak256('INCENTIVES_CONTROLLER')` (`:121`) — as a **proxy**
+if only an implementation was supplied (`:124-131`), or as a plain address if an existing
+controller proxy is being reused (`:133-134`). Reverts with `RewardsControllerImplementationMustBeSet()`
+if neither is set (`:123`).
+
+**`_setupACL`** (`:148-179`) — the temporary-admin dance:
+
+```solidity
+provider.setACLAdmin(address(this));          // temporarily
+ACLManager manager = new ACLManager(IPoolAddressesProvider(poolAddressesProvider));
+provider.setACLAdmin(roles.poolAdmin);        // hand over
+provider.setACLManager(address(manager));
+_configureFlashloanParams(manager, poolConfiguratorProxy, flashLoanPremium);
+manager.addPoolAdmin(roles.poolAdmin);
+manager.addEmergencyAdmin(roles.emergencyAdmin);
+manager.grantRole(manager.DEFAULT_ADMIN_ROLE(), roles.poolAdmin);
+manager.revokeRole(manager.DEFAULT_ADMIN_ROLE(), address(this));
+```
+
+`ACLManager`'s constructor reads `provider.getACLAdmin()` and grants that address
+`DEFAULT_ADMIN_ROLE`, which is why the deployer must hold the role across the `new`. The final
+`revokeRole` at `:176` is the line that makes the deployment non-custodial — **if it were
+omitted the deploying script would keep permanent root access to the market.**
+
+`_configureFlashloanParams` (`:180-191`) grants the deployer `RISK_ADMIN`, sets the flash-loan
+premium on the configurator, then revokes it again.
+
+**`_validateMarketSetup`** (`:206-208`) rejects a zero `poolAdmin`; **`_transferMarketOwnership`**
+(`:193-204`) hands the provider and registry to `roles.marketOwner`.
+
+### 13.5 `AaveV3SetupBatch` — the stateful shell
+
+`projects/aave-v3-batched/batches/AaveV3SetupBatch.sol` (68 lines) is the one batch that
+outlives its constructor, because the orchestration calls back into it three times.
+
+| Function | Line | Access | Purpose |
+|---|---|---|---|
+| `constructor` | `:12-26` | — | runs `_initialDeployment`, stores `InitialReport` |
+| `setupAaveV3Market` | `:28-47` | `onlyOwner` | runs `_setupAaveV3Market`, stores `SetupReport` |
+| `setMarketReport` | `:49-51` | `onlyOwner` | stores the final flattened `MarketReport` |
+| `setProtocolDataProvider` | `:53-55` | `onlyOwner` | late-binds the data provider (needs the live pool) |
+| `transferMarketOwnership` | `:57-59` | `onlyOwner` | hands the market to `roles.marketOwner` |
+| `getInitialReport` / `getSetupReport` | `:61-67` | view | |
+
+It inherits `Ownable`, so `onlyOwner` here means *the deploying script*, not the pool admin.
+
+### 13.6 The procedures, one line each
+
+| Procedure | Lines | Deploys |
+|---|---:|---|
+| `AaveV3SetupProcedure` | 209 | Provider, registry, ACLManager; wires all proxies (§13.4) |
+| `AaveV3TreasuryProcedure` | 62 | `Collector` impl + `TransparentUpgradeableProxy`, `EmptyImplementation` + dust-bin proxy |
+| `AaveV3HelpersProcedureTwo` | 42 | `TransparentProxyFactory`, `StataTokenV2` impl, `StataTokenFactory` + proxy |
+| `AaveV3GettersProcedureTwo` | 41 | `WrappedTokenGatewayV3`, `L2Encoder`, `AaveProtocolDataProvider` |
+| `AaveV3PoolProcedure` | 40 | `PoolInstance` + `PoolConfiguratorInstance` |
+| `AaveV3L2PoolProcedure` | 40 | `L2PoolInstance` + `PoolConfiguratorInstance` |
+| `AaveV3GettersProcedureOne` | 39 | `WalletBalanceProvider`, `UiIncentiveDataProviderV3`, `UiPoolDataProviderV3` |
+| `AaveV3HelpersProcedureOne` | 36 | `AaveV3ConfigEngine` |
+| `AaveV3TokensProcedure` | 32 | `ATokenInstance`, `VariableDebtTokenInstance` |
+| `AaveV3OracleProcedure` | 27 | `AaveOracle` |
+| `AaveV3MiscProcedure` | 20 | `DefaultReserveInterestRateStrategyV2` (result discarded, §13.3) |
+| `AaveV3IncentiveProcedure` | 14 | `EmissionManager`, `RewardsController` impl |
+| `AaveV3PoolConfigProcedure` | 12 | `PoolConfiguratorInstance` |
+| `AaveV3DefaultRateStrategyProcedure` | 11 | `DefaultReserveInterestRateStrategyV2` |
+
+`AaveV3PoolProcedure` and `AaveV3L2PoolProcedure` both inherit `AaveV3PoolConfigProcedure`, so
+the configurator implementation is deployed identically on L1 and L2; only the pool differs.
+Both guard on `flags.l2` and revert `L2MustBeEnabled()` / `L2MustBeDisabled()` on mismatch.
+
+**[3.7]** `AaveV3MiscProcedure` (`:9-15`) deploys **only** the rate strategy. In 3.6 it also
+deployed a `PriceOracleSentinel`; that contract is gone from this tree.
+
+### 13.7 Library deployment — a separate, earlier pipeline
+
+`Pool` links five external libraries, and a linked library must exist *before* the linking
+contract is compiled into deployable bytecode. So libraries are deployed by their own
+two-batch pipeline, in a prior transaction, at **deterministic CREATE2 addresses**:
+
+| Batch | File | Deploys |
+|---|---|---|
+| `AaveV3LibrariesBatch1` | `projects/aave-v3-libraries/AaveV3LibrariesBatch1.sol:16` | `BorrowLogic` |
+| `AaveV3LibrariesBatch2` | `projects/aave-v3-libraries/AaveV3LibrariesBatch2.sol:20-26` | `FlashLoanLogic`, `LiquidationLogic`, `PoolLogic`, `SupplyLogic` |
+
+Both use `salt = keccak256('AAVE_V3_LIBRARIES_BATCH')` and `Create2Utils._create2Deploy`. The
+split is a gas-limit split: `BorrowLogic` alone in batch 1, the other four in batch 2.
+
+**[3.7]** Batch 1 deploys `BorrowLogic`. In 3.6 it deployed `ConfiguratorLogic` too — the config
+engine no longer `delegatecall`s its libraries, so `ConfiguratorLogic` is linked differently.
+
+`FfiUtils` (`contracts/utilities/FfiUtils.sol`, 97 lines) is the glue: after the library batch
+runs, it shells out (`vm.ffi`) to read the deployed addresses back out of the Forge broadcast
+JSON and write them into `foundry.toml`'s `libraries` key, so the next `forge build` links
+against them. `_getLatestLibraryAddress` (`:9`), `_getSupplyLibraryAddress` (`:28`),
+`_getBorrowLibraryAddress` (`:47`), `_deleteLibrariesPath` (`:66`), `_librariesPathExists` (`:77`).
+
+### 13.8 `Create2Utils` — deterministic addresses
+
+`contracts/utilities/Create2Utils.sol` (51 lines). Uses the **Safe singleton factory** at
+`0x914d7Fec6aaC8cd542e72Bca78B30650d45643d7` (`:6`), which is pre-deployed at the same address
+on every supported chain — that is what makes library addresses identical across networks.
+
+`_create2Deploy` (`:8-25`) reverts `'MISSING_CREATE2_FACTORY'` if the factory is absent (`:10`),
+returns early if the computed address already has code (`:14-16`, so redeployment is a no-op),
+and otherwise calls the factory with `abi.encodePacked(salt, bytecode)` — the factory's
+calling convention is *salt first, then init code*, with no function selector. It then asserts
+the returned address equals the precomputed one (`:22`).
+
+`computeCreate2Address` is overloaded for raw bytecode (`:41-46`) and for a precomputed
+init-code hash (`:31-39`), both doing the standard
+`keccak256(0xff ++ factory ++ salt ++ initCodeHash)`.
+
+### 13.9 Report structs — the address map
+
+`interfaces/IMarketReportTypes.sol` (152 lines) defines every struct passed between steps. The
+final `MarketReport` (`:48-78`) is the deployment's output — **28 addresses**, and the
+canonical answer to "what is the address of X in this market":
+
+| Field | What it is |
+|---|---|
+| `poolAddressesProviderRegistry`, `poolAddressesProvider` | the registry and this market's provider |
+| `poolProxy`, `poolImplementation` | the pool users call, and its logic |
+| `poolConfiguratorProxy`, `poolConfiguratorImplementation` | admin surface |
+| `protocolDataProvider`, `uiPoolDataProvider`, `uiIncentiveDataProvider`, `walletBalanceProvider` | the four read-only helpers (§6) |
+| `aaveOracle`, `defaultInterestRateStrategy`, `aclManager` | oracle, rates, roles |
+| `treasury`, `treasuryImplementation`, `dustBin`, `emptyImplementation` | §7 |
+| `wrappedTokenGateway`, `l2Encoder` | native-token and L2 helpers |
+| `aToken`, `variableDebtToken` | token **implementations**, cloned per reserve at listing |
+| `emissionManager`, `rewardsControllerImplementation`, `rewardsControllerProxy` | §1 |
+| `configEngine` | §5 |
+| `transparentProxyFactory`, `staticATokenFactoryImplementation`, `staticATokenFactoryProxy`, `staticATokenImplementation` | §4 |
+
+The intermediate structs are `InitialReport` (`:131-135`), `SetupReport` (`:137-142`),
+`PeripheryReport` (`:144-152`), `PoolReport` (`:111-114`), `MiscReport` (`:116-118`),
+`ConfigEngineReport` (`:120-122`), `StaticATokenReport` (`:124-129`), `LibrariesReport` (`:80-86`),
+plus `AaveV3GettersProcedureOne.GettersReportBatchOne` and
+`AaveV3GettersProcedureTwo.GettersReportBatchTwo`. `ContractsReport` (`:23-46`) is the same
+data typed as interfaces instead of addresses; `MarketReportUtils.toContractsReport`
+(`contracts/utilities/MarketReportUtils.sol:7`) converts between them for test ergonomics.
+
+### 13.10 Inputs and configuration
+
+`inputs/MarketInput.sol` (18 lines) is an abstract contract with one virtual function,
+`_getMarketInput(address deployer)` (`:6-17`), returning `(Roles, MarketConfig, DeployFlags,
+MarketReport)`. A network gets its own subclass. `inputs/DefaultMarketInput.sol` (30 lines) is
+the testnet one: all three roles set to the deployer (`:19-21`), `marketId` `'Aave V3 Testnet
+Market'`, `providerId` 8080, 8 oracle decimals, and `flashLoanPremium` `0.0005e4` = **5 bps**
+(`:23-26`).
+
+`MarketConfig` (`:94-105`) is the knob panel:
+
+| Field | Effect if zero / empty |
+|---|---|
+| `salt` | non-empty → treasury deployed with CREATE2 at a deterministic address |
+| `treasury` | zero → deploy a new `Collector`; non-zero → reuse (treasuries are shared per network) |
+| `incentivesProxy` | zero → deploy `EmissionManager` + controller; non-zero → reuse |
+| `wrappedNativeToken` | zero **and** not L2 → `wrappedTokenGateway` is left `address(0)` |
+| `oracleDecimals`, `flashLoanPremium`, `marketId`, `providerId` | plain parameters |
+
+`DeployFlags.l2` (`:107-109`) selects `L2PoolInstance` over `PoolInstance` and forces the
+`L2Encoder` deployment.
+
+### 13.11 Reporting utilities
+
+`contracts/utilities/MetadataReporter.sol` (156 lines) writes the deployment out as JSON via
+`vm.writeJson`, so CI has a machine-readable artifact. `writeJsonReportMarket` (`:14-85`)
+serialises all 28 `MarketReport` fields; `writeJsonReportLibraryBatch1` / `Batch2` (`:87-116`)
+do the library addresses. `getTimestamp` (`:118`) and `getGitModuleVersion` (`:130`) shell out
+through `vm.ffi` to stamp the report with a commit hash and branch — which is how a deployed
+address can later be traced back to the exact source that produced it.
+
+`DeployUtils` (74 lines) deploys from compiled artifacts by path (`_deployFromArtifacts`, `:14`)
+for cases where the contract cannot be imported directly, with broadcast variants at `:23` and
+`:35`, and `getCreate2Address` at `:61`.
+
+`IErrors` (`interfaces/IErrors.sol:5-10`) collects the six deployment reverts:
+`L2MustBeEnabled`, `L2MustBeDisabled`, `ProviderNotFound`, `InterestRateStrategyNotFound`,
+`ProxyAdminNotFound`, `PoolAdminNotFound`.
+
+### 13.12 The whole thing, as a call graph
+
+```
+forge script (holds the deployer key)
+ │
+ ├─ AaveV3LibrariesBatch1/2 ......... CREATE2 the 5 logic libraries      [prior tx]
+ │    └─ FfiUtils rewrites foundry.toml libraries → rebuild
+ │
+ └─ AaveV3BatchOrchestration.deployAaveV3(deployer, roles, config, flags, deployed)
+      │
+      ├─1 new AaveV3SetupBatch ............ PoolAddressesProvider, IR strategy, Registry
+      ├─2 new AaveV3GettersBatchOne ....... WalletBalanceProvider, UiIncentive, UiPool
+      ├─3 new AaveV3PoolBatch|L2PoolBatch . PoolInstance, PoolConfiguratorInstance
+      ├─4 new AaveV3PeripheryBatch ........ AaveOracle, Collector+proxy, dustBin,
+      │                                      EmissionManager, RewardsController impl
+      ├─5 new AaveV3MiscBatch ............. IR strategy  (result discarded at :74)
+      ├─6 setupBatch.setupAaveV3Market() .. proxies created, ACLManager, roles granted,
+      │                                      deployer's DEFAULT_ADMIN_ROLE revoked
+      ├─7 new AaveV3GettersBatchTwo ....... WrappedTokenGateway, L2Encoder, DataProvider
+      ├─8 setProtocolDataProvider + transferMarketOwnership
+      ├─9 new AaveV3TokensBatch ........... AToken impl, VariableDebtToken impl
+      ├─10 new AaveV3HelpersBatchOne ...... AaveV3ConfigEngine
+      ├─11 new AaveV3HelpersBatchTwo ...... ProxyFactory, StataToken impl, Factory+proxy
+      └─12 _generateMarketReport → MarketReport (28 addresses) → setMarketReport
+```
+
+At this point the market exists but has **zero reserves**. Listing assets is a separate
+governance action through the config engine (§5), which is why `configEngine` is the last
+meaningful address in the report.
+
+---
+<a name="14-selector--abi-tables"></a>
+
+## 14. Selector / ABI tables
+
+Every selector below was computed with `cast sig`, not transcribed. Struct parameters are
+written as their fully-expanded ABI tuple — that expansion is where hand-written selector
+tables usually go wrong, so each tuple is spelled out and can be re-derived from the struct
+definitions cited in the earlier sections.
+
+Reproduce any row with:
+
+```bash
+cast sig "getAssetPrice(address)"     # 0xb3596f07
+```
+
+### 14.1 `RewardsController` (proxied, §1.4)
+
+| Selector | Signature |
+|---|---|
+| `0xc4d66de8` | `initialize(address)` |
+| `0x74d945ec` | `getClaimer(address)` |
+| `0x2a17bf60` | `getRewardOracle(address)` |
+| `0x5f130b24` | `getTransferStrategy(address)` |
+| `0x955c2ad7` | `configureAssets((uint88,uint256,uint32,address,address,address,address)[])` |
+| `0xe15ac623` | `setTransferStrategy(address,address)` |
+| `0x5453ba10` | `setRewardOracle(address,address)` |
+| `0x31873e2e` | `handleAction(address,uint256,uint256)` |
+| `0x236300dc` | `claimRewards(address[],uint256,address,address)` |
+| `0x33028b99` | `claimRewardsOnBehalf(address[],uint256,address,address,address)` |
+| `0x57b89883` | `claimRewardsToSelf(address[],uint256,address)` |
+| `0xbb492bf5` | `claimAllRewards(address[],address)` |
+| `0x9ff55db9` | `claimAllRewardsOnBehalf(address[],address,address)` |
+| `0xbf90f63a` | `claimAllRewardsToSelf(address[])` |
+| `0xf5cf673b` | `setClaimer(address,address)` |
+
+The `configureAssets` tuple is `RewardsDataTypes.RewardsConfigInput`
+(`src/contracts/rewards/libraries/RewardsDataTypes.sol:8-16`): `emissionPerSecond` `uint88`,
+`totalSupply` `uint256`, `distributionEnd` `uint32`, `asset`, `reward`, `transferStrategy`,
+`rewardOracle`. The last two are interface types, which ABI-encode as `address`.
+
+### 14.2 `RewardsDistributor` (inherited by the controller, §1.3)
+
+| Selector | Signature |
+|---|---|
+| `0x7eff4ba8` | `getRewardsData(address,address)` |
+| `0x886fe70b` | `getAssetIndex(address,address)` |
+| `0x1b839c77` | `getDistributionEnd(address,address)` |
+| `0x6657732f` | `getRewardsByAsset(address)` |
+| `0xb45ac1a9` | `getRewardsList()` |
+| `0x533f542a` | `getUserAssetIndex(address,address,address)` |
+| `0xb022418c` | `getUserAccruedRewards(address,address)` |
+| `0x70674ab9` | `getUserRewards(address[],address,address)` |
+| `0x4c0369c3` | `getAllUserRewards(address[],address)` |
+| `0xc5a7b538` | `setDistributionEnd(address,address,uint32)` |
+| `0xf996868b` | `setEmissionPerSecond(address,address[],uint88[])` |
+| `0x9efd6f72` | `getAssetDecimals(address)` |
+| `0x92074b08` | `getEmissionManager()` |
+
+### 14.3 `EmissionManager` (§1.5)
+
+| Selector | Signature |
+|---|---|
+| `0x955c2ad7` | `configureAssets((uint88,uint256,uint32,address,address,address,address)[])` |
+| `0xe15ac623` | `setTransferStrategy(address,address)` |
+| `0x5453ba10` | `setRewardOracle(address,address)` |
+| `0xc5a7b538` | `setDistributionEnd(address,address,uint32)` |
+| `0xf996868b` | `setEmissionPerSecond(address,address[],uint88[])` |
+| `0xf5cf673b` | `setClaimer(address,address)` |
+| `0xa286c6b4` | `setEmissionAdmin(address,address)` |
+| `0xbee36bb3` | `setRewardsController(address)` |
+| `0xde262738` | `getRewardsController()` |
+| `0x529b1e87` | `getEmissionAdmin(address)` |
+
+Note the deliberate selector *identity* between the manager and the controller for
+`configureAssets`, `setTransferStrategy`, `setRewardOracle`, `setDistributionEnd`,
+`setEmissionPerSecond` and `setClaimer` — the manager is a pure forwarder, so the ABIs match
+and calldata can be relayed verbatim.
+
+### 14.4 Transfer strategies (§1.6)
+
+| Selector | Signature | Where |
+|---|---|---|
+| `0x16beb982` | `performTransfer(address,address,uint256)` | `TransferStrategyBase` and both children |
+| `0x75d26413` | `getIncentivesController()` | `TransferStrategyBase:40` |
+| `0xc6255443` | `getRewardsAdmin()` | `TransferStrategyBase:45` |
+| `0x8d8e5da7` | `emergencyWithdrawal(address,address,uint256)` | `TransferStrategyBase:57` |
+| `0xe23ddec5` | `getRewardsVault()` | `PullRewardsTransferStrategy:46` |
+| `0xa3406251` | `renewApproval()` | `StakedTokenTransferStrategy:54` |
+| `0x3a342acc` | `dropApproval()` | `StakedTokenTransferStrategy:60` |
+| `0xdfd29d9e` | `getStakeContract()` | `StakedTokenTransferStrategy:65` |
+| `0xee719bc8` | `getUnderlyingToken()` | `StakedTokenTransferStrategy:70` |
+
+### 14.5 `AaveOracle` (§3)
+
+| Selector | Signature |
+|---|---|
+| `0xb3596f07` | `getAssetPrice(address)` |
+| `0x9d23d9f2` | `getAssetsPrices(address[])` |
+| `0x92bf2be0` | `getSourceOfAsset(address)` |
+| `0x6210308c` | `getFallbackOracle()` |
+| `0xabfd5310` | `setAssetSources(address[],address[])` |
+| `0x170aee73` | `setFallbackOracle(address)` |
+
+### 14.6 `DefaultReserveInterestRateStrategyV2` (§2)
+
+| Selector | Signature |
+|---|---|
+| `0xa8d9e56f` | `setInterestRateParams(address,bytes)` |
+| `0xfd81bb12` | `setInterestRateParams(address,(uint16,uint32,uint32,uint32))` |
+| `0x131e889c` | `getInterestRateData(address)` |
+| `0xc79ce42e` | `getInterestRateDataBps(address)` |
+| `0xaa33f063` | `getOptimalUsageRatio(address)` |
+| `0x5b651bae` | `getVariableRateSlope1(address)` |
+| `0x8f4b0d5d` | `getVariableRateSlope2(address)` |
+| `0xcca22ea1` | `getBaseVariableBorrowRate(address)` |
+| `0x6a00178e` | `getMaxVariableBorrowRate(address)` |
+| `0xb90db31b` | `calculateInterestRates((uint256,uint256,uint256,uint256,uint256,address,bool,uint256))` |
+
+`setInterestRateParams` is **overloaded**: the `bytes` form (`:66-72`) is what `PoolConfigurator`
+calls through the generic `IReserveInterestRateStrategy` interface, and it `abi.decode`s into
+the struct form (`:74-80`). Two different selectors, one behaviour. The `calculateInterestRates`
+tuple is `DataTypes.CalculateInterestRatesParams`
+(`src/contracts/protocol/libraries/types/DataTypes.sol:309-319`); its `usingVirtualBalance`
+`bool` is **deprecated in 3.4 but still in the ABI**, so the selector still carries it.
+
+### 14.7 The stata-token stack (§4)
+
+| Selector | Signature | Contract |
+|---|---|---|
+| `0x90657147` | `initialize(address,string,string)` | `StataTokenV2:43` |
+| `0x16c38b3c` | `setPaused(bool)` | `StataTokenV2:56` |
+| `0xa4757b0f` | `whoCanRescue()` | `StataTokenV2:62` |
+| `0xd7408715` | `maxRescue(address)` | `StataTokenV2:67` |
+| `0x75b24ebe` | `canPause(address)` | `StataTokenV2:80` |
+| `0xe25ec349` | `depositATokens(uint256,address)` | `ERC4626StataTokenUpgradeable:77` |
+| `0xcabc777e` | `depositWithPermit(uint256,address,uint256,(uint8,bytes32,bytes32),bool)` | `:91` |
+| `0x090edf9a` | `redeemATokens(uint256,address,address)` | `:125` |
+| `0xa0c1f15e` | `aToken()` | `:137` |
+| `0x50d25bcd` | `latestAnswer()` | `:206` |
+| `0xee0fc6d3` | `claimRewardsOnBehalf(address,address,address[])` | `ERC20AaveLMUpgradeable:62` |
+| `0x2026ffa3` | `claimRewards(address,address[])` | `:76` |
+| `0x8daaf5aa` | `claimRewardsToSelf(address[])` | `:81` |
+| `0x2f813b0d` | `refreshRewardTokens()` | `:86` |
+| `0xbcd17848` | `collectAndUpdateRewards(address)` | `:95` |
+| `0x6fe0b5a5` | `isRegisteredRewardToken(address)` | `:108` |
+| `0xde9cee98` | `getCurrentRewardsIndex(address)` | `:114` |
+| `0x60d8fdd8` | `getTotalClaimableRewards(address)` | `:124` |
+| `0xf56f4f0f` | `getClaimableRewards(address,address)` | `:137` |
+| `0x86894b29` | `getUnclaimedRewards(address,address)` | `:142` |
+| `0x68b836a7` | `getReferenceAsset()` | `:148` |
+| `0xc2b18aa0` | `rewardTokens()` | `:154` |
+| `0x7b5af1c2` | `createStataTokens(address[])` | `StataTokenFactory:50` |
+| `0x52908017` | `getStataTokens()` | `StataTokenFactory:82` |
+| `0xd30a7c06` | `getStataToken(address)` | `StataTokenFactory:87` |
+
+`latestAnswer()` is `0x50d25bcd` — the **Chainlink aggregator selector**. That is not a
+coincidence; it is what lets a stata-token be plugged in wherever a price feed is expected.
+
+Watch the two `claimRewardsToSelf`: the stata-token's `(address[])` is `0x8daaf5aa`, while the
+`RewardsController`'s `(address[],uint256,address)` is `0x57b89883`. Same name, different
+contract, different ABI.
+
+### 14.8 `AaveProtocolDataProvider` (§6.1)
+
+| Selector | Signature |
+|---|---|
+| `0xb316ff89` | `getAllReservesTokens()` |
+| `0xf561ae41` | `getAllATokens()` |
+| `0x3e150141` | `getReserveConfigurationData(address)` |
+| `0x46fbe558` | `getReserveCaps(address)` |
+| `0xb55d9904` | `getPaused(address)` |
+| `0xfcf40a62` | `getSiloedBorrowing(address)` |
+| `0x3cb8a622` | `getLiquidationProtocolFee(address)` |
+| `0x7ba1ae36` | `getUnbackedMintCap(address)` |
+| `0x3c798109` | `getDebtCeiling(address)` |
+| `0x69b169e1` | `getDebtCeilingDecimals()` |
+| `0x35ea6a75` | `getReserveData(address)` |
+| `0x51460e25` | `getATokenTotalSupply(address)` |
+| `0x4d44ac4f` | `getTotalDebt(address)` |
+| `0x28dd2d01` | `getUserReserveData(address,address)` |
+| `0xd2493b6c` | `getReserveTokensAddresses(address)` |
+| `0x6744362a` | `getInterestRateStrategyAddress(address)` |
+| `0xd7ed3ef4` | `getFlashLoanEnabled(address)` |
+| `0xf7e14307` | `getIsVirtualAccActive(address)` |
+| `0x6fb07f96` | `getVirtualUnderlyingBalance(address)` |
+| `0xc952485d` | `getReserveDeficit(address)` |
+
+Several of these are `pure` compatibility stubs kept so old integrations keep compiling:
+`getSiloedBorrowing` (`:131`), `getUnbackedMintCap` (`:141`), `getDebtCeiling` (`:146`),
+`getIsVirtualAccActive` (`:275`). The selector exists; the answer is constant.
+
+### 14.9 `WrappedTokenGatewayV3` and `L2Encoder` (§6.5, §6.8)
+
+| Selector | Signature |
+|---|---|
+| `0x474cf53d` | `depositETH(address,address,uint16)` |
+| `0x80500d20` | `withdrawETH(address,uint256,address)` |
+| `0xbcc3c255` | `repayETH(address,uint256,address)` |
+| `0xe74f7b85` | `borrowETH(address,uint256,uint16)` |
+| `0xd4c40b6c` | `withdrawETHWithPermit(address,uint256,address,uint256,uint8,bytes32,bytes32)` |
+| `0xa3d5b255` | `emergencyTokenTransfer(address,address,uint256)` |
+| `0xeed88b8d` | `emergencyEtherTransfer(address,uint256)` |
+| `0xaffa8817` | `getWETHAddress()` |
+| `0xb76398e4` | `encodeSupplyParams(address,uint256,uint16)` |
+| `0x671a7fae` | `encodeSupplyWithPermitParams(address,uint256,uint16,uint256,uint8,bytes32,bytes32)` |
+| `0x5cc7bc10` | `encodeWithdrawParams(address,uint256)` |
+| `0x1a64acf2` | `encodeBorrowParams(address,uint256,uint256,uint16)` |
+| `0x9d2ffc1b` | `encodeRepayParams(address,uint256,uint256)` |
+| `0xfed63a93` | `encodeRepayWithPermitParams(address,uint256,uint256,uint256,uint8,bytes32,bytes32)` |
+| `0x8da7fb18` | `encodeRepayWithATokensParams(address,uint256,uint256)` |
+| `0xfc0eed85` | `encodeSetUserUseReserveAsCollateral(address,bool)` |
+| `0x88d51852` | `encodeLiquidationCall(address,address,address,uint256,bool)` |
+
+Every gateway function takes a leading unnamed `address` (the pool, ignored — the gateway is
+bound to one pool at construction). It is kept only for ABI compatibility with the v2 gateway.
+
+### 14.10 `Collector` (§7)
+
+| Selector | Signature |
+|---|---|
+| `0xda35a26f` | `initialize(uint256,address)` |
+| `0xf501148c` | `isFundsAdmin(address)` |
+| `0x0932f92b` | `getNextStreamId()` |
+| `0x894e9a0d` | `getStream(uint256)` |
+| `0xa82ccd4d` | `deltaOf(uint256)` |
+| `0x3656eec2` | `balanceOf(uint256,address)` |
+| `0xe1f21c67` | `approve(address,address,uint256)` |
+| `0xbeabacc8` | `transfer(address,address,uint256)` |
+| `0xcc1b4bf6` | `createStream(address,uint256,address,uint256,uint256)` |
+| `0x7a9b2c6c` | `withdrawFromStream(uint256,uint256)` |
+| `0x6db9241b` | `cancelStream(uint256)` |
+
+`balanceOf(uint256,address)` is `0x3656eec2`, **not** the ERC-20 `balanceOf(address)`
+`0x70a08231`. The Collector is not a token; the first argument is a stream id. Likewise
+`approve` and `transfer` take a leading token address, so they do not collide with the ERC-20
+selectors either. A wallet that guesses from the name will decode garbage.
+
+### 14.11 `AaveV3ConfigEngine` (§5)
+
+| Selector | Signature |
+|---|---|
+| `0x55caa163` | `updateCaps((address,uint256,uint256)[])` |
+| `0x927c4003` | `updatePriceFeeds((address,address)[])` |
+| `0x02da32ae` | `updateCollateralSide((address,uint256,uint256,uint256,uint256)[])` |
+| `0x104116c3` | `updateBorrowSide((address,uint256,uint256,uint256)[])` |
+| `0xb79421eb` | `updateRateStrategies((address,(uint256,uint256,uint256,uint256))[])` |
+| `0xf725ed56` | `createEModeCategories((uint256,uint256,uint256,string,address[],address[],bool)[])` |
+| `0x4b56247b` | `updateEModeCategories((uint8,uint256,uint256,uint256,string,uint256)[])` |
+| `0x963ec016` | `updateAssetsEMode((address,uint8,uint256,uint256,uint256)[])` |
+
+`listAssets` and `listAssetsCustom` take the deeply nested `Listing` / `ListingWithCustomImpl`
+tuples; expand them from `IAaveV3ConfigEngine.sol` and run `cast sig` if you need those two.
+
+**[3.7]** The trailing `bool isolated` in `EModeCategoryCreation` and the `uint256 isolated` in
+`EModeCategoryUpdate` are new, so **both e-mode selectors changed in 3.7**. Any tooling that
+hardcoded the 3.6 values will silently miss.
+
+---

@@ -32,7 +32,7 @@ folder. Paths are relative to `curve/stableswap-ng/`.
 - [4. `CurveStableSwapNGMath.vy`](#4-curvestableswapngmathvy)
 - [5. `CurveStableSwapNGViews.vy`](#5-curvestableswapngviewsvy)
 - [6. `CurveStableSwapFactoryNG.vy`](#6-curvestableswapfactoryngvy)
-- [7. `CurveStableSwapFactoryNGHandler.vy`](#7-curvestableswapfactoryn-ghandlervy)
+- [7. `CurveStableSwapFactoryNGHandler.vy`](#7-curvestableswapfactorynghandlervy)
 - [8. `MetaZapNG.vy`](#8-metazapngvy)
 - [9. `LiquidityGauge.vy` — gauge v6.1.0](#9-liquiditygaugevy--gauge-v610)
 - [10. `StableSwapNGLPOracle.vy`](#10-stableswapnglporaclevy)
@@ -62,7 +62,7 @@ and where it is covered below:
 | 3 | `contracts/main/CurveStableSwapNGMath.vy` | 269 | 0.3.10 | [§4](#4-curvestableswapngmathvy) |
 | 4 | `contracts/main/CurveStableSwapNGViews.vy` | 704 | 0.3.10 | [§5](#5-curvestableswapngviewsvy) |
 | 5 | `contracts/main/CurveStableSwapFactoryNG.vy` | 865 | 0.3.10 | [§6](#6-curvestableswapfactoryngvy) |
-| 6 | `contracts/main/CurveStableSwapFactoryNGHandler.vy` | 557 | 0.3.10 | [§7](#7-curvestableswapfactoryn-ghandlervy) |
+| 6 | `contracts/main/CurveStableSwapFactoryNGHandler.vy` | 557 | 0.3.10 | [§7](#7-curvestableswapfactorynghandlervy) |
 | 7 | `contracts/main/MetaZapNG.vy` | 440 | 0.3.10 | [§8](#8-metazapngvy) |
 | 8 | `contracts/main/LiquidityGauge.vy` | 864 | 0.3.10 | [§9](#9-liquiditygaugevy--gauge-v610) |
 | 9 | `contracts/main/StableSwapNGLPOracle.vy` | 113 | **0.4.3** | [§10](#10-stableswapnglporaclevy) |
@@ -126,12 +126,12 @@ inlined, the metapool delegates to a Math contract.** `CurveStableSwapNG.vy`
 defines `get_D` at `:1079`, `get_y` at `:1009` and `get_y_D` at `:1130` as its
 own internal functions. `CurveStableSwapMetaNG.vy` has none of those; it calls
 `math.get_D(...)` (`:1118`), `math.get_y(...)` (`:1119`) on an immutable `math`
-address set in its constructor (`:346`). The metapool spends the gas on external
+address set in its constructor (`:345`). The metapool spends the gas on external
 calls because it must also carry the base-pool interaction code and would
 otherwise not fit.
 
 The second: **`views_implementation` is read from the factory on every call**
-(`CurveStableSwapNG.vy:1699`, `:1713`, `:1771`, `:1822`). `get_dy`, `get_dx`,
+(`CurveStableSwapNG.vy:1697`, `:1711`, `:1770`, `:1818`). `get_dy`, `get_dx`,
 `calc_token_amount` and `dynamic_fee` on the pool are all thin forwarders. The
 factory admin can therefore swap the entire quoting implementation for every
 pool at once. That is a live upgrade path on an otherwise immutable pool.
@@ -144,11 +144,11 @@ pool at once. That is a live upgrade path on an otherwise immutable pool.
 | `xp` | balances normalised to 18 decimals **and** rate-adjusted (`_xp_mem`) |
 | `rates[i]` | `10**(36-decimals)` times any oracle/4626 rate; multiply by balance, divide by 1e18 |
 | `D` | the invariant; equals total value in 18-decimal units when balanced |
-| `A_PRECISION` | 100. Stored `A` is `A_true * 100` (`:239`, `_A()` returns the scaled value) |
+| `A_PRECISION` | 100. Stored `A` is `A_true * 100` (`:176`, `_A()` at `:1187` returns the scaled value) |
 | `Ann` | `amp * N_COINS` where `amp` is already `A*100`. Note: **not** `A*n^n` |
 | `FEE_DENOMINATOR` | `10**10`. A fee of `4000000` is 0.04% |
 | `PRECISION` | `10**18` |
-| `admin_fee` | fixed constant `5000000000` = 50% of the swap fee (`:167`) |
+| `admin_fee` | fixed constant `5000000000` = 50% of the swap fee (`:171`) |
 
 One trap worth flagging immediately: Curve's `Ann` is `A * n`, not `A * n^n`,
 because the historical `A` already absorbs a factor of `n^(n-1)`. This is why
@@ -556,7 +556,7 @@ back to `upkeep_oracles` reflects the post-withdrawal state.
 
 `CurveStableSwapNG.vy:433-469`. This is where NG's support for
 non-plain tokens lives. It starts from the immutable `rate_multipliers` — set by
-the factory to `10**(36 − decimals)` (`CurveStableSwapFactoryNG.vy:516`) — and
+the factory to `10**(36 − decimals)` (`CurveStableSwapFactoryNG.vy:515`) — and
 multiplies in a live rate per coin.
 
 **Type 0, Standard.** No branch is taken. `rates[i]` stays `10**(36−d)`, so
@@ -1576,14 +1576,15 @@ constants (`MAX_COINS = 8` `:11`, `MAX_COINS_128` `:12`, `A_PRECISION = 100` `:1
 **Why it exists.** The metapool cannot fit its math inline and stay under the
 24 KB EIP-170 limit, so the math is deployed once and shared by every metapool.
 The factory stores it as `math_implementation` (`:91`) and passes it into each
-metapool's constructor (`:648`). The plain pool does not use it at all.
+metapool's constructor (`CurveStableSwapMetaNG.vy:345`). The plain pool does not
+use it at all.
 
 | Function | `line` | Signature | Notes |
 |---|---|---|---|
-| `get_y` | `:18-84` | `(i, j, x, xp, _amp, _D, _n_coins) -> uint256` | identical to the pool's `:1009`, but `n` is a parameter |
-| `get_D` | `:90-136` | `(_xp, _amp, _n_coins) -> uint256` | identical to `:1079` |
-| `get_y_D` | `:143-197` | `(A, i, xp, D, _n_coins) -> uint256` | identical to `:1130` |
-| `exp` | `:203-269` | `(x: int256) -> uint256` | identical to `:1469` |
+| `get_y` | `:18-84` | `(i, j, x, xp, _amp, _D, _n_coins) -> uint256` | identical to the pool's `NG:1009`, but `n` is a parameter |
+| `get_D` | `:90-136` | `(_xp, _amp, _n_coins) -> uint256` | identical to `NG:1079` |
+| `get_y_D` | `:143-197` | `(A, i, xp, D, _n_coins) -> uint256` | identical to `NG:1130` |
+| `exp` | `:203-269` | `(x: int256) -> uint256` | identical to `NG:1469` |
 
 Every one takes `_n_coins` explicitly and derives `n_coins_128` by conversion
 (`:37`, `:158`), where the pool versions close over the immutable `N_COINS`.
@@ -1607,7 +1608,7 @@ mainnet deployments listed in comments at `:35-36`.
 state transitions. Moving them out buys ~4 KB of pool bytecode, and — more
 importantly — lets the factory admin fix a quoting bug for every deployed pool at
 once by calling `set_views_implementation` (`CurveStableSwapFactoryNG.vy:813`).
-The pool reads `factory.views_implementation()` on every call (`:1699` etc.), so
+The pool reads `factory.views_implementation()` on every call (`NG:1697` etc.), so
 the swap is live and retroactive.
 
 It also means the Views contract carries its **own copies** of `get_D` (`:596`),
@@ -1635,7 +1636,7 @@ fee: uint256 = self._dynamic_fee((xp[i] + x) / 2, (xp[j] + y) / 2, base_fee, fee
 return (dy - fee) * PRECISION / rates[j]
 ```
 
-Mirrors `__exchange` (`:904`) exactly, including the `−1` and the midpoint fee
+Mirrors `__exchange` (`NG:904`) exactly, including the `−1` and the midpoint fee
 arguments. That correspondence is what makes the quote exact rather than
 approximate.
 
@@ -1663,7 +1664,7 @@ converted via `_base_calc_token_amount(..., True)` and multiplied by `rates[1]`
 both the pool and its own LP token, which is exactly the NG design.
 
 **`calc_withdraw_one_coin(_burn_amount, i, pool)` — `:252-299`.** A
-reimplementation of the pool's `_calc_withdraw_one_coin` (`:1233`) reading all
+reimplementation of the pool's `_calc_withdraw_one_coin` (`NG:1233`) reading all
 inputs externally. Same `ys = (D0+D1)/(2·N_COINS)`, same
 `base_fee = fee·n/(4(n−1))`, same `(dy−1)·PRECISION/rates[i]`.
 
@@ -1695,7 +1696,7 @@ swapped `j, i`). The `+ 1` at `:485` rounds the required input up. The fee here
 uses current `xp`, not midpoints, so `get_dx` is very slightly optimistic for
 large trades — quote, then verify with `get_dy`.
 
-**`_dynamic_fee` — `:381-390`.** Same formula as the pool's (`:887`), but the
+**`_dynamic_fee` — `:381-390`.** Same formula as the pool's (`NG:887`), but the
 multiplier is a parameter rather than storage, and it uses checked arithmetic
 instead of `unsafe_*`.
 
@@ -2054,18 +2055,18 @@ Other constants: `MAX_REWARDS = 8` (`:88`), `TOKENLESS_PRODUCTION = 40` (`:89`),
 | Storage | `line` | Meaning |
 |---|---|---|
 | `balanceOf`, `totalSupply`, `allowance` | `:112-114` | the gauge is itself an ERC20 |
-| `factory`, `manager`, `lp_token` | `:124-126` | `manager` = `tx.origin` at deploy |
-| `is_killed` | `:128` | killed ⇒ rate 0 |
-| `inflation_params` | `:131` | `[future_epoch_time:40][inflation_rate:216]` |
-| `reward_count`, `reward_data` | `:134-135` | extra reward tokens |
-| `rewards_receiver` | `:138` | per-user default |
-| `reward_integral_for` | `:141` | token → user → integral snapshot |
-| `claim_data` | `:144` | user → token → `[claimable:128][claimed:128]` |
-| `working_balances`, `working_supply` | `:146-147` | boosted balances |
-| `integrate_inv_supply_of` | `:150` | user's snapshot of the global integral |
-| `integrate_checkpoint_of` | `:151` | user's last checkpoint time |
-| `integrate_fraction` | `:155` | **total CRV ever owed to the user** |
-| `period`, `period_timestamp`, `integrate_inv_supply` | `:159-165` | the global integral history |
+| `factory`, `manager`, `lp_token` | `:123-125` | `manager` = `tx.origin` at deploy |
+| `is_killed` | `:127` | killed ⇒ rate 0 |
+| `inflation_params` | `:130` | `[future_epoch_time:40][inflation_rate:216]` |
+| `reward_count`, `reward_data` | `:133-134` | extra reward tokens |
+| `rewards_receiver` | `:137` | per-user default |
+| `reward_integral_for` | `:140` | token → user → integral snapshot |
+| `claim_data` | `:143` | user → token → `[claimable:128][claimed:128]` |
+| `working_balances`, `working_supply` | `:145-146` | boosted balances |
+| `integrate_inv_supply_of` | `:149` | user's snapshot of the global integral |
+| `integrate_checkpoint_of` | `:150` | user's last checkpoint time |
+| `integrate_fraction` | `:154` | **total CRV ever owed to the user** |
+| `period`, `period_timestamp`, `integrate_inv_supply` | `:158`, `:163`, `:165` | the global integral history |
 
 ### 9.3 `_checkpoint(addr)` — `:225-295` (internal)
 
@@ -2536,23 +2537,23 @@ constants live in code, not storage, so they are excluded.
 
 | # | Name | Type | `line` | Public |
 |---|---|---|---|---|
-| 1 | `stored_balances` | `DynArray[uint256, 8]` | `:163` | no |
-| 2 | `fee` | `uint256` | `:167` | yes |
-| 3 | `offpeg_fee_multiplier` | `uint256` | `:168` | yes |
-| 4 | `initial_A` | `uint256` | `:178` | yes |
-| 5 | `future_A` | `uint256` | `:179` | yes |
-| 6 | `initial_A_time` | `uint256` | `:180` | yes |
-| 7 | `future_A_time` | `uint256` | `:181` | yes |
-| 8 | `admin_balances` | `DynArray[uint256, 8]` | `:186` | yes |
-| 9 | `last_prices_packed` | `DynArray[uint256, 8]` | `:198` | no |
-| 10 | `last_D_packed` | `uint256` | `:199` | no |
-| 11 | `ma_exp_time` | `uint256` | `:200` | yes |
-| 12 | `D_ma_time` | `uint256` | `:201` | yes |
-| 13 | `ma_last_time` | `uint256` | `:202` | yes |
-| 14 | `balanceOf` | `HashMap[address, uint256]` | `:215` | yes |
-| 15 | `allowance` | `HashMap[address, HashMap]` | `:216` | yes |
-| 16 | `total_supply` | `uint256` | `:217` | no (exposed via `totalSupply()`) |
-| 17 | `nonces` | `HashMap[address, uint256]` | `:218` | yes |
+| 1 | `stored_balances` | `DynArray[uint256, 8]` | `:165` | no |
+| 2 | `fee` | `uint256` | `:169` | yes |
+| 3 | `offpeg_fee_multiplier` | `uint256` | `:170` | yes |
+| 4 | `initial_A` | `uint256` | `:180` | yes |
+| 5 | `future_A` | `uint256` | `:181` | yes |
+| 6 | `initial_A_time` | `uint256` | `:182` | yes |
+| 7 | `future_A_time` | `uint256` | `:183` | yes |
+| 8 | `admin_balances` | `DynArray[uint256, 8]` | `:188` | yes |
+| 9 | `last_prices_packed` | `DynArray[uint256, 8]` | `:200` | no |
+| 10 | `last_D_packed` | `uint256` | `:201` | no |
+| 11 | `ma_exp_time` | `uint256` | `:202` | yes |
+| 12 | `D_ma_time` | `uint256` | `:203` | yes |
+| 13 | `ma_last_time` | `uint256` | `:204` | yes |
+| 14 | `balanceOf` | `HashMap[address, uint256]` | `:218` | yes |
+| 15 | `allowance` | `HashMap[address, HashMap]` | `:219` | yes |
+| 16 | `total_supply` | `uint256` | `:220` | no (exposed via `totalSupply()`) |
+| 17 | `nonces` | `HashMap[address, uint256]` | `:221` | yes |
 
 Immutables (in code): `N_COINS`, `N_COINS_128`, `factory`, `coins`,
 `asset_types`, `pool_contains_rebasing_tokens`, `rate_multipliers`,
@@ -2575,8 +2576,8 @@ Immutables (in code): `N_COINS`, `N_COINS_128`, `factory`, `coins`,
 
 ### 14.3 `CurveStableSwapMetaNG` differences
 
-Same list, except: `stored_balances` is `uint256[2]` (`:216`, fixed not dynamic),
-`last_prices_packed` is a single `uint256` (`:254`), and `asset_type`,
+Same list, except: `stored_balances` is `uint256[2]` (`:221`, fixed not dynamic),
+`last_prices_packed` is a single `uint256` (`:256`), and `asset_type`,
 `rate_multiplier`, `rate_oracle`, `call_amount`, `scale_factor` are scalars.
 Additional immutables: `BASE_POOL`, `BASE_POOL_IS_NG`, `BASE_N_COINS`,
 `BASE_COINS`, `math`.
@@ -2585,39 +2586,39 @@ Additional immutables: `BASE_POOL`, `BASE_POOL_IS_NG`, `BASE_N_COINS`,
 
 | # | Name | Type | `line` |
 |---|---|---|---|
-| 1 | `admin` | `address` | `:73` |
-| 2 | `future_admin` | `address` | `:74` |
-| 3 | `asset_types` | `HashMap[uint8, String[20]]` | `:76` |
-| 4 | `pool_list` | `address[4294967296]` | `:78` |
-| 5 | `pool_count` | `uint256` | `:79` |
-| 6 | `pool_data` | `HashMap[address, PoolArray]` | `:80` |
-| 7 | `base_pool_list` | `address[4294967296]` | `:82` |
-| 8 | `base_pool_count` | `uint256` | `:83` |
-| 9 | `base_pool_data` | `HashMap[address, BasePoolArray]` | `:84` |
-| 10 | `base_pool_assets` | `HashMap[address, bool]` | `:87` |
-| 11 | `pool_implementations` | `HashMap[uint256, address]` | `:90` |
-| 12 | `metapool_implementations` | `HashMap[uint256, address]` | `:91` |
-| 13 | `math_implementation` | `address` | `:92` |
-| 14 | `gauge_implementation` | `address` | `:93` |
-| 15 | `views_implementation` | `address` | `:94` |
-| 16 | `fee_receiver` | `address` | `:97` |
-| 17 | `markets` | `HashMap[uint256, address[4294967296]]` | `:102` |
-| 18 | `market_counts` | `HashMap[uint256, uint256]` | `:103` |
+| 1 | `admin` | `address` | `:74` |
+| 2 | `future_admin` | `address` | `:75` |
+| 3 | `asset_types` | `HashMap[uint8, String[20]]` | `:77` |
+| 4 | `pool_list` | `address[4294967296]` | `:79` |
+| 5 | `pool_count` | `uint256` | `:80` |
+| 6 | `pool_data` | `HashMap[address, PoolArray]` | `:81` |
+| 7 | `base_pool_list` | `address[4294967296]` | `:83` |
+| 8 | `base_pool_count` | `uint256` | `:84` |
+| 9 | `base_pool_data` | `HashMap[address, BasePoolArray]` | `:85` |
+| 10 | `base_pool_assets` | `HashMap[address, bool]` | `:88` |
+| 11 | `pool_implementations` | `HashMap[uint256, address]` | `:91` |
+| 12 | `metapool_implementations` | `HashMap[uint256, address]` | `:92` |
+| 13 | `math_implementation` | `address` | `:93` |
+| 14 | `gauge_implementation` | `address` | `:94` |
+| 15 | `views_implementation` | `address` | `:95` |
+| 16 | `fee_receiver` | `address` | `:98` |
+| 17 | `markets` | `HashMap[uint256, address[4294967296]]` | `:103` |
+| 18 | `market_counts` | `HashMap[uint256, uint256]` | `:104` |
 
 ### 14.5 `LiquidityGauge`
 
 | # | Name | `line` | | # | Name | `line` |
 |---|---|---|---|---|---|---|
-| 1 | `balanceOf` | `:112` | | 11 | `working_supply` | `:147` |
-| 2 | `totalSupply` | `:113` | | 12 | `integrate_inv_supply_of` | `:150` |
-| 3 | `allowance` | `:114` | | 13 | `integrate_checkpoint_of` | `:151` |
-| 4 | `name` / `symbol` | `:116-117` | | 14 | `integrate_fraction` | `:155` |
-| 5 | `nonces` | `:120` | | 15 | `period` | `:159` |
-| 6 | `factory` / `manager` / `lp_token` | `:124-126` | | 16 | `reward_tokens[8]` | `:162` |
-| 7 | `is_killed` | `:128` | | 17 | `period_timestamp[1e29]` | `:164` |
-| 8 | `inflation_params` | `:131` | | 18 | `integrate_inv_supply[1e29]` | `:165` |
-| 9 | `reward_count` / `reward_data` | `:134-135` | | | | |
-| 10 | `rewards_receiver` / `reward_integral_for` / `claim_data` / `working_balances` | `:138-146` | | | | |
+| 1 | `balanceOf` | `:112` | | 11 | `working_supply` | `:146` |
+| 2 | `totalSupply` | `:113` | | 12 | `integrate_inv_supply_of` | `:149` |
+| 3 | `allowance` | `:114` | | 13 | `integrate_checkpoint_of` | `:150` |
+| 4 | `name` / `symbol` | `:116-117` | | 14 | `integrate_fraction` | `:154` |
+| 5 | `nonces` | `:120` | | 15 | `period` | `:158` |
+| 6 | `factory` / `manager` / `lp_token` | `:123-125` | | 16 | `reward_tokens[8]` | `:161` |
+| 7 | `is_killed` | `:127` | | 17 | `period_timestamp[1e29]` | `:163` |
+| 8 | `inflation_params` | `:130` | | 18 | `integrate_inv_supply[1e29]` | `:165` |
+| 9 | `reward_count` / `reward_data` | `:133-134` | | | | |
+| 10 | `rewards_receiver` / `reward_integral_for` / `claim_data` / `working_balances` | `:137-145` | | | | |
 
 ---
 
@@ -2627,16 +2628,16 @@ Additional immutables: `BASE_POOL`, `BASE_POOL_IS_NG`, `BASE_N_COINS`,
 
 | Event | `line` (plain) | Fields | Emitted by |
 |---|---|---|---|
-| `Transfer` | `:82-86` | `sender` (idx), `receiver` (idx), `value` | `_transfer` `:1563`, `_burnFrom` `:1571`, mint `:680`, `__init__` `:355` |
-| `Approval` | `:87-91` | `owner` (idx), `spender` (idx), `value` | `approve` `:1619`, `transferFrom` `:1600`, `permit` `:1669` |
+| `Transfer` | `:82-86` | `sender` (idx), `receiver` (idx), `value` | `_transfer` `:1563`, `_burnFrom` `:1571`, mint `:680`, `__init__` `:351` |
+| `Approval` | `:87-91` | `owner` (idx), `spender` (idx), `value` | `approve` `:1618`, `transferFrom` `:1599`, `permit` `:1669` |
 | `TokenExchange` | `:92-98` | `buyer` (idx), `sold_id`, `tokens_sold`, `bought_id`, `tokens_bought` | `_exchange` `:982` |
 | `TokenExchangeUnderlying` | `:99-105` | same | **meta only**, `exchange_underlying` `:746` |
 | `AddLiquidity` | `:106-112` | `provider` (idx), `token_amounts`, `fees`, `invariant`, `token_supply` | `add_liquidity` `:682` |
-| `RemoveLiquidity` | `:113-118` | `provider` (idx), `token_amounts`, `fees`, `token_supply` | `remove_liquidity` `:860` (fees always empty) |
+| `RemoveLiquidity` | `:113-118` | `provider` (idx), `token_amounts`, `fees`, `token_supply` | `remove_liquidity` `:859` (fees always empty) |
 | `RemoveLiquidityOne` | `:119-125` | `provider` (idx), `token_id`, `token_amount`, `coin_amount`, `token_supply` | `remove_liquidity_one_coin` `:719` |
 | `RemoveLiquidityImbalance` | `:126-132` | `provider` (idx), `token_amounts`, `fees`, `invariant`, `token_supply` | `remove_liquidity_imbalance` `:794` |
-| `RampA` | `:133-138` | `old_A`, `new_A`, `initial_time`, `future_time` | `ramp_A` `:1845` |
-| `StopRampA` | `:139-142` | `A`, `t` | `stop_ramp_A` `:1859` |
+| `RampA` | `:133-138` | `old_A`, `new_A`, `initial_time`, `future_time` | `ramp_A` `:1844` |
+| `StopRampA` | `:139-142` | `A`, `t` | `stop_ramp_A` `:1858` |
 | `ApplyNewFee` | `:143-146` | `fee`, `offpeg_fee_multiplier` | `set_new_fee` `:1875` |
 | `SetNewMATime` | `:147-149` | `ma_exp_time`, `D_ma_time` | `set_ma_exp_time` `:1890` |
 
@@ -2694,7 +2695,7 @@ boost multiplier.
 | `"Not enough coins removed"` | `NG:711`, `Meta:910` | `dy < _min_received` on one-coin withdrawal |
 | `"Withdrawal resulted in fewer coins than expected"` | `NG:832`, `Meta:1035` | a coin's pro-rata share `< _min_amounts[i]` |
 | `"Exchange resulted in fewer coins than expected"` | `NG:974`, `Meta:1182` | `dy < _min_dy` |
-| `"wad_exp overflow"` | `NG:1489`, `Math:226` | `exp` argument ≥ 135.3e18. Unreachable from the EMA path |
+| `"wad_exp overflow"` | `NG:1491`, `Math:226` | `exp` argument ≥ 135.3e18. Unreachable from the EMA path |
 | `"Not a Metapool Swap. Use Base pool."` | `Views:107` | `get_dx_underlying` with both indices > 0 |
 | `"Invalid fee"` | `Factory:499`, `:613` | deploy-time fee > 1% |
 | `"Max 18 decimals for coins"` | `Factory:513`, `:624` | |

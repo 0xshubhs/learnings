@@ -2311,3 +2311,871 @@ The lesson: you do not need an explicit `require(profit > 0)`. Set
   the gas. That is the correct incentive.
 
 ---
+
+## 9. `interfaces/`
+
+Eighteen files, 757 lines. Nothing here has an implementation; the value is that
+these are the ABIs an integrator compiles against, and several of them define
+structs whose *field order* is part of the calldata encoding (get it wrong and
+your selector changes — see §11).
+
+Two housekeeping notes that apply throughout: the periphery interfaces are what
+the concrete contracts `override`, so a function missing from the interface is
+not callable through the interface type; and `external/` holds three interfaces
+for contracts Uniswap does *not* own.
+
+### 9.1 The three big ones
+
+#### `INonfungiblePositionManager.sol` — 179 lines
+
+`:16-23` declares the inheritance the concrete contract must satisfy:
+`IPoolInitializer`, `IPeripheryPayments`, `IPeripheryImmutableState`,
+`IERC721Metadata`, `IERC721Enumerable`, `IERC721Permit`.
+
+Three events, all keyed on `tokenId` (`:30`, `:36`, `:43`) — the complete
+economic history of a position. See §13.
+
+Four structs, and their field order is load-bearing:
+
+| Struct | Line | Fields |
+|---|---|---|
+| `MintParams` | `:78` | `token0, token1, fee, tickLower, tickUpper, amount0Desired, amount1Desired, amount0Min, amount1Min, recipient, deadline` |
+| `IncreaseLiquidityParams` | `:110` | `tokenId, amount0Desired, amount1Desired, amount0Min, amount1Min, deadline` |
+| `DecreaseLiquidityParams` | `:138` | `tokenId, liquidity, amount0Min, amount1Min, deadline` |
+| `CollectParams` | `:159` | `tokenId, recipient, amount0Max, amount1Max` |
+
+`positions(uint256)` (`:60`) returns a 12-tuple. Note it returns `token0`,
+`token1` and `fee` — not the `poolId` that is actually stored. The contract
+expands the id through `_poolIdToPoolKey` on the way out, which is why this
+getter is more expensive than it looks (`test/NonfungiblePositionManagerPositionsGasTest.sol`
+exists purely to measure it).
+
+`mint` (`:100`), `increaseLiquidity` (`:129`), `decreaseLiquidity` (`:154`),
+`collect` (`:173`), `burn` (`:178`) — all `payable`, because they may be
+delegate-called through `multicall` alongside an ETH-bearing call.
+
+#### `ISwapRouter.sol` — 67 lines
+
+`is IUniswapV3SwapCallback` (`:9`) — the router *is* the callback receiver, which
+is why the pool can pay it back mid-swap.
+
+| Struct | Line | Fields |
+|---|---|---|
+| `ExactInputSingleParams` | `:10` | `tokenIn, tokenOut, fee, recipient, deadline, amountIn, amountOutMinimum, sqrtPriceLimitX96` |
+| `ExactInputParams` | `:26` | `path, recipient, deadline, amountIn, amountOutMinimum` |
+| `ExactOutputSingleParams` | `:39` | `tokenIn, tokenOut, fee, recipient, deadline, amountOut, amountInMaximum, sqrtPriceLimitX96` |
+| `ExactOutputParams` | `:55` | `path, recipient, deadline, amountOut, amountInMaximum` |
+
+The single-hop structs carry `sqrtPriceLimitX96`; the multi-hop ones do not,
+because a price limit is per-pool and there is no sensible way to express one
+limit across a path.
+
+#### `IQuoterV2.sol` — 98 lines
+
+The V2 quoter returns four values where V1 returned one:
+
+```solidity
+function quoteExactInput(bytes memory path, uint256 amountIn)  // :18
+    external returns (
+        uint256 amountOut,
+        uint160[] memory sqrtPriceX96AfterList,
+        uint32[] memory initializedTicksCrossedList,
+        uint256 gasEstimate
+    );
+```
+
+`QuoteExactInputSingleParams` (`:27`): `tokenIn, tokenOut, amountIn, fee,
+sqrtPriceLimitX96`. `QuoteExactOutputSingleParams` (`:71`): identical shape but
+the third field is named `amount`. **Both structs put the amount third, before
+`fee`** — the opposite of the router's ordering, and a classic source of
+hand-encoding bugs.
+
+`IQuoter.sol` (51 lines) is the V1 shape: `quoteExactInput` (`:14`),
+`quoteExactInputSingle` (`:23`), `quoteExactOutput` (`:35`),
+`quoteExactOutputSingle` (`:44`), all returning a single `uint256` and taking
+loose arguments rather than a struct.
+
+### 9.2 The mixin interfaces
+
+| File | Lines | Declares |
+|---|---|---|
+| `IMulticall.sol` | 13 | `multicall(bytes[]) payable returns (bytes[])` (`:12`) |
+| `IPeripheryImmutableState.sol` | 12 | `factory()` (`:8`), `WETH9()` (`:11`) |
+| `IPeripheryPayments.sol` | 28 | `unwrapWETH9` (`:11`), `refundETH` (`:16`), `sweepToken` (`:23`) |
+| `IPeripheryPaymentsWithFee.sol` | 29 | `is IPeripheryPayments` (`:8`); adds `unwrapWETH9WithFee` (`:12`), `sweepTokenWithFee` (`:22`) |
+| `IPoolInitializer.sol` | 22 | `createAndInitializePoolIfNecessary` (`:16`) |
+| `IERC721Permit.sol` | 32 | `PERMIT_TYPEHASH()` (`:11`), `DOMAIN_SEPARATOR()` (`:15`), `permit` (`:24`) |
+| `ISelfPermit.sol` | 76 | `selfPermit` (`:15`), `selfPermitIfNecessary` (`:33`), `selfPermitAllowed` (`:50`), `selfPermitAllowedIfNecessary` (`:68`) |
+
+The `IfNecessary` variants exist for one reason, stated at `:26` and `:61`: a
+permit can be front-run. If an attacker submits your signed permit first, the
+nonce is consumed and your `selfPermit` reverts, taking your whole multicall with
+it. The `IfNecessary` version checks the current allowance and no-ops instead.
+
+### 9.3 The small ones
+
+| File | Lines | Purpose |
+|---|---|---|
+| `INonfungibleTokenPositionDescriptor.sol` | 17 | One function, `tokenURI(INonfungiblePositionManager, uint256)` (`:13`). The indirection that makes NFT artwork upgradeable without touching the position manager. |
+| `IERC20Metadata.sol` | 18 | `is IERC20` plus `name()` (`:11`), `symbol()` (`:14`), `decimals()` (`:17`). Needed because OZ 3.x `IERC20` omits them. |
+| `ITickLens.sol` | 25 | `PopulatedTick { tick, liquidityNet, liquidityGross }` (`:10`) and `getPopulatedTicksInWord(address, int16)` (`:21`). |
+| `IV3Migrator.sol` | 34 | `is IMulticall, ISelfPermit, IPoolInitializer` (`:11`); `MigrateParams` (`:12`, 13 fields) and `migrate` (`:33`). |
+
+### 9.4 `interfaces/external/` — contracts Uniswap does not own
+
+| File | Lines | Why it exists |
+|---|---|---|
+| `IWETH9.sol` | 13 | `is IERC20` plus `deposit() payable` (`:9`) and `withdraw(uint256)` (`:12`). WETH9 predates any standard, so its ABI must be declared by hand. |
+| `IERC20PermitAllowed.sol` | 27 | The **DAI/CHAI** permit shape (`:8`): `permit(holder, spender, nonce, expiry, allowed, v, r, s)` (`:17`). Note `bool allowed` instead of `uint256 value` — DAI's permit grants unlimited or zero, nothing in between. This is the entire reason `selfPermitAllowed` exists as a separate function from `selfPermit`. |
+| `IERC1271.sol` | 16 | `isValidSignature(bytes32, bytes) returns (bytes4)` (`:15`), with the magic value `0x1626ba7e` documented at `:9`. Used by `ERC721Permit` so a **contract** can own and permit a position NFT. |
+
+---
+
+## 10. `test/` helpers
+
+Twenty-three contracts, 825 lines. None is deployed to mainnet. They are worth
+reading anyway: several are the only executable specification of a library's
+intended use, and the gas harnesses tell you which functions the authors
+considered hot.
+
+### 10.1 Library exercisers
+
+Pure libraries cannot be called from a test runner, so each gets a thin public
+wrapper. The pattern is always the same: a `public pure` passthrough, plus a
+`getGasCostOf*` twin that brackets the call with `gasleft()`.
+
+| Contract | Lines | Wraps |
+|---|---|---|
+| `LiquidityAmountsTest.sol` | 120 | All six `LiquidityAmounts` functions, each with a gas twin (`:7`, `:25`, `:43`, `:65`, …) |
+| `OracleTest.sol` | 67 | `consult` (`:8`), `getQuoteAtTick` (`:16`), `getOldestObservationSecondsAgo` (`:43`), `getBlockStartingTickAndLiquidity` (`:52`), `getWeightedArithmeticMeanTick` (`:56`) |
+| `PathTest.sol` | 37 | `hasMultiplePools` (`:7`), `decodeFirstPool` (`:11`), `getFirstPool` (`:23`), `skipToken` (`:27`) |
+| `PoolAddressTest.sol` | 30 | `POOL_INIT_CODE_HASH` (`:7`) and `computeAddress` (`:11`) — the init-code-hash getter is how the JS tests assert the constant has not drifted |
+| `PositionValueTest.sol` | 57 | `total` (`:8`), `principal` (`:16`), `fees` (`:24`), plus three gas twins |
+| `PoolTicksCounterTest.sol` | 18 | `countInitializedTicksCrossed` (`:11`) |
+| `NFTDescriptorTest.sol` | 75 | Seven `NFTDescriptor` entry points, including `constructTokenURI` (`:12`) and `fixedPointToDecimalString` (`:40`) — this is how the SVG output gets snapshot-tested |
+| `Base64Test.sol` | 16 | `encode` (`:7`) and its gas twin (`:11`) |
+| `TestCallbackValidation.sol` | 15 | `verifyCallback` (`:7`), so the revert can be asserted directly |
+| `TickLensTest.sol` | 15 | `is TickLens`; adds only a gas measurement (`:10`) |
+| `PeripheryImmutableStateTest.sol` | 8 | `is PeripheryImmutableState` — a concrete shell so the immutables can be read |
+| `SelfPermitTest.sol` | 9 | `is SelfPermit` — same idea |
+
+### 10.2 Time-travel subclasses
+
+`_blockTimestamp()` is `virtual` in `BlockTimestamp` for exactly this reason.
+
+- **`MockTimeNonfungiblePositionManager.sol`** (23 lines) — `is NonfungiblePositionManager`, overrides `_blockTimestamp()` (`:16`) to return a settable `time`, with `setTime` at `:20`.
+- **`MockTimeSwapRouter.sol`** (19 lines) — the same for `SwapRouter` (`:12`, `:16`).
+
+Deadline logic is untestable without these; you cannot make Hardhat's clock go
+backwards, and waiting is not an option.
+
+### 10.3 Pool mocks
+
+- **`MockObservable.sol`** (48 lines) — a fake pool exposing only `observe` (`:28`). The constructor (`:14`) takes two `secondsAgos` and the tick/liquidity cumulatives to return, with `require`s at `:19` and `:33` enforcing array lengths. Lets `OracleLibrary.consult` be tested against exact numbers with no real pool.
+- **`MockObservations.sol`** (82 lines) — a richer fake with `slot0()` (`:43`) and `observations(uint256)` (`:59`), used to test `getOldestObservationSecondsAgo` and the initialized/uninitialized edge cases.
+- **`TestUniswapV3Callee.sol`** (62 lines) — `is IUniswapV3SwapCallback`; four swap helpers (`:12`, `:21`, `:30`, `:39`) and the callback (`:48`). A minimal correct callback implementation, useful as a template.
+
+### 10.4 Token and owner mocks
+
+| Contract | Lines | Notes |
+|---|---|---|
+| `TestERC20.sol` | 10 | `is ERC20Permit`, mints to the deployer (`:7`) |
+| `TestERC20Metadata.sol` | 14 | Configurable name/symbol, for the NFT-artwork tests |
+| `TestERC20PermitAllowed.sol` | 24 | `is TestERC20, IERC20PermitAllowed` — the DAI-style permit (`:11`), with a nonce check that reverts `'TestERC20PermitAllowed::permit: wrong nonce'` (`:21`) |
+| `TestPositionNFTOwner.sol` | 28 | `is IERC1271` with a settable owner (`:9`); `isValidSignature` (`:13`) returns the magic value if the recovered signer matches. Proves a contract can hold and permit a position. |
+| `TestMulticall.sol` | 30 | `is Multicall`; deliberately includes `functionThatRevertsWithError` (`:8`) so the bubble-up path in `multicall` can be asserted, plus `functionThatReturnsTuple` (`:17`), `pays()` (`:23`) and `returnSender()` (`:27`) |
+
+`NonfungiblePositionManagerPositionsGasTest.sol` (18 lines) measures exactly one
+thing, `positions(tokenId)` (`:13`) — a hint that the two-mapping indirection
+described in §3 was a known cost.
+
+---
+
+## 11. ABI / selector tables
+
+Every selector below was computed with `cast sig` against the canonicalised
+signature (structs expanded to tuples, `enum`s to their underlying type), not
+transcribed from a block explorer. Reproduce any row with:
+
+```bash
+cast sig "exactInputSingle((address,address,uint24,address,uint256,uint256,uint256,uint160))"
+# 0x414bf389
+```
+
+The struct expansion is where hand-encoding goes wrong. A `MintParams` is eleven
+fields in a fixed order; permute two of them and you get a different selector
+that matches nothing.
+
+### 11.1 `NonfungiblePositionManager`
+
+| Function | Selector |
+|---|---|
+| `positions(uint256)` | `0x99fbab88` |
+| `mint((address,address,uint24,int24,int24,uint256,uint256,uint256,uint256,address,uint256))` | `0x88316456` |
+| `increaseLiquidity((uint256,uint256,uint256,uint256,uint256,uint256))` | `0x219f5d17` |
+| `decreaseLiquidity((uint256,uint128,uint256,uint256,uint256))` | `0x0c49ccbe` |
+| `collect((uint256,address,uint128,uint128))` | `0xfc6f7865` |
+| `burn(uint256)` | `0x42966c68` |
+| `tokenURI(uint256)` | `0xc87b56dd` |
+| `uniswapV3MintCallback(uint256,uint256,bytes)` | `0xd3487997` |
+| `createAndInitializePoolIfNecessary(address,address,uint24,uint160)` | `0x13ead562` |
+| `permit(address,uint256,uint256,uint8,bytes32,bytes32)` | `0x7ac2ff7b` |
+| `PERMIT_TYPEHASH()` | `0x30adf81f` |
+| `DOMAIN_SEPARATOR()` | `0x3644e515` |
+| `multicall(bytes[])` | `0xac9650d8` |
+| `factory()` | `0xc45a0155` |
+| `WETH9()` | `0x4aa4a4fc` |
+
+Inherited ERC-721 surface, for completeness:
+
+| Function | Selector |
+|---|---|
+| `balanceOf(address)` | `0x70a08231` |
+| `ownerOf(uint256)` | `0x6352211e` |
+| `transferFrom(address,address,uint256)` | `0x23b872dd` |
+| `safeTransferFrom(address,address,uint256)` | `0x42842e0e` |
+| `safeTransferFrom(address,address,uint256,bytes)` | `0xb88d4fde` |
+| `approve(address,uint256)` | `0x095ea7b3` |
+| `getApproved(uint256)` | `0x081812fc` |
+| `setApprovalForAll(address,bool)` | `0xa22cb465` |
+| `isApprovedForAll(address,address)` | `0xe985e9c5` |
+| `tokenByIndex(uint256)` | `0x4f6ccce7` |
+| `tokenOfOwnerByIndex(address,uint256)` | `0x2f745c59` |
+| `totalSupply()` | `0x18160ddd` |
+| `name()` | `0x06fdde03` |
+| `symbol()` | `0x95d89b41` |
+| `supportsInterface(bytes4)` | `0x01ffc9a7` |
+| `baseURI()` | `0x6c0360eb` |
+
+`permit` is `0x7ac2ff7b`, **not** the ERC-20 `permit` selector — the argument
+list is `(spender, tokenId, deadline, v, r, s)`, six arguments where ERC-2612
+has seven. Tooling that assumes the ERC-20 shape will mis-encode it.
+
+### 11.2 `SwapRouter`
+
+| Function | Selector |
+|---|---|
+| `exactInputSingle((address,address,uint24,address,uint256,uint256,uint256,uint160))` | `0x414bf389` |
+| `exactInput((bytes,address,uint256,uint256,uint256))` | `0xc04b8d59` |
+| `exactOutputSingle((address,address,uint24,address,uint256,uint256,uint256,uint160))` | `0xdb3e2198` |
+| `exactOutput((bytes,address,uint256,uint256,uint256))` | `0xf28c0498` |
+| `uniswapV3SwapCallback(int256,int256,bytes)` | `0xfa461e33` |
+| `multicall(bytes[])` | `0xac9650d8` |
+| `unwrapWETH9(uint256,address)` | `0x49404b7c` |
+| `sweepToken(address,uint256,address)` | `0xdf2ab5bb` |
+| `refundETH()` | `0x12210e8a` |
+| `unwrapWETH9WithFee(uint256,address,uint256,address)` | `0x9b2c0a37` |
+| `sweepTokenWithFee(address,uint256,address,uint256,address)` | `0xe0e189a0` |
+| `factory()` | `0xc45a0155` |
+| `WETH9()` | `0x4aa4a4fc` |
+
+`0x414bf389` and `0xc04b8d59` are the two most common selectors in Ethereum
+swap calldata; recognising them on sight is genuinely useful.
+
+### 11.3 `SelfPermit` (mixed into the position manager, router and migrator)
+
+| Function | Selector |
+|---|---|
+| `selfPermit(address,uint256,uint256,uint8,bytes32,bytes32)` | `0xf3995c67` |
+| `selfPermitIfNecessary(address,uint256,uint256,uint8,bytes32,bytes32)` | `0xc2e3140a` |
+| `selfPermitAllowed(address,uint256,uint256,uint256,uint8,bytes32,bytes32)` | `0x361bfe0f` |
+| `selfPermitAllowedIfNecessary(address,uint256,uint256,uint256,uint8,bytes32,bytes32)` | `0xeb76c82c` |
+
+### 11.4 Quoters
+
+| Function | Selector |
+|---|---|
+| `Quoter.quoteExactInput(bytes,uint256)` | `0xcdca1753` |
+| `Quoter.quoteExactInputSingle(address,address,uint24,uint256,uint160)` | `0xf7729d43` |
+| `Quoter.quoteExactOutput(bytes,uint256)` | `0x2f80bb1d` |
+| `Quoter.quoteExactOutputSingle(address,address,uint24,uint256,uint160)` | `0x30d07f21` |
+| `QuoterV2.quoteExactInput(bytes,uint256)` | `0xcdca1753` |
+| `QuoterV2.quoteExactInputSingle((address,address,uint256,uint24,uint160))` | `0xc6a5026a` |
+| `QuoterV2.quoteExactOutput(bytes,uint256)` | `0x2f80bb1d` |
+| `QuoterV2.quoteExactOutputSingle((address,address,uint256,uint24,uint160))` | `0xbd21704a` |
+
+Note the trap: `quoteExactInput` and `quoteExactOutput` share selectors across
+V1 and V2 because their argument lists are identical — only the *return* shape
+differs, and return types are not part of the selector. Point a V1 ABI at a V2
+quoter and the call succeeds while the decode silently produces garbage. The
+single-hop variants differ, so those fail loudly.
+
+### 11.5 Lens and migrator
+
+| Function | Selector |
+|---|---|
+| `TickLens.getPopulatedTicksInWord(address,int16)` | `0x351fb478` |
+| `V3Migrator.migrate((address,uint256,uint8,address,address,uint24,int24,int24,uint256,uint256,address,uint256,bool))` | `0xd44f2bf2` |
+
+### 11.6 Library functions (via the test wrappers)
+
+Libraries are `internal` and inlined, so these selectors only exist on the
+`test/` harnesses. Included because they are the signatures you would expose if
+you re-published a library as a deployed helper.
+
+| Function | Selector |
+|---|---|
+| `consult(address,uint32)` | `0x82413489` |
+| `getQuoteAtTick(int24,uint128,address,address)` | `0x43c57a27` |
+| `getOldestObservationSecondsAgo(address)` | `0xe6c4fbe0` |
+| `getBlockStartingTickAndLiquidity(address)` | `0x333b19a8` |
+| `getWeightedArithmeticMeanTick((int24,uint128)[])` | `0xab34b0fc` |
+| `getChainedPrice(address[],int24[])` | `0x7059b38a` |
+
+---
+
+## 12. Storage layout tables
+
+**Method note.** `node_modules` is not installed in this tree, so the OpenZeppelin
+3.4.2 base contracts cannot be compiled and `forge inspect` cannot produce
+absolute slot indices. Everything below is derived from the declarations in this
+repository, which fixes the *packing* exactly. Where a slot index depends on the
+OZ base, it is given as an offset `N` from the end of the inherited layout and
+labelled as such rather than guessed.
+
+Two of the three production contracts have no mutable storage at all, which is
+worth stating plainly.
+
+### 12.1 `SwapRouter` — one mutable slot
+
+| Slot | Type | Name | Line | Notes |
+|---|---|---|---|---|
+| 0 | `uint256` | `amountInCached` | `:38` | Initialised to `type(uint256).max` (`DEFAULT_AMOUNT_IN_CACHED`, `:35`) |
+
+`factory` and `WETH9` are `immutable` (`base/PeripheryImmutableState.sol:10-12`),
+so they live in code, not storage. `DEFAULT_AMOUNT_IN_CACHED` is `constant`.
+
+The single slot is a *transient* value: set before an exact-output swap, read
+after, reset to the sentinel. It is deliberately reset to `max` rather than `0`
+so the slot is never zeroed — refilling a zeroed slot costs 20,000 gas, keeping
+it non-zero costs 2,900. That is the whole reason the sentinel is `max` and not
+the obvious `0`.
+
+### 12.2 `NonfungiblePositionManager`
+
+Inherited layout comes first: `ERC721` and `ERC721Enumerable` from OZ 3.4.2
+(name, symbol, holder token enumerations, owner/approval maps, base URI), then
+`ERC721Permit`, which adds no mutable slots — `nameHash` and `versionHash` are
+`immutable` (`base/ERC721Permit.sol:19`, `:22`) and `PERMIT_TYPEHASH` is
+`constant` (`:51`).
+
+The contract's own declarations, in order:
+
+| Offset | Type | Name | Line |
+|---|---|---|---|
+| `N + 0` | `mapping(address => uint80)` | `_poolIds` | `:55` |
+| `N + 1` | `mapping(uint80 => PoolAddress.PoolKey)` | `_poolIdToPoolKey` | `:58` |
+| `N + 2` | `mapping(uint256 => Position)` | `_positions` | `:61` |
+| `N + 3` | `uint176 _nextId` (bytes 0–21) + `uint80 _nextPoolId` (bytes 22–31) | — | `:64`, `:66` |
+
+`_tokenDescriptor` (`:69`) is `immutable` and occupies no slot.
+
+**The packing at `N + 3` is the interesting one.** `uint176 + uint80 = 256` bits
+exactly, so both counters share a single slot. Every `mint` increments both
+`_nextId` and, on a pool's first use, `_nextPoolId` — one `SSTORE` instead of
+two. `uint176` is an unusual width chosen for precisely this fit; 176 bits still
+allows 9.5 × 10^52 positions.
+
+#### The `Position` struct (`:34-52`) — five slots
+
+| Slot | Bytes | Type | Field |
+|---|---|---|---|
+| 0 | 0–11 | `uint96` | `nonce` |
+| 0 | 12–31 | `address` | `operator` |
+| 1 | 0–9 | `uint80` | `poolId` |
+| 1 | 10–12 | `int24` | `tickLower` |
+| 1 | 13–15 | `int24` | `tickUpper` |
+| 1 | 16–31 | `uint128` | `liquidity` |
+| 2 | 0–31 | `uint256` | `feeGrowthInside0LastX128` |
+| 3 | 0–31 | `uint256` | `feeGrowthInside1LastX128` |
+| 4 | 0–15 | `uint128` | `tokensOwed0` |
+| 4 | 16–31 | `uint128` | `tokensOwed1` |
+
+Five slots, and only because the two `uint256` fee-growth snapshots each need a
+whole one. Slot 0 is `96 + 160 = 256`; slot 1 is `80 + 24 + 24 + 128 = 256`; slot 4 is
+`128 + 128 = 256`. Three of the five are perfectly full, which is not an
+accident: the field *order* was chosen to make them fit.
+
+This is also the answer to "why store `poolId` instead of the pool address".
+An address is 160 bits and would not fit alongside the ticks and liquidity in
+slot 1; a `uint80` does. The cost is the `_poolIdToPoolKey` indirection on every
+read, which is what the gas harness in §10.4 measures.
+
+### 12.3 Contracts with no mutable storage
+
+| Contract | Why |
+|---|---|
+| `Quoter`, `QuoterV2` | `amountOutCached` is the only state (`lens/Quoter.sol`, `lens/QuoterV2.sol`), used the same transient way as the router's cache |
+| `TickLens` | Pure reads against a pool passed as an argument |
+| `V3Migrator` | Holds `nonfungiblePositionManager` as `immutable`; funds only transit |
+| `NonfungibleTokenPositionDescriptor` | All configuration is `immutable` |
+| Every `libraries/` file | `library` with `internal` functions only |
+| Every `base/` mixin except `ERC721Permit` | Immutables and constants only |
+
+The absence of storage is the security property. A contract with no mutable
+state cannot be corrupted between transactions, which is why the periphery can
+be replaced wholesale without migrating anything.
+
+---
+
+## 13. Events reference
+
+The periphery emits **three** events of its own. Everything else an indexer sees
+from a Uniswap position comes either from the core pool (`Mint`, `Burn`, `Swap`,
+`Collect`, `Flash`) or from the inherited ERC-721.
+
+That asymmetry is the important fact. The pool's `Mint` tells you liquidity
+changed in a tick range; it does **not** tell you which NFT owns it, because the
+pool only sees the position manager as the owner. Joining the two streams
+requires matching the pool event to the position-manager event in the same
+transaction.
+
+### 13.1 Periphery events
+
+All three are declared in `interfaces/INonfungiblePositionManager.sol` and emitted
+from `NonfungiblePositionManager.sol`.
+
+| Event | Declared | Emitted | `topic0` |
+|---|---|---|---|
+| `IncreaseLiquidity(uint256 indexed tokenId, uint128 liquidity, uint256 amount0, uint256 amount1)` | `:30` | `mint` (`:128`), `increaseLiquidity` (`:198`) | `0x3067048b…5847e35f` |
+| `DecreaseLiquidity(uint256 indexed tokenId, uint128 liquidity, uint256 amount0, uint256 amount1)` | `:36` | `decreaseLiquidity` (`:257`) | `0x26f6a048…9d2377b4` |
+| `Collect(uint256 indexed tokenId, address recipient, uint256 amount0, uint256 amount1)` | `:43` | `collect` (`:309`) | `0x40d0efd1…fa8b8f01` |
+
+Only `tokenId` is indexed on all three, so an indexer can filter one position's
+entire history with a single topic, but **cannot** filter by owner or by pool
+without joining against `Transfer`.
+
+Reading each correctly:
+
+- **`IncreaseLiquidity`** fires on both the initial `mint` and every subsequent top-up. There is no separate "position created" event; the creation signal is the ERC-721 `Transfer` from `address(0)` in the same transaction. `liquidity` is the delta added, not the new total.
+- **`DecreaseLiquidity`** reports the liquidity burned and the amounts *credited to `tokensOwed`* — not transferred. Tokens do not move here. An indexer that treats this as a withdrawal will double-count when `Collect` follows.
+- **`Collect`** is the only one of the three that corresponds to tokens actually leaving the contract. `amount0`/`amount1` include both withdrawn principal (credited by an earlier `DecreaseLiquidity`) and accrued fees, with no way to separate them from the event alone. To split fees from principal you must pair it with the preceding `DecreaseLiquidity` in the same transaction: anything above that is fees.
+
+**The canonical "how much did this LP earn" query** is therefore: sum `Collect.amount{0,1}` for the `tokenId`, subtract the sum of `DecreaseLiquidity.amount{0,1}`, and the remainder is fee income. Doing it any other way gets principal counted as yield.
+
+### 13.2 Inherited ERC-721 events
+
+| Event | `topic0` | Notes |
+|---|---|---|
+| `Transfer(address indexed from, address indexed to, uint256 indexed tokenId)` | `0xddf252ad…f523b3ef` | `from == address(0)` is a mint; `to == address(0)` is a burn. All three fields indexed, so ownership history is cheaply queryable. |
+| `Approval(address indexed owner, address indexed approved, uint256 indexed tokenId)` | `0x8c5be1e5…c7c3b925` | |
+| `ApprovalForAll(address indexed owner, address indexed operator, bool approved)` | `0x17307eab…37696c31` | |
+
+`Transfer` shares its signature and `topic0` with ERC-20. An indexer filtering
+by topic alone across all contracts will pick up both; disambiguate by address,
+or by the fact that ERC-721 indexes three fields where ERC-20 indexes two.
+
+Note that `Approval` here is *not* what `permit` produces a log for — `permit`
+(`base/ERC721Permit.sol:55`) calls `_approve` internally, which emits the normal
+`Approval`. There is no distinct permit event, so an off-chain observer cannot
+tell a signed approval from an on-chain one.
+
+### 13.3 Contracts that emit nothing
+
+`SwapRouter`, `Quoter`, `QuoterV2`, `TickLens`, `V3Migrator` and every library
+emit no events at all. A swap's entire log trail comes from the pool's `Swap`
+event plus the ERC-20 `Transfer`s. This is why router-level analytics are hard:
+there is no on-chain record that a multi-hop went through `exactInput` rather
+than being assembled by hand, and no record of the `recipient` distinct from the
+final `Transfer`.
+
+---
+
+## 14. Revert-string decoder
+
+Every string below was collected with a real grep over the tree:
+
+```bash
+grep -rn "require(" --include='*.sol' uni/v3-periphery/contracts | grep -v '/test/'
+```
+
+Sixty-one `require`s outside `test/`, of which **42 carry a string** and 19 are
+bare. The bare ones are deliberate — a revert string costs deployment gas, and
+several of these contracts are close enough to the size limit that the authors
+dropped messages from conditions users should never hit.
+
+### 14.1 Strings you will actually see
+
+| String | Where | Cause |
+|---|---|---|
+| `Transaction too old` | `base/PeripheryValidation.sol:8` | `block.timestamp > deadline`. The single most common periphery revert. Every user-facing entry point carries `checkDeadline`. |
+| `Price slippage check` | `base/LiquidityManagement.sol:88`, `NonfungiblePositionManager.sol:275` | Received `amount0`/`amount1` below `amount{0,1}Min`. Fires on `mint`, `increaseLiquidity` and `decreaseLiquidity`. |
+| `Too little received` | `SwapRouter.sol:128`, `:165` | Exact-input swap produced less than `amountOutMinimum`. |
+| `Too much requested` | `SwapRouter.sol:218`, `:241` | Exact-output swap needed more than `amountInMaximum`. |
+| `Not approved` | `NonfungiblePositionManager.sol:185` | `isAuthorizedForToken` modifier; caller is neither owner nor approved. Guards `increaseLiquidity`, `decreaseLiquidity`, `collect`, `burn`. |
+| `Invalid token ID` | `NonfungiblePositionManager.sol:100` | `positions()` on a `tokenId` that was never minted or has been burned (`poolId == 0`). |
+| `Not cleared` | `NonfungiblePositionManager.sol:379` | `burn` with liquidity or uncollected tokens remaining. You must `decreaseLiquidity` to zero **and** `collect` before burning. |
+| `Insufficient WETH9` | `base/PeripheryPayments.sol:21`, `base/PeripheryPaymentsWithFee.sol:26` | `unwrapWETH9` when the contract's WETH balance is below `amountMinimum`. |
+| `Insufficient token` | `base/PeripheryPayments.sol:36`, `base/PeripheryPaymentsWithFee.sol:47` | Same for `sweepToken`. |
+| `Not WETH9` | `base/PeripheryPayments.sol:15`, `V3Migrator.sol:34` | ETH sent to the contract by anyone other than the WETH9 contract. Stops accidental ETH donations. |
+
+### 14.2 Token-transfer failures
+
+| String | Where | Meaning |
+|---|---|---|
+| `STF` | `libraries/TransferHelper.sol:21` | `safeTransferFrom` failed — usually missing allowance or balance |
+| `ST` | `libraries/TransferHelper.sol:35` | `safeTransfer` failed |
+| `SA` | `libraries/TransferHelper.sol:49` | `safeApprove` failed |
+| `STE` | `libraries/TransferHelper.sol:58` | `safeTransferETH` failed — the recipient rejected ETH or ran out of gas |
+
+`STF` is the one you meet first: it is what a missing `approve` to the position
+manager or router looks like from the outside.
+
+### 14.3 Oracle library
+
+| String | Where | Meaning |
+|---|---|---|
+| `BP` | `libraries/OracleLibrary.sol:21` | "Bad period" — `consult` called with `secondsAgo == 0` |
+| `NI` | `libraries/OracleLibrary.sol:76` | "Not initialized" — pool has zero observation cardinality |
+| `NEO` | `libraries/OracleLibrary.sol:97` | "Not enough observations" — cardinality of 1; call `increaseObservationCardinalityNext` on the pool first |
+| `ONI` | `libraries/OracleLibrary.sol:116` | "Oldest not initialized" — the ring buffer has grown but not yet been filled |
+
+These four are the entire failure surface of reading a TWAP, and three of them
+mean "this pool is not ready to be used as an oracle yet".
+
+### 14.4 Permit and signature
+
+| String | Where | Cause |
+|---|---|---|
+| `Permit expired` | `base/ERC721Permit.sol:63` | Signature deadline passed |
+| `Invalid signature` | `base/ERC721Permit.sol:80` | `ecrecover` returned the zero address — malformed `v`/`r`/`s` |
+| `Unauthorized` | `base/ERC721Permit.sol:77`, `:81` | Recovered signer is not the owner (`:81`), or the ERC-1271 contract owner rejected the signature (`:77`) |
+| `ERC721Permit: approval to current owner` | `base/ERC721Permit.sol:74` | Permitting the owner to themselves |
+| `ERC721: approved query for nonexistent token` | `NonfungiblePositionManager.sol:390` | `getApproved` on a burned or unminted id |
+
+### 14.5 Byte-slicing
+
+All from `libraries/BytesLib.sol`, and all reachable by handing the router a
+malformed `path`:
+
+| String | Line | Cause |
+|---|---|---|
+| `slice_overflow` | `:17`, `:18` | Length arithmetic overflowed |
+| `slice_outOfBounds` | `:19` | Slice extends past the end of the bytes |
+| `toAddress_overflow` | `:79` | |
+| `toAddress_outOfBounds` | `:80` | Path shorter than 20 bytes where an address was expected |
+| `toUint24_overflow` | `:91` | |
+| `toUint24_outOfBounds` | `:92` | Path shorter than 3 bytes where a fee was expected |
+
+A path of the wrong length produces one of these rather than a clean "bad path"
+error, which makes malformed-path bugs harder to diagnose than they should be.
+
+`Strings: hex length insufficient` (`libraries/HexStrings.sol:17`) is only
+reachable from the NFT-artwork path and indicates a value too large for the
+requested hex width.
+
+### 14.6 The bare `require`s
+
+No message, so they surface as a plain `revert` with empty return data. Worth
+knowing because an empty revert from these contracts is not a mystery — it is
+one of these nineteen, grouped below by condition.
+
+| Where | Condition | Why bare |
+|---|---|---|
+| `NonfungiblePositionManager.sol:190` | `_exists(tokenId)` in `tokenURI` | Unreachable through normal use |
+| `NonfungiblePositionManager.sol:265` | `params.liquidity > 0` in `decreaseLiquidity` | |
+| `NonfungiblePositionManager.sol:269` | `positionLiquidity >= params.liquidity` | Burning more than you have |
+| `NonfungiblePositionManager.sol:316` | `amount0Max > 0 \|\| amount1Max > 0` in `collect` | Collecting nothing |
+| `SwapRouter.sol:62`, `lens/Quoter.sol:43`, `lens/QuoterV2.sol:46` | `amount0Delta > 0 \|\| amount1Delta > 0` | "Swaps entirely within 0-liquidity regions are not supported" — the comment is in the source |
+| `SwapRouter.sol:199` | `amountOutReceived == amountOut` when `sqrtPriceLimitX96 == 0` | Exact-output partial fill |
+| `lens/Quoter.sol:59`, `lens/QuoterV2.sol:68` | `amountReceived == amountOutCached` | Same check inside the quoter's simulated swap |
+| `libraries/PoolAddress.sol:34` | `key.token0 < key.token1` | Unsorted pool key — a caller error, not a user one |
+| `base/PoolInitializer.sol:19` | `token0 < token1` | Same |
+| `libraries/CallbackValidation.sol:34` | `msg.sender == address(pool)` | **The security-critical one.** A forged callback reverts with no message. |
+| `libraries/LiquidityAmounts.sol:14` | `uint128(x) == x` | Downcast overflow |
+| `libraries/SqrtPriceMathPartial.sol:31` | `sqrtRatioAX96 > 0` | |
+| `base/PeripheryPaymentsWithFee.sol:23`, `:44` | `feeBips > 0 && feeBips <= 100` | Fee capped at 1% |
+
+The `CallbackValidation.sol:34` entry deserves emphasis: if you write a contract
+that implements `uniswapV3SwapCallback` and forget this check, anyone can call
+your callback directly and drain you. The bare revert is what a correct
+implementation produces when attacked.
+
+---
+
+## 15. Use cases → call chains
+
+Each chain below ends in the core pool. Line numbers are the entry point of each
+hop; `→` is a call, `⇠` is a callback coming back the other way.
+
+### 15.1 Open a position
+
+```
+EOA
+ └─ NonfungiblePositionManager.mint(MintParams)                       :128
+     ├─ checkDeadline(params.deadline)                base/PeripheryValidation.sol:8
+     ├─ LiquidityManagement.addLiquidity(...)         base/LiquidityManagement.sol:51
+     │   ├─ PoolAddress.getPoolKey / computeAddress   libraries/PoolAddress.sol:33
+     │   ├─ pool.slot0()                                        → core
+     │   ├─ LiquidityAmounts.getLiquidityForAmounts   libraries/LiquidityAmounts.sol:56
+     │   ├─ pool.mint(recipient=address(this), tickLower, tickUpper, liquidity, data)
+     │   │                                                      → core
+     │   │   ⇠ uniswapV3MintCallback(amount0Owed, amount1Owed, data)
+     │   │      base/LiquidityManagement.sol:25
+     │   │       ├─ CallbackValidation.verifyCallback  libraries/CallbackValidation.sol:28
+     │   │       └─ PeripheryPayments.pay(...)         base/PeripheryPayments.sol:52
+     │   │           └─ TransferHelper.safeTransferFrom  libraries/TransferHelper.sol:21
+     │   └─ require(amount0 >= amount0Min && amount1 >= amount1Min)  :88
+     ├─ _mint(recipient, tokenId = _nextId++)                    → OZ ERC721
+     ├─ cachePoolKey(pool, poolKey)                                    :119
+     ├─ pool.positions(positionKey) → feeGrowthInside{0,1}LastX128  → core
+     └─ emit IncreaseLiquidity(tokenId, liquidity, amount0, amount1)
+```
+
+The pool never learns the NFT exists. It records a position owned by the
+*manager* under `keccak256(manager, tickLower, tickUpper)`, which is why two
+NFTs on the same range share one pool position and the manager must track each
+one's fee-growth snapshot separately.
+
+### 15.2 Add to an existing position
+
+```
+EOA → NonfungiblePositionManager.increaseLiquidity(params)          :198
+       ├─ checkDeadline
+       ├─ addLiquidity(...)      → pool.mint → ⇠ mint callback → pay   (as above)
+       ├─ pool.positions(positionKey) → new feeGrowthInside{0,1}    → core
+       ├─ tokensOwed{0,1} += fees accrued since last snapshot
+       ├─ position.feeGrowthInside{0,1}LastX128 = new values
+       ├─ position.liquidity += liquidity
+       └─ emit IncreaseLiquidity
+```
+
+Fees are settled to `tokensOwed` **before** liquidity changes. That ordering is
+mandatory: fee growth is measured per unit of liquidity, so changing liquidity
+first would mis-attribute everything accrued so far.
+
+### 15.3 Harvest fees without closing
+
+```
+EOA → NonfungiblePositionManager.collect(CollectParams)             :309
+       ├─ isAuthorizedForToken(tokenId)                                 :185
+       ├─ require(amount0Max > 0 || amount1Max > 0)                     :316
+       ├─ if (position.liquidity > 0) pool.burn(tickLower, tickUpper, 0) → core
+       │     ── a zero-liquidity burn, whose only effect is to make the pool
+       │        recompute feeGrowthInside and credit the pool-level position
+       ├─ pool.positions(positionKey) → feeGrowthInside{0,1}         → core
+       ├─ tokensOwed{0,1} += newly accrued fees
+       ├─ pool.collect(recipient, tickLower, tickUpper, amount0Collect, amount1Collect)
+       │                                                             → core
+       └─ emit Collect(tokenId, recipient, amount0, amount1)
+```
+
+**The zero-burn is the trick worth remembering.** `pool.burn(…, 0)` is the only
+way to force the core to settle fees into its own `tokensOwed` without removing
+liquidity. Any protocol that tracks V3 fees must do the same.
+
+### 15.4 Close a position completely
+
+Three calls, and they must be in this order:
+
+```
+1. decreaseLiquidity({tokenId, liquidity: position.liquidity, mins, deadline})  :257
+      ├─ pool.burn(tickLower, tickUpper, liquidity)                → core
+      ├─ require(amount0 >= amount0Min && amount1 >= amount1Min)       :275
+      ├─ tokensOwed{0,1} += amounts burned + fees accrued
+      ├─ position.liquidity = 0
+      └─ emit DecreaseLiquidity                        ── no tokens have moved yet
+
+2. collect({tokenId, recipient, type(uint128).max, type(uint128).max})          :309
+      └─ pool.collect(...)                                          → core
+                                                       ── tokens move here
+
+3. burn(tokenId)                                                                :377
+      ├─ require(liquidity == 0 && tokensOwed0 == 0 && tokensOwed1 == 0)  :379
+      ├─ delete _positions[tokenId]
+      └─ _burn(tokenId)                                             → OZ ERC721
+```
+
+Skip step 2 and step 3 reverts with `Not cleared`. In practice all three are
+bundled into one `multicall` (`base/Multicall.sol:11`).
+
+### 15.5 Swap, exact input, single hop
+
+```
+EOA → SwapRouter.exactInputSingle(ExactInputSingleParams)           :115
+       ├─ checkDeadline
+       ├─ exactInputInternal(amountIn, recipient, sqrtPriceLimitX96, data)  :87
+       │   ├─ getPool(tokenIn, tokenOut, fee) → PoolAddress.computeAddress   :43
+       │   └─ pool.swap(recipient, zeroForOne, int256(amountIn), limit, data)
+       │                                                            → core
+       │       ⇠ uniswapV3SwapCallback(amount0Delta, amount1Delta, data)   :57
+       │          ├─ data.path.decodeFirstPool()      libraries/Path.sol:42
+       │          ├─ CallbackValidation.verifyCallback  libraries/CallbackValidation.sol:15
+       │          └─ pay(tokenIn, payer, msg.sender, amountToPay)  base/PeripheryPayments.sol:52
+       └─ require(amountOut >= params.amountOutMinimum, 'Too little received')  :128
+```
+
+### 15.6 Swap, exact input, multi-hop
+
+```
+EOA → SwapRouter.exactInput(ExactInputParams)                       :132
+       └─ loop while (params.path.hasMultiplePools())   libraries/Path.sol:25
+            ├─ exactInputInternal(amountIn, recipient = router or user, 0, data)  :87
+            │    └─ pool.swap → ⇠ callback → pay
+            ├─ amountIn = output of this hop
+            └─ params.path = params.path.skipToken()   libraries/Path.sol:66
+```
+
+Intermediate hops send their output to the **router itself**, and only the final
+hop sends to the user's `recipient`. `sqrtPriceLimitX96` is hard-coded to `0`
+(no limit) on every hop because a per-pool limit is meaningless mid-path; the
+only protection is the final `amountOutMinimum`.
+
+### 15.7 Swap, exact output
+
+```
+EOA → SwapRouter.exactOutput(ExactOutputParams)                     :224
+       ├─ exactOutputInternal(amountOut, recipient, 0, data)            :169
+       │    └─ pool.swap(..., amountSpecified = -int256(amountOut), ...)  → core
+       │        ⇠ uniswapV3SwapCallback                                  :57
+       │           └─ if (!isExactInput) → exactOutputInternal(...) for the *previous* pool
+       │                └─ recursion continues backwards down the path
+       ├─ amountIn = amountInCached                                      :38
+       ├─ require(amountIn <= params.amountInMaximum, 'Too much requested')  :241
+       └─ amountInCached = DEFAULT_AMOUNT_IN_CACHED
+```
+
+Exact-output runs the path **backwards**, and the recursion happens *inside the
+callbacks*. The innermost callback is the one that finally pulls tokens from the
+user. `amountInCached` exists solely to carry the answer back out through a call
+stack that has no return path — see §4 and §12.1.
+
+### 15.8 Quote before swapping
+
+```
+Off-chain (eth_call) → QuoterV2.quoteExactInputSingle(params)       :123
+       └─ pool.swap(..., address(this), ...)                        → core
+           ⇠ uniswapV3SwapCallback                                     :46
+              └─ assembly { revert(...) }  ── packs amountReceived,
+                                              sqrtPriceX96After, tickAfter
+       └─ catch (bytes reason) → handleRevert(reason, pool, gasEstimate)  :99
+            └─ parseRevertReason(reason)                                 :80
+```
+
+Never call a quoter in a transaction. It performs a real swap and then throws it
+away by reverting, so it costs full swap gas and returns nothing on-chain.
+
+### 15.9 Price an existing position
+
+```
+Off-chain → PositionValue.total(nft, tokenId, sqrtRatioX96)   libraries/PositionValue.sol:22
+              ├─ principal(nft, tokenId, sqrtRatioX96)                       :39
+              │    ├─ nft.positions(tokenId)
+              │    └─ LiquidityAmounts.getAmountsForLiquidity  libraries/LiquidityAmounts.sol:120
+              └─ fees(nft, tokenId)                                          :73
+                   ├─ nft.positions(tokenId) → tokensOwed, feeGrowthInside snapshots
+                   └─ pool.ticks / pool.feeGrowthGlobal{0,1}X128        → core
+```
+
+`principal` needs a `sqrtRatioX96` from you — pass the pool's current price for a
+spot valuation, or a TWAP for a manipulation-resistant one. `fees` includes both
+already-credited `tokensOwed` and fees still accruing in the pool.
+
+### 15.10 Read a TWAP safely
+
+```
+Off-chain → OracleLibrary.getOldestObservationSecondsAgo(pool)  libraries/OracleLibrary.sol:74
+              └─ require(observationCardinality > 0, 'NI')                   :76
+   then    → OracleLibrary.consult(pool, secondsAgo)                         :16
+              ├─ require(secondsAgo != 0, 'BP')                              :21
+              └─ pool.observe([secondsAgo, 0])                          → core
+   then    → OracleLibrary.getQuoteAtTick(tick, amount, base, quote)         :49
+```
+
+Always check the oldest observation first. `consult` with a window longer than
+the buffer holds will revert inside the core, and a pool at cardinality 1 has no
+usable TWAP at all — it needs `increaseObservationCardinalityNext` and then
+enough time for the buffer to fill.
+
+### 15.11 Permit and act in one transaction
+
+```
+EOA signs an EIP-2612 permit off-chain, then:
+
+NonfungiblePositionManager.multicall([                base/Multicall.sol:11
+    selfPermitIfNecessary(token0, value, deadline, v, r, s),   base/SelfPermit.sol:28
+    selfPermitIfNecessary(token1, value, deadline, v, r, s),
+    mint(MintParams)
+])
+```
+
+`multicall` `delegatecall`s into `address(this)`, so `msg.sender` is preserved
+across all three — which is exactly why `selfPermit` can grant an allowance *from
+the caller* to the contract. Use the `IfNecessary` variants: a plain `selfPermit`
+can be front-run, and its revert would take the whole batch down (`ISelfPermit.sol:26`).
+
+For DAI-style tokens substitute `selfPermitAllowedIfNecessary`
+(`base/SelfPermit.sol:52`).
+
+### 15.12 Migrate a V2 position to V3
+
+```
+EOA → V3Migrator.migrate(MigrateParams)                             :37
+       ├─ require(percentageToMigrate > 0 && <= 100)                :38, :39
+       ├─ pair.transferFrom(msg.sender, pair, liquidityToMigrate)
+       ├─ pair.burn(address(this))          → V2 pair returns both tokens
+       ├─ approve token0/token1 to the position manager
+       ├─ nonfungiblePositionManager.mint(MintParams)               → §15.1
+       └─ refund the unmigrated remainder to msg.sender
+            └─ if (refundAsETH) unwrapWETH9 → else safeTransfer
+```
+
+Typically preceded by `createAndInitializePoolIfNecessary`
+(`base/PoolInitializer.sol:13`) in the same `multicall`, since the destination
+V3 pool may not exist yet.
+
+---
+
+## 16. Gotchas, collected
+
+Everything in this document that will cost you money or hours, in one place.
+
+**Positions**
+
+1. `decreaseLiquidity` moves no tokens. It only credits `tokensOwed`. You must `collect` afterwards, and an indexer that treats it as a withdrawal double-counts (§13.1).
+2. `burn` reverts with `Not cleared` unless liquidity **and** both `tokensOwed` are zero (`:379`). Always decrease → collect → burn.
+3. `collect` on a position with live liquidity silently performs a `pool.burn(…, 0)` first (§15.3). Budget the gas.
+4. Two NFTs covering the identical range in the same pool share one *pool-level* position. The manager keeps them apart with per-token fee-growth snapshots; the pool cannot tell them apart at all.
+5. `positions(tokenId)` returns `token0`/`token1`/`fee`, but stores a `uint80 poolId` and expands it on read (§12.2). It is more expensive than a plain getter.
+6. The manager's `permit` selector is `0x7ac2ff7b` with six arguments, not the ERC-2612 shape (§11.1).
+
+**Swaps**
+
+7. `exactOutput` recurses through the callbacks and runs the path backwards (§15.7). If you are reading a trace and the calls look inside-out, that is why.
+8. Multi-hop hard-codes `sqrtPriceLimitX96 = 0` on every hop. Your only protection is `amountOutMinimum` / `amountInMaximum`.
+9. Intermediate hops pay out to the router, not the user. A token stuck at the router between hops is normal mid-transaction; a token stuck *after* the transaction means someone forgot `sweepToken`.
+10. `amountInCached` is reset to `type(uint256).max`, never `0`, to avoid the 20,000-gas cost of refilling a zeroed slot (§12.1).
+11. `SwapRouter.sol:199` requires an exact-output swap to fill completely when no price limit is set. A partial fill reverts with no message.
+
+**Quoters**
+
+12. `Quoter` and `QuoterV2` share selectors for the multi-hop functions (`0xcdca1753`, `0x2f80bb1d`) but return different shapes (§11.4). Wrong ABI, silent garbage.
+13. Quoters revert by design. Call them with `eth_call` only, and expect full swap gas.
+14. `QuoteExactInputSingleParams` orders fields `tokenIn, tokenOut, amountIn, fee, sqrtPriceLimitX96` — amount **before** fee, the reverse of the router's structs (§9.1).
+
+**Callbacks**
+
+15. If you implement `uniswapV3SwapCallback` or `uniswapV3MintCallback`, you **must** call `CallbackValidation.verifyCallback` (`libraries/CallbackValidation.sol:15`, `:28`). Without it anyone calls your callback directly and drains you. It reverts bare, so an empty revert here is the guard working.
+16. `PoolAddress.POOL_INIT_CODE_HASH` (`libraries/PoolAddress.sol:6`) is chain-agnostic only if the factory deployed identical bytecode. On a chain with a modified pool, every computed address is wrong and `verifyCallback` rejects everything.
+
+**Payments and ETH**
+
+17. Only WETH9 may send ETH to these contracts (`base/PeripheryPayments.sol:15`). Direct transfers revert with `Not WETH9`.
+18. ETH-denominated flows need `refundETH` appended to the multicall, or the dust stays in the contract and is claimable by anyone.
+19. `unwrapWETH9`/`sweepToken` check a **minimum**, not an exact amount — they sweep the entire balance, whoever put it there.
+20. The fee variants cap `feeBips` at 100 (1%) with a bare require (`base/PeripheryPaymentsWithFee.sol:23`, `:44`).
+
+**Oracles**
+
+21. Four failure modes, and three of them mean "not ready": `BP`, `NI`, `NEO`, `ONI` (§14.3). Always call `getOldestObservationSecondsAgo` before `consult`.
+22. A newly created pool has cardinality 1 and no usable TWAP until someone pays to grow the buffer *and* time passes.
+
+**Everything else**
+
+23. `Transaction too old` is the most common revert in the whole system. Deadlines are checked against `_blockTimestamp()`, which the `MockTime*` subclasses override (§10.2).
+24. A malformed `path` produces a `BytesLib` error like `toUint24_outOfBounds`, not a clean path error (§14.5).
+25. `multicall` is `delegatecall` into `address(this)`, so `msg.sender` survives — that is what makes `selfPermit` work, and also why a `payable` multicall can double-spend `msg.value` across calls if the contract reads it more than once.
+26. `V3Migrator.migrate` has no deadline of its own; it relies on the `mint` it forwards to.
+27. Nothing in the periphery is privileged. If a better router appears, the pools do not care — which is the entire design.
+
+---

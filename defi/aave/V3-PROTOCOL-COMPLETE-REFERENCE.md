@@ -95,9 +95,21 @@ thing to understand about reading Aave storage.
 17. [`PoolConfigurator`](#17-poolconfigurator)
 18. [Tokenization](#18-tokenization)
 19. [Configuration contracts](#19-configuration-contracts)
+    - [19.1 `ACLManager`](#191-aclmanager)
+    - [19.2 `PoolAddressesProvider`](#192-pooladdressesprovider)
+    - [19.3 `PoolAddressesProviderRegistry`](#193-pooladdressesproviderregistry)
 20. [Interfaces](#20-interfaces)
+    - [20.1 Inventory](#201-inventory)
+    - [20.2 The ones worth opening](#202-the-ones-worth-opening)
 21. [Reference tables](#21-reference-tables)
+    - [21.1 `Pool` selectors](#211-pool--selector-table)
+    - [21.2 Token selectors](#212-atoken-and-variabledebttoken--selector-tables)
+    - [21.3 `ACLManager` selectors](#213-aclmanager--selector-table)
+    - [21.4 Storage layouts](#214-storage-layouts)
+    - [21.5 Events reference](#215-events-reference)
+    - [21.6 The complete `Errors.sol` table](#216-the-complete-errorssol-table)
 22. [Use-case index](#22-use-case-index)
+23. [Feature history: what arrived in each release](#23-feature-history-what-arrived-in-each-release)
 
 ---
 
@@ -3132,5 +3144,952 @@ plus the `DelegateChanged` / `DelegatedPowerChanged` events.
 
 **[3.4]** reworked this file substantially; `docs/3.4/appendix/BaseDelegation.diff`
 and `ATokenWithDelegation.diff` in the repo record the exact changes.
+
+---
+
+## 19. Configuration contracts
+
+`src/contracts/protocol/configuration/` — 3 files, 446 lines. This is the
+protocol's **identity layer**: who the contracts are (`PoolAddressesProvider`),
+who is allowed to touch them (`ACLManager`), and which markets exist
+(`PoolAddressesProviderRegistry`).
+
+None of these three is upgradeable. They are plain deployed contracts, which is
+deliberate — the thing that decides "what is the Pool" must not itself be
+swappable through the same machinery it governs.
+
+### 19.1 `ACLManager`
+
+`configuration/ACLManager.sol` (133 lines).
+`contract ACLManager is AccessControl, IACLManager` (`:14`).
+
+A thin, opinionated wrapper over OpenZeppelin `AccessControl`. It adds nothing
+to the role machinery; it exists to give the six protocol roles **named
+constants and named accessors** so that call sites read as
+`ACL_MANAGER.isPoolAdmin(x)` instead of
+`hasRole(keccak256('POOL_ADMIN'), x)`.
+
+**The six roles** (`:15-20`), each `bytes32 public constant override`:
+
+| Role constant | Line | Value | What it can do |
+|---|---|---|---|
+| `POOL_ADMIN_ROLE` | `:15` | `keccak256('POOL_ADMIN')` | everything in `PoolConfigurator` — list reserves, upgrade token implementations, set every parameter, `rescueTokens` |
+| `EMERGENCY_ADMIN_ROLE` | `:16` | `keccak256('EMERGENCY_ADMIN')` | pause the pool or a single reserve, and nothing else |
+| `RISK_ADMIN_ROLE` | `:17` | `keccak256('RISK_ADMIN')` | risk parameters only — caps, LTV, liquidation threshold/bonus, rate strategy, eMode; cannot list or upgrade |
+| `FLASH_BORROWER_ROLE` | `:18` | `keccak256('FLASH_BORROWER')` | take flash loans **without paying the premium** (see §12) |
+| `BRIDGE_ROLE` | `:19` | `keccak256('BRIDGE')` | call `Pool.mintUnbacked` / `backUnbacked` (the Portal feature) |
+| `ASSET_LISTING_ADMIN_ROLE` | `:20` | `keccak256('ASSET_LISTING_ADMIN')` | list new reserves only; cannot change parameters of existing ones |
+
+`ADDRESSES_PROVIDER` (`:22`) is `immutable`.
+
+**Constructor** (`:29-34`). Takes the provider, reads `provider.getACLAdmin()`,
+requires it non-zero (`Errors.AclAdminCannotBeZero()`), and grants it
+`DEFAULT_ADMIN_ROLE`. The NatSpec at `:26` is the important operational note:
+**the ACL admin must already be set on the addresses provider before this
+contract is deployed**, because the constructor reads it and there is no setter
+for `DEFAULT_ADMIN_ROLE` afterwards other than the inherited OZ one.
+
+**Every other function is a three-line delegation** to OZ. The pattern repeats
+six times, once per role:
+
+```solidity
+function addPoolAdmin(address admin) external override { grantRole(POOL_ADMIN_ROLE, admin); }
+function removePoolAdmin(address admin) external override { revokeRole(POOL_ADMIN_ROLE, admin); }
+function isPoolAdmin(address admin) external view override returns (bool) {
+  return hasRole(POOL_ADMIN_ROLE, admin);
+}
+```
+
+| Role | add | remove | is |
+|---|---|---|---|
+| Pool admin | `:45-47` | `:50-52` | `:55-57` |
+| Emergency admin | `:60-62` | `:65-67` | `:70-72` |
+| Risk admin | `:75-77` | `:80-82` | `:85-87` |
+| Flash borrower | `:90-92` | `:95-97` | `:100-102` |
+| Bridge | `:105-107` | `:110-112` | `:115-117` |
+| Asset listing admin | `:120-122` | `:125-127` | `:130-132` |
+
+Plus `setRoleAdmin(role, adminRole)` (`:37-41`), `onlyRole(DEFAULT_ADMIN_ROLE)`,
+which lets the DAO delegate management of one role to the holder of another.
+
+**The access control on `add*`/`remove*` is not visible in this file.** They
+carry no modifier. The check lives inside OZ's `grantRole`/`revokeRole`, which
+require the caller to hold the *admin role of the role being granted* —
+`DEFAULT_ADMIN_ROLE` unless `setRoleAdmin` changed it. This is a common
+misreading of `ACLManager`: the functions look unpermissioned and are not.
+
+### 19.2 `PoolAddressesProvider`
+
+`configuration/PoolAddressesProvider.sol` (209 lines).
+`contract PoolAddressesProvider is Ownable, IPoolAddressesProvider`.
+
+The per-market address book. One instance per Aave market; its address is the
+single value every other contract is constructed with, and the reason the whole
+protocol can be upgraded coherently.
+
+**Storage** — just two slots' worth:
+
+| Variable | Line | Type |
+|---|---|---|
+| `_marketId` | `:17` | `string private` |
+| `_addresses` | `:20` | `mapping(bytes32 => address) private` |
+
+**The seven well-known ids** (`:23-29`), all `bytes32 private constant` written
+as short string literals:
+
+| Constant | Line | Literal |
+|---|---|---|
+| `POOL` | `:23` | `'POOL'` |
+| `POOL_CONFIGURATOR` | `:24` | `'POOL_CONFIGURATOR'` |
+| `PRICE_ORACLE` | `:25` | `'PRICE_ORACLE'` |
+| `ACL_MANAGER` | `:26` | `'ACL_MANAGER'` |
+| `ACL_ADMIN` | `:27` | `'ACL_ADMIN'` |
+| `PRICE_ORACLE_SENTINEL` | `:28` | `'PRICE_ORACLE_SENTINEL'` — **vestigial, see below** |
+| `DATA_PROVIDER` | `:29` | `'DATA_PROVIDER'` |
+
+**Two classes of address, and the distinction matters.**
+
+*Proxied* components — `POOL` and `POOL_CONFIGURATOR` — are set with
+`setPoolImpl` / `setPoolConfiguratorImpl`, which take an **implementation**
+address and route through `_updateImpl`. The address stored in `_addresses` is
+the **proxy**, and it never changes across upgrades.
+
+*Plain* components — `PRICE_ORACLE`, `ACL_MANAGER`, `ACL_ADMIN`,
+`DATA_PROVIDER` — are set with a direct setter that overwrites the stored
+address outright. Upgrading them means pointing at a different contract.
+
+| Function | Line | Access | Notes |
+|---|---|---|---|
+| `getMarketId()` | `:42-44` | view | |
+| `setMarketId(newMarketId)` | `:47-49` | `onlyOwner` | → `_setMarketId` |
+| `getAddress(id)` | `:52-54` | `public view` | raw map read; `public` so `getPriceOracleSentinel` can call it internally |
+| `setAddress(id, newAddress)` | `:57-61` | `onlyOwner` | **plain overwrite**, emits `AddressSet` |
+| `setAddressAsProxy(id, newImpl)` | `:64-73` | `onlyOwner` | generic proxied setter, emits `AddressSetAsProxy` |
+| `getPool()` | `:75-77` | view | `getAddress(POOL)` |
+| `setPoolImpl(newPoolImpl)` | `:80-85` | `onlyOwner` | `_updateImpl(POOL, …)`, emits `PoolUpdated` |
+| `getPoolConfigurator()` | `:87-89` | view | |
+| `setPoolConfiguratorImpl(…)` | `:92-97` | `onlyOwner` | emits `PoolConfiguratorUpdated` |
+| `getPriceOracle()` | `:99-101` | view | |
+| `setPriceOracle(newPriceOracle)` | `:104-109` | `onlyOwner` | plain, emits `PriceOracleUpdated` |
+| `getACLManager()` | `:111-113` | view | |
+| `setACLManager(newAclManager)` | `:116-121` | `onlyOwner` | plain, emits `ACLManagerUpdated` |
+| `getACLAdmin()` | `:123-125` | view | read by `ACLManager`'s constructor |
+| `setACLAdmin(newAclAdmin)` | `:128-133` | `onlyOwner` | plain, emits `ACLAdminUpdated` |
+| `getPriceOracleSentinel()` | `:135-137` | view | **vestigial** |
+| `setPriceOracleSentinel(…)` | `:140-144` | `onlyOwner` | **vestigial**, emits `PriceOracleSentinelUpdated` |
+| `getPoolDataProvider()` | `:147-149` | view | |
+| `setPoolDataProvider(newDataProvider)` | `:152-155` | `onlyOwner` | plain, emits `PoolDataProviderUpdated` |
+| `_updateImpl(id, newAddress)` | `:167-181` | internal | see below |
+| `_setMarketId(newMarketId)` | `:187-191` | internal | emits `MarketIdSet` |
+| `_getProxyImplementation(id)` | `:200-208` | internal | returns `address(0)` if unset; **reverts** if the stored address is not such a proxy |
+
+**`_updateImpl`** (`:167-181`) is the deploy-or-upgrade primitive:
+
+```solidity
+address proxyAddress = _addresses[id];
+bytes memory params = abi.encodeWithSignature('initialize(address)', address(this));
+
+if (proxyAddress == address(0)) {
+  proxy = new InitializableImmutableAdminUpgradeabilityProxy(address(this));
+  _addresses[id] = proxyAddress = address(proxy);
+  proxy.initialize(newAddress, params);
+  emit ProxyCreated(id, proxyAddress, newAddress);
+} else {
+  proxy = InitializableImmutableAdminUpgradeabilityProxy(payable(proxyAddress));
+  proxy.upgradeToAndCall(newAddress, params);
+}
+```
+
+Three things worth noticing:
+
+1. **The provider is the proxy admin.** `address(this)` is passed as the admin,
+   so only the provider can upgrade the Pool. Combined with `onlyOwner` on the
+   setters, the upgrade path is: DAO → provider → proxy.
+2. **`initialize(address)` is called on every upgrade**, not just creation. That
+   is why `Pool.initialize` is guarded by `VersionedInitializable`'s revision
+   check rather than a one-shot boolean — re-running it on each upgrade is the
+   normal path, and the revision number is what makes it idempotent. See the
+   `POOL_REVISION = 11` note in the version banner at the top of this document.
+3. **The initializer argument is always the provider itself.** No other
+   parameters can be passed through this path, which is why every upgradeable
+   protocol contract takes exactly `(IPoolAddressesProvider)` in `initialize`.
+
+**The vestigial price-oracle sentinel.** v3.7 deleted the sentinel feature, but
+the address slot, both accessors and the event survive:
+
+```
+$ grep -rn 'PriceOracleSentinel\|PRICE_ORACLE_SENTINEL' src/ --include=*.sol | grep -v /tests/
+src/contracts/interfaces/IPoolAddressesProvider.sol:57   event PriceOracleSentinelUpdated(...)
+src/contracts/interfaces/IPoolAddressesProvider.sol:208  function getPriceOracleSentinel() ...
+src/contracts/interfaces/IPoolAddressesProvider.sol:214  function setPriceOracleSentinel(...)
+src/contracts/protocol/configuration/PoolAddressesProvider.sol:28,135,136,140,141,142,143
+$ find src -iname '*sentinel*'
+(no results)
+```
+
+**No sentinel contract exists in the tree and no protocol logic reads the
+address.** `ValidationLogic` used to consult it to block borrows and liquidations
+while an L2 sequencer was down; those call sites are gone. What remains is a
+settable, readable, permanently unused slot.
+
+Why keep it? Same reason as the config bitmap holes and the `__deprecated`
+struct fields: `PoolAddressesProvider` is not upgradeable, so removing a
+function would change the deployed ABI that off-chain infrastructure and other
+markets' tooling already call. Leaving a harmless getter costs nothing.
+**Do not build on it** — a non-zero value there means nothing to the protocol.
+
+### 19.3 `PoolAddressesProviderRegistry`
+
+`configuration/PoolAddressesProviderRegistry.sol` (104 lines).
+`contract PoolAddressesProviderRegistry is Ownable, IPoolAddressesProviderRegistry`.
+
+The registry of *markets*. Aave runs several pools on one chain (a main market,
+an EtherFi market, a Lido market, and so on); each has its own
+`PoolAddressesProvider`, and this contract is the one place that lists them.
+Nothing in the protocol reads it — it exists for discovery by front-ends,
+indexers and governance tooling.
+
+**Storage** (`:17-23`) — four maps to support O(1) lookup in both directions plus
+O(1) removal from a list:
+
+| Variable | Line | Purpose |
+|---|---|---|
+| `_addressesProviderToId` | `:17` | provider → id; `0` means "not registered" |
+| `_idToAddressesProvider` | `:19` | id → provider |
+| `_addressesProvidersList` | `:21` | `address[]` for enumeration |
+| `_addressesProvidersIndexes` | `:23` | provider → index in the list, for swap-and-pop |
+
+| Function | Line | Access | Notes |
+|---|---|---|---|
+| `getAddressesProvidersList()` | `:34-36` | view | returns the raw array |
+| `registerAddressesProvider(provider, id)` | `:39-51` | `onlyOwner` | |
+| `unregisterAddressesProvider(provider)` | `:54-63` | `onlyOwner` | |
+| `getAddressesProviderIdByAddress(provider)` | `:66-70` | view | |
+| `getAddressesProviderAddressById(id)` | `:73-75` | view | |
+| `_addToAddressesProvidersList(provider)` | `:81-…` | internal | |
+| `_removeFromAddressesProvidersList(provider)` | `:90-…` | internal | swap-and-pop |
+
+`registerAddressesProvider` (`:39-51`) enforces two invariants:
+
+```solidity
+require(id != 0 && _idToAddressesProvider[id] == address(0), Errors.InvalidAddressesProviderId());
+require(_addressesProviderToId[provider] == 0, Errors.AddressesProviderAlreadyAdded());
+```
+
+**`id == 0` is reserved as the "absent" sentinel**, which is why it can never be
+a real market id — `_addressesProviderToId` returning `0` has to be
+unambiguous. Ids must also be unique, and a provider cannot be registered twice.
+
+`unregisterAddressesProvider` (`:54-63`) requires the provider to be registered
+(`Errors.AddressesProviderNotRegistered()`), then zeroes **both** directions of
+the mapping before the list removal. Note that the id is freed for reuse.
+
+**Registry errors**, all defined in `Errors.sol`: `InvalidAddressesProviderId`
+(`:42`), `AddressesProviderAlreadyAdded` (`:44`),
+`AddressesProviderNotRegistered` (`:55`).
+
+---
+
+## 20. Interfaces
+
+`src/contracts/interfaces/` — 22 files, 2,998 lines. These define the protocol's
+external surface: they are what integrators import, what the ABI is generated
+from, and where every event is declared.
+
+Two conventions to know before reading any of them:
+
+1. **Events are declared in the interface, not the implementation.** `Pool.sol`
+   emits `Supply` but never declares it; the declaration is `IPool.sol:21`. If
+   you are hunting for an event's indexed fields, look here, not in the contract.
+2. **The interface is the compatibility contract.** Because `Pool` and
+   `PoolConfigurator` sit behind proxies, the interfaces outlive individual
+   implementations, which is why they accumulate deprecated members rather than
+   dropping them (see `IPoolAddressesProvider`'s sentinel functions, §19.2).
+
+### 20.1 Inventory
+
+| File | Lines | Purpose |
+|---|---|---|
+| `IPool.sol` | 848 | the whole user-facing pool surface + **every pool event** |
+| `IPoolConfigurator.sol` | 474 | admin surface + 25 configuration events |
+| `IPoolDataProvider.sol` | 264 | 22 read-only aggregate getters for front-ends |
+| `IPoolAddressesProvider.sol` | 227 | address book surface + its events (§19.2) |
+| `IACLManager.sol` | 175 | the six roles and their add/remove/is triplets (§19.1) |
+| `IDefaultInterestRateStrategyV2.sol` | 161 | rate params struct + setters **[periphery impl]** |
+| `IAToken.sol` | 146 | aToken surface (§18.3) |
+| `IL2Pool.sol` | 116 | the eleven calldata-compressed entry points (§15) |
+| `ICreditDelegationToken.sol` | 74 | delegation surface shared by debt tokens (§18.4) |
+| `IScaledBalanceToken.sol` | 72 | `scaledBalanceOf`, `scaledTotalSupply`, `getPreviousIndex`, + `Mint`/`Burn` events |
+| `IAaveOracle.sol` | 71 | oracle surface **[periphery impl]** |
+| `IPoolAddressesProviderRegistry.sol` | 60 | market registry surface (§19.3) |
+| `IInitializableAToken.sol` | 51 | the `initialize` signature + `Initialized` event |
+| `IVariableDebtToken.sol` | 50 | `mint`/`burn`/`UNDERLYING_ASSET_ADDRESS` (§18.5) |
+| `IInitializableDebtToken.sol` | 49 | debt-token `initialize` + `Initialized` event |
+| `IERC20WithPermit.sol` | 33 | `IERC20` + EIP-2612 `permit` |
+| `IPriceOracleGetter.sol` | 30 | `BASE_CURRENCY`, `BASE_CURRENCY_UNIT`, `getAssetPrice` |
+| `IReserveInterestRateStrategy.sol` | 29 | `setInterestRateParams`, `calculateInterestRates` |
+| `IPriceOracle.sol` | 23 | `getAssetPrice` + `setAssetPrice` — **test/mock oracle shape** |
+| `IAaveIncentivesController.sol` | 19 | just `handleAction(user, totalSupply, userBalance)` |
+| `IDelegationToken.sol` | 15 | `delegate(delegatee)` — COMP/UNI-compatible shape |
+| `IATokenWithDelegation.sol` | 11 | `is IAToken, IBaseDelegation` — nothing of its own |
+
+### 20.2 The ones worth opening
+
+**`IPool.sol` (848 lines)** is the single most useful file in the tree for an
+integrator, because it holds every event the pool emits. The seventeen event
+declarations:
+
+| Event | Line | Emitted by |
+|---|---|---|
+| `Supply` | `:21` | `SupplyLogic.executeSupply` |
+| `Withdraw` | `:36` | `SupplyLogic.executeWithdraw` |
+| `Borrow` | `:49` | `BorrowLogic.executeBorrow` |
+| `Repay` | `:67` | `BorrowLogic.executeRepay` |
+| `UserEModeSet` | `:80` | `SupplyLogic` (eMode merged in **[3.6]**) |
+| `ReserveUsedAsCollateralEnabled` | `:87` | `SupplyLogic` |
+| `ReserveUsedAsCollateralDisabled` | `:94` | `SupplyLogic` |
+| `FlashLoan` | `:107` | `FlashLoanLogic` |
+| `LiquidationCall` | `:128` | `LiquidationLogic` |
+| `ReserveDataUpdated` | `:147` | `ReserveLogic.updateInterestRates` |
+| `DeficitCovered` | `:162` | `LiquidationLogic` / `PoolLogic` **[3.3]** |
+| `MintedToTreasury` | `:169` | `PoolLogic.executeMintToTreasury` |
+| `DeficitCreated` | `:177` | `LiquidationLogic` **[3.3]** |
+| `PositionManagerApproved` | `:184` | `Pool` **[3.6]** |
+| `PositionManagerRevoked` | `:191` | `Pool` **[3.6]** |
+
+`ReserveDataUpdated` is the one an indexer cares most about: it fires on every
+state-changing action and carries the four indexes and two rates, so a
+subgraph can reconstruct the full rate history from it alone.
+
+**`IScaledBalanceToken.sol` (72 lines)** is the interface that makes the whole
+scaled-balance model legible. `scaledBalanceOf` (`:50`),
+`getScaledUserBalanceAndSupply` (`:58`), `scaledTotalSupply` (`:64`) and
+`getPreviousIndex` (`:71`), plus the `Mint` (`:18`) and `Burn` (`:35`) events.
+Note the comment at `:28`: a burn may emit a `Mint` event when the amount burned
+is smaller than the interest accrued since the last interaction — the balance
+went *up* on a "burn". Any indexer that assumes burn-means-decrease is wrong.
+
+**`IPriceOracle.sol` vs `IPriceOracleGetter.sol`.** These look redundant and are
+not. `IPriceOracleGetter` (`:9-30`) is the **production** read interface —
+`BASE_CURRENCY`, `BASE_CURRENCY_UNIT`, `getAssetPrice` — and is what
+`GenericLogic` consumes. `IPriceOracle` (`:9-23`) adds `setAssetPrice` and is
+the **mock** shape used by tests and the fallback oracle. Do not integrate
+against `IPriceOracle`; a production oracle has no setter.
+
+**`IL2Pool.sol` (116 lines)** declares eleven functions that each take one or two
+`bytes32` of packed arguments: `supply` (`:19`), `supplyWithPermit` (`:32`),
+`withdraw` (`:44`), `borrow` (`:55`), `repay` (`:67`), `repayWithPermit` (`:81`),
+`repayWithATokens` (`:93`), `setUserUseReserveAsCollateral` (`:102`),
+`liquidationCall` (two `bytes32`, `:106-109`). The decoding side is
+`CalldataLogic` (§15).
+
+**`IATokenWithDelegation.sol` (11 lines)** is the whole file:
+
+```solidity
+interface IATokenWithDelegation is IAToken, IBaseDelegation {}
+```
+
+An empty body that exists purely to give the combined type a name for ABI
+generation.
+
+**`IAaveIncentivesController.sol` (19 lines)** is down to a single function,
+`handleAction(user, totalSupply, userBalance)` (`:18`). This is the hook every
+scaled-balance token fires on every balance change; the implementation lives in
+the periphery (`RewardsController`). The interface staying this small is what
+lets the protocol be indifferent to which incentives system is plugged in.
+
+**Interfaces whose implementations are periphery**, marked `[periphery]` above:
+`IAaveOracle`, `IDefaultInterestRateStrategyV2`, `IReserveInterestRateStrategy`,
+`IPriceOracleGetter`, `IAaveIncentivesController`. The protocol declares the
+shape it needs and calls through it; the concrete contracts are documented in
+`aave/V3-PERIPHERY-COMPLETE-REFERENCE.md`.
+
+---
+
+## 21. Reference tables
+
+Selectors below were **computed with `cast sig`**, not transcribed. Where a
+function takes a struct, the tuple was expanded to its elementary members before
+hashing — that expansion is shown so you can reproduce it.
+
+Storage layouts are **derived by hand from the source**. `forge inspect` cannot
+run against this tree: `lib/` holds only submodule stubs, so
+`lib/forge-std/src/Script.sol` is missing and compilation fails. Treat the
+layouts as carefully-read rather than compiler-confirmed.
+
+### 21.1 `Pool` — selector table
+
+From `interfaces/IPool.sol`. Sanity check: `supply` is `0x617ba037`, the
+well-known mainnet selector.
+
+| Function | Signature | Selector |
+|---|---|---|
+| `supply` | `supply(address,uint256,address,uint16)` | `0x617ba037` |
+| `deposit` | `deposit(address,uint256,address,uint16)` | `0xe8eda9df` |
+| `supplyWithPermit` | `supplyWithPermit(address,uint256,address,uint16,uint256,uint8,bytes32,bytes32)` | `0x02c205f0` |
+| `withdraw` | `withdraw(address,uint256,address)` | `0x69328dec` |
+| `borrow` | `borrow(address,uint256,uint256,uint16,address)` | `0xa415bcad` |
+| `repay` | `repay(address,uint256,uint256,address)` | `0x573ade81` |
+| `repayWithPermit` | `repayWithPermit(address,uint256,uint256,address,uint256,uint8,bytes32,bytes32)` | `0xee3e210b` |
+| `repayWithATokens` | `repayWithATokens(address,uint256,uint256)` | `0x2dad97d4` |
+| `setUserUseReserveAsCollateral` | `setUserUseReserveAsCollateral(address,bool)` | `0x5a3b74b9` |
+| `liquidationCall` | `liquidationCall(address,address,address,uint256,bool)` | `0x00a718a9` |
+| `flashLoan` | `flashLoan(address,address[],uint256[],uint256[],address,bytes,uint16)` | `0xab9c4b5d` |
+| `flashLoanSimple` | `flashLoanSimple(address,address,uint256,bytes,uint16)` | `0x42b0b77c` |
+| `getUserAccountData` | `getUserAccountData(address)` | `0xbf92857c` |
+| `initReserve` | `initReserve(address,address,address)` | `0x932f12c8` |
+| `syncIndexesState` | `syncIndexesState(address)` | `0xab2b51f6` |
+| `syncRatesState` | `syncRatesState(address)` | `0x98c7da4e` |
+| `setConfiguration` | `setConfiguration(address,(uint256))` | `0xf51e435b` |
+| `getConfiguration` | `getConfiguration(address)` | `0xc44b11f7` |
+| `getUserConfiguration` | `getUserConfiguration(address)` | `0x4417a583` |
+| `getReserveNormalizedIncome` | `getReserveNormalizedIncome(address)` | `0xd15e0053` |
+| `getReserveNormalizedVariableDebt` | `getReserveNormalizedVariableDebt(address)` | `0x386497fd` |
+| `getReserveData` | `getReserveData(address)` | `0x35ea6a75` |
+| `getVirtualUnderlyingBalance` | `getVirtualUnderlyingBalance(address)` | `0x6fb07f96` |
+| `finalizeTransfer` | `finalizeTransfer(address,address,address,uint256,uint256)` | `0x12772993` |
+| `getReservesList` | `getReservesList()` | `0xd1946dbc` |
+| `getReservesCount` | `getReservesCount()` | `0x72218d04` |
+| `getReserveAddressById` | `getReserveAddressById(uint16)` | `0x52751797` |
+| `ADDRESSES_PROVIDER` | `ADDRESSES_PROVIDER()` | `0x0542975c` |
+| `RESERVE_INTEREST_RATE_STRATEGY` | `RESERVE_INTEREST_RATE_STRATEGY()` | `0x1b8feb0e` |
+| `updateFlashloanPremium` | `updateFlashloanPremium(uint128)` | `0x9c1d5f00` |
+| `configureEModeCategory` | `configureEModeCategory(uint8,(uint16,uint16,uint16,bool,string))` | `0x6302e0e4` |
+| `configureEModeCategoryCollateralBitmap` | `…(uint8,uint128)` | `0x92380ecb` |
+| `configureEModeCategoryBorrowableBitmap` | `…(uint8,uint128)` | `0xff72158a` |
+| `configureEModeCategoryLtvzeroBitmap` | `…(uint8,uint128)` | `0x10870f75` |
+| `configureEModeCategoryIsolated` | `…(uint8,bool)` | `0xad57f436` |
+| `getEModeCategoryData` | `getEModeCategoryData(uint8)` | `0x6c6f6ae1` |
+| `getEModeCategoryLabel` | `getEModeCategoryLabel(uint8)` | `0x2083e183` |
+| `getEModeCategoryCollateralConfig` | `getEModeCategoryCollateralConfig(uint8)` | `0xb286f467` |
+| `getEModeCategoryCollateralBitmap` | `getEModeCategoryCollateralBitmap(uint8)` | `0xb0771dba` |
+| `getEModeCategoryBorrowableBitmap` | `getEModeCategoryBorrowableBitmap(uint8)` | `0x903a2c71` |
+| `getEModeCategoryLtvzeroBitmap` | `getEModeCategoryLtvzeroBitmap(uint8)` | `0xfd89dee5` |
+| `getIsEModeCategoryIsolated` | `getIsEModeCategoryIsolated(uint8)` | `0x05f68acb` |
+| `setUserEMode` | `setUserEMode(uint8)` | `0x28530a47` |
+| `getUserEMode` | `getUserEMode(address)` | `0xeddf1b79` |
+| `setLiquidationGracePeriod` | `setLiquidationGracePeriod(address,uint40)` | `0xb1a99e26` |
+| `getLiquidationGracePeriod` | `getLiquidationGracePeriod(address)` | `0x5c9a8b18` |
+| `FLASHLOAN_PREMIUM_TOTAL` | `FLASHLOAN_PREMIUM_TOTAL()` | `0x074b2e43` |
+| `FLASHLOAN_PREMIUM_TO_PROTOCOL` | `FLASHLOAN_PREMIUM_TO_PROTOCOL()` | `0x6a99c036` |
+| `MAX_NUMBER_RESERVES` | `MAX_NUMBER_RESERVES()` | `0xf8119d51` |
+| `mintToTreasury` | `mintToTreasury(address[])` | `0x9cd19996` |
+| `rescueTokens` | `rescueTokens(address,address,uint256)` | `0xcea9d26f` |
+| `eliminateReserveDeficit` | `eliminateReserveDeficit(address,uint256)` | `0xa1d2f3c4` |
+| `approvePositionManager` | `approvePositionManager(address,bool)` | `0xb8caa7c5` |
+| `renouncePositionManagerRole` | `renouncePositionManagerRole(address)` | `0xfea149a6` |
+| `setUserUseReserveAsCollateralOnBehalfOf` | `…(address,bool,address)` | `0x972b35fa` |
+| `setUserEModeOnBehalfOf` | `setUserEModeOnBehalfOf(uint8,address)` | `0x4ba06814` |
+| `isApprovedPositionManager` | `isApprovedPositionManager(address,address)` | `0xf9c2bd87` |
+| `getReserveDeficit` | `getReserveDeficit(address)` | `0xc952485d` |
+| `getReserveAToken` | `getReserveAToken(address)` | `0xcff027d9` |
+| `getReserveVariableDebtToken` | `getReserveVariableDebtToken(address)` | `0x365090a0` |
+| `getFlashLoanLogic` | `getFlashLoanLogic()` | `0x348fde0f` |
+| `getBorrowLogic` | `getBorrowLogic()` | `0x2be29fa7` |
+| `getLiquidationLogic` | `getLiquidationLogic()` | `0x911a3413` |
+| `getPoolLogic` | `getPoolLogic()` | `0xd3350155` |
+| `getSupplyLogic` | `getSupplyLogic()` | `0x870e7744` |
+
+The five `get*Logic()` getters are **[3.4]** additions that expose the linked
+library addresses, so an integrator can verify which logic code a proxy is
+actually running.
+
+### 21.2 `AToken` and `VariableDebtToken` — selector tables
+
+`AToken` (from `IAToken.sol` plus the inherited `IScaledBalanceToken`):
+
+| Function | Signature | Selector |
+|---|---|---|
+| `mint` | `mint(address,address,uint256,uint256)` | `0xb3f1c93d` |
+| `burn` | `burn(address,address,uint256,uint256,uint256)` | `0xb18d6afd` |
+| `mintToTreasury` | `mintToTreasury(uint256,uint256)` | `0x7df5bd3b` |
+| `transferOnLiquidation` | `transferOnLiquidation(address,address,uint256,uint256,uint256)` | `0x353b7b9a` |
+| `transferUnderlyingTo` | `transferUnderlyingTo(address,uint256)` | `0x4efecaa5` |
+| `permit` | `permit(address,address,uint256,uint256,uint8,bytes32,bytes32)` | `0xd505accf` |
+| `UNDERLYING_ASSET_ADDRESS` | `UNDERLYING_ASSET_ADDRESS()` | `0xb16a19de` |
+| `RESERVE_TREASURY_ADDRESS` | `RESERVE_TREASURY_ADDRESS()` | `0xae167335` |
+| `DOMAIN_SEPARATOR` | `DOMAIN_SEPARATOR()` | `0x3644e515` |
+| `nonces` | `nonces(address)` | `0x7ecebe00` |
+| `rescueTokens` | `rescueTokens(address,address,uint256)` | `0xcea9d26f` |
+| `scaledBalanceOf` | `scaledBalanceOf(address)` | `0x1da24f3e` |
+| `getScaledUserBalanceAndSupply` | `getScaledUserBalanceAndSupply(address)` | `0x0afbcdc9` |
+| `scaledTotalSupply` | `scaledTotalSupply()` | `0xb1bf962d` |
+| `getPreviousIndex` | `getPreviousIndex(address)` | `0xe0753986` |
+
+`permit` is `0xd505accf`, the canonical EIP-2612 selector — aTokens are
+permit-compatible with any standard integration.
+
+`VariableDebtToken` (from `IVariableDebtToken.sol` plus `ICreditDelegationToken`):
+
+| Function | Signature | Selector |
+|---|---|---|
+| `mint` | `mint(address,address,uint256,uint256,uint256)` | `0x9ceeaca7` |
+| `burn` | `burn(address,uint256,uint256)` | `0xf5298aca` |
+| `UNDERLYING_ASSET_ADDRESS` | `UNDERLYING_ASSET_ADDRESS()` | `0xb16a19de` |
+| `approveDelegation` | `approveDelegation(address,uint256)` | `0xc04a8a10` |
+| `renounceDelegation` | `renounceDelegation(address)` | `0x91fb372d` |
+| `borrowAllowance` | `borrowAllowance(address,address)` | `0x6bd76d24` |
+| `delegationWithSig` | `delegationWithSig(address,address,uint256,uint256,uint8,bytes32,bytes32)` | `0x0b52d558` |
+
+Note `AToken.mint` and `VariableDebtToken.mint` have **different arities** (4 vs
+5 parameters) and therefore different selectors, despite both being called
+`mint` by the Pool. The debt token's extra parameter is `amountScaled`.
+
+### 21.3 `ACLManager` — selector table
+
+| Function | Selector | | Function | Selector |
+|---|---|---|---|---|
+| `ADDRESSES_PROVIDER()` | `0x0542975c` | | `addFlashBorrower(address)` | `0x9ac9d80b` |
+| `POOL_ADMIN_ROLE()` | `0xb8f6dba7` | | `removeFlashBorrower(address)` | `0x253cf980` |
+| `EMERGENCY_ADMIN_ROLE()` | `0x6e76fc8f` | | `isFlashBorrower(address)` | `0xfa50f297` |
+| `RISK_ADMIN_ROLE()` | `0x4f16b425` | | `addBridge(address)` | `0x9712fdf8` |
+| `FLASH_BORROWER_ROLE()` | `0x5577b7a9` | | `removeBridge(address)` | `0x04df017d` |
+| `BRIDGE_ROLE()` | `0xb5bfddea` | | `isBridge(address)` | `0x726600ce` |
+| `ASSET_LISTING_ADMIN_ROLE()` | `0x78bb0a43` | | `addAssetListingAdmin(address)` | `0x9a2b96f7` |
+| `setRoleAdmin(bytes32,bytes32)` | `0x1e4e0091` | | `removeAssetListingAdmin(address)` | `0xa21bce15` |
+| `addPoolAdmin(address)` | `0x22650caf` | | `isAssetListingAdmin(address)` | `0x13ee32e0` |
+| `removePoolAdmin(address)` | `0xf83695cb` | | `addRiskAdmin(address)` | `0x5b9a94e4` |
+| `isPoolAdmin(address)` | `0x7be53ca1` | | `removeRiskAdmin(address)` | `0x3c5a08e5` |
+| `addEmergencyAdmin(address)` | `0x179efb09` | | `isRiskAdmin(address)` | `0x674b5e4d` |
+| `removeEmergencyAdmin(address)` | `0x7a9a93f4` | | | |
+| `isEmergencyAdmin(address)` | `0x2500f2b6` | | | |
+
+### 21.4 Storage layouts
+
+**`PoolStorage`** (`pool/PoolStorage.sol`, 57 lines) — the Pool's entire
+persistent state, and the reason `Pool` can be upgraded safely. Every
+upgradeable protocol contract that inherits it must keep this order forever.
+
+| Slot | Type | Name | Notes |
+|---|---|---|---|
+| 0 | `mapping(address => DataTypes.ReserveData)` | `_reserves` | asset → reserve |
+| 1 | `mapping(address => DataTypes.UserConfigurationMap)` | `_usersConfig` | user → collateral/borrow bitmap |
+| 2 | `mapping(uint256 => address)` | `_reservesList` | id → asset |
+| 3 | `mapping(uint8 => DataTypes.EModeCategory)` | `_eModeCategories` | |
+| 4 | `mapping(address => uint8)` | `_usersEModeCategory` | |
+| 5 | `uint256` | `_bridgeProtocolFee` | Portal |
+| 6 | `uint128` + `uint128` | `_flashLoanPremiumTotal`, `_flashLoanPremiumToProtocol` | **packed into one slot** |
+| 7 | `uint16` | `_reservesCount` | |
+
+Mappings occupy their slot as a hash base and store nothing in it directly, so
+"slot 0" for `_reserves` means entries live at `keccak256(key . 0)`.
+
+**`ReserveData`** — see §3.1 for the full field-by-field layout with the
+`__deprecated*` placeholders. The rule that matters: **removed fields are never
+re-packed**, only renamed to `__deprecated*`, so that every deployed reserve's
+storage keeps its meaning across upgrades.
+
+**Upgradeable contracts and revisions.** `Pool` and `PoolConfigurator` use
+`VersionedInitializable` rather than a one-shot boolean, because
+`PoolAddressesProvider._updateImpl` re-invokes `initialize(address)` on **every**
+upgrade (§19.2). Current revisions in this tree:
+
+| Contract | Constant | Value | File |
+|---|---|---|---|
+| `PoolInstance` | `POOL_REVISION` | `11` | `instances/PoolInstance.sol:15` **[periphery]** |
+| `PoolConfiguratorInstance` | `CONFIGURATOR_REVISION` | `8` | `instances/PoolConfiguratorInstance.sol:12` **[periphery]** |
+
+### 21.5 Events reference
+
+Pool events are declared in `IPool.sol` and listed in §20.2 with their line
+numbers and emitters. `PoolConfigurator` declares **25 events** in
+`IPoolConfigurator.sol`, one per configuration change, so that every parameter
+mutation is independently indexable. `IPoolAddressesProvider.sol` declares the
+address-book events (§19.2), and `IPoolAddressesProviderRegistry.sol` declares
+`AddressesProviderRegistered` (`:15`) and `AddressesProviderUnregistered`
+(`:22`).
+
+Token-level events come from `IScaledBalanceToken.sol`: `Mint` (`:18`) and
+`Burn` (`:35`), plus `BalanceTransfer` (`IAToken.sol:21`) and
+`BorrowAllowanceDelegated` (`ICreditDelegationToken.sol:17`).
+
+**The indexing trap, restated:** `IScaledBalanceToken.sol:28` warns that a burn
+can emit `Mint` when accrued interest exceeds the amount burned. Index on the
+`value` and `balanceIncrease` fields, never on the event name alone.
+
+### 21.6 The complete `Errors.sol` table
+
+`libraries/helpers/Errors.sol` (95 lines) declares **84 custom errors** — 81
+parameterless and 3 carrying `(address reserve, uint256 categoryId)`. Selectors
+computed with `cast sig`; throw sites found by grepping
+`src/contracts/protocol/`. A blank site column means the error is thrown only
+from periphery or is currently unreferenced in the protocol tree.
+
+| Error | Line | Selector | Meaning | Thrown in (`protocol/`) |
+|---|---|---|---|---|
+| `CallerNotPoolAdmin` | `:10` | `0xcdd36a97` | The caller of the function is not a pool admin | tokenization/base/IncentivizedERC20.sol; pool/PoolConfigurator.sol; pool/Pool.sol |
+| `CallerNotPoolOrEmergencyAdmin` | `:11` | `0x934f6050` | The caller of the function is not a pool or emergency admin | pool/PoolConfigurator.sol |
+| `CallerNotRiskOrPoolAdmin` | `:12` | `0x66e574d7` | The caller of the function is not a risk or pool admin | pool/PoolConfigurator.sol |
+| `CallerNotAssetListingOrPoolAdmin` | `:13` | `0x3a38503c` | The caller of the function is not an asset listing or pool admin | pool/PoolConfigurator.sol |
+| `AddressesProviderNotRegistered` | `:14` | `0x7498ebd0` | Pool addresses provider is not registered | configuration/PoolAddressesProviderRegistry.sol |
+| `InvalidAddressesProviderId` | `:15` | `0xf7717657` | Invalid id for the pool addresses provider | configuration/PoolAddressesProviderRegistry.sol |
+| `NotContract` | `:16` | `0x6f7c43f1` | Address is not a contract | libraries/logic/PoolLogic.sol |
+| `CallerNotPoolConfigurator` | `:17` | `0x44ff885f` | The caller of the function is not the pool configurator | pool/Pool.sol |
+| `CallerNotAToken` | `:18` | `0x93b9ef1f` | The caller of the function is not an AToken | pool/Pool.sol |
+| `InvalidAddressesProvider` | `:19` | `0x3b175b87` | The address of the pool addresses provider is invalid | (unused in protocol/) |
+| `InvalidFlashloanExecutorReturn` | `:20` | `0xfb37391e` | Invalid return value of the flashloan executor function | libraries/logic/FlashLoanLogic.sol x2 |
+| `ReserveAlreadyAdded` | `:21` | `0xaecc2085` | Reserve has already been added to reserve list | libraries/logic/PoolLogic.sol |
+| `NoMoreReservesAllowed` | `:22` | `0x923a9466` | Maximum amount of reserves in the pool reached | libraries/logic/PoolLogic.sol |
+| `EModeCategoryReserved` | `:23` | `0x92842113` | Zero eMode category is reserved for volatile heterogeneous assets | pool/Pool.sol x5 |
+| `ReserveLiquidityNotZero` | `:24` | `0x7999528e` | The liquidity of the reserve needs to be 0 | pool/PoolConfigurator.sol |
+| `FlashloanPremiumInvalid` | `:25` | `0x742d1c72` | Invalid flashloan premium | pool/PoolConfigurator.sol |
+| `InvalidReserveParams` | `:26` | `0x32d6d3ef` | Invalid risk parameters for the reserve | pool/PoolConfigurator.sol x4 |
+| `InvalidEmodeCategoryParams` | `:27` | `0xec1dd8d5` | Invalid risk parameters for the eMode category | pool/PoolConfigurator.sol x5 |
+| `CallerMustBePool` | `:28` | `0x54b39ce2` | The caller of this function must be a pool | tokenization/base/IncentivizedERC20.sol |
+| `InvalidMintAmount` | `:29` | `0xccfad018` | Invalid amount to mint | tokenization/base/ScaledBalanceTokenBase.sol |
+| `InvalidBurnAmount` | `:30` | `0x2075cc10` | Invalid amount to burn | tokenization/base/ScaledBalanceTokenBase.sol |
+| `InvalidAmount` | `:31` | `0x2c5211c6` | Amount must be greater than 0 | libraries/logic/ValidationLogic.sol x6; libraries/logic/LiquidationLogic.sol |
+| `ReserveInactive` | `:32` | `0x90cd6f24` | Action requires an active reserve | libraries/logic/ValidationLogic.sol x7; libraries/logic/LiquidationLogic.sol |
+| `ReserveFrozen` | `:33` | `0x6d305815` | Action cannot be performed because the reserve is frozen | libraries/logic/ValidationLogic.sol x2; pool/PoolConfigurator.sol x3 |
+| `ReservePaused` | `:34` | `0xd37f5f1c` | Action cannot be performed because the reserve is paused | libraries/logic/ValidationLogic.sol x8 |
+| `BorrowingNotEnabled` | `:35` | `0x53587745` | Borrowing is not enabled | libraries/logic/ValidationLogic.sol |
+| `NotEnoughAvailableUserBalance` | `:36` | `0x47bc4b2c` | User cannot withdraw more than the available balance | libraries/logic/ValidationLogic.sol; libraries/logic/LiquidationLogic.sol |
+| `InvalidInterestRateModeSelected` | `:37` | `0x17c5a78e` | Invalid interest rate mode selected | libraries/logic/ValidationLogic.sol x2 |
+| `HealthFactorLowerThanLiquidationThreshold` | `:38` | `0x6679996d` | Health factor is below the liquidation threshold | libraries/logic/ValidationLogic.sol x2 |
+| `CollateralCannotCoverNewBorrow` | `:39` | `0x911ceb81` | There is not enough collateral to cover a new borrow | libraries/logic/ValidationLogic.sol |
+| `NoDebtOfSelectedType` | `:40` | `0xf0788fb2` | For repayment of a specific type of debt, the user needs to have debt that type | libraries/logic/ValidationLogic.sol |
+| `NoExplicitAmountToRepayOnBehalf` | `:41` | `0xcd3779c3` | To repay on behalf of a user an explicit amount to repay is needed | libraries/logic/ValidationLogic.sol |
+| `UnderlyingBalanceZero` | `:42` | `0x5fe10377` | The underlying balance needs to be greater than 0 | libraries/logic/SupplyLogic.sol |
+| `HealthFactorNotBelowThreshold` | `:43` | `0x930bb771` | Health factor is not below the threshold | libraries/logic/ValidationLogic.sol |
+| `CollateralCannotBeLiquidated` | `:44` | `0x979b5ce8` | The collateral chosen cannot be liquidated | libraries/logic/ValidationLogic.sol |
+| `SpecifiedCurrencyNotBorrowedByUser` | `:45` | `0x3653732b` | User did not borrow the specified currency | libraries/logic/ValidationLogic.sol |
+| `InconsistentFlashloanParams` | `:46` | `0x039ebb30` | Inconsistent flashloan parameters | libraries/logic/ValidationLogic.sol x2 |
+| `BorrowCapExceeded` | `:47` | `0x77a6a896` | Borrow cap is exceeded | libraries/logic/ValidationLogic.sol |
+| `SupplyCapExceeded` | `:48` | `0xf58f733a` | Supply cap is exceeded | libraries/logic/ValidationLogic.sol |
+| `LtvValidationFailed` | `:49` | `0x5b263df7` | Ltv validation failed | libraries/logic/ValidationLogic.sol x2 |
+| `InconsistentEModeCategory` | `:50` | `0xc1d88872` | Inconsistent eMode category | libraries/logic/ValidationLogic.sol |
+| `ReserveAlreadyInitialized` | `:51` | `0xd71b1fd1` | Reserve has already been initialized | libraries/logic/ReserveLogic.sol |
+| `UserHasAssetWithZeroLtv` | `:52` | `0x21e5c4ae` | User has asset with ltv being zero | libraries/logic/SupplyLogic.sol |
+| `InvalidLtv` | `:53` | `0x649641c2` | Invalid ltv parameter for the reserve | libraries/configuration/ReserveConfiguration.sol |
+| `InvalidLiquidationThreshold` | `:54` | `0x3e51d2c0` | Invalid liquidity threshold parameter for the reserve | libraries/configuration/ReserveConfiguration.sol |
+| `InvalidLiquidationBonus` | `:55` | `0x54198c1c` | Invalid liquidity bonus parameter for the reserve | libraries/configuration/ReserveConfiguration.sol |
+| `InvalidDecimals` | `:56` | `0xd25598a0` | Invalid decimals parameter of the underlying asset of the reserve | libraries/configuration/ReserveConfiguration.sol; libraries/logic/ConfiguratorLogic.sol |
+| `InvalidReserveFactor` | `:57` | `0x373792d2` | Invalid reserve factor parameter for the reserve | libraries/configuration/ReserveConfiguration.sol; pool/PoolConfigurator.sol |
+| `InvalidBorrowCap` | `:58` | `0xa7e9b5b6` | Invalid borrow cap for the reserve | libraries/configuration/ReserveConfiguration.sol |
+| `InvalidSupplyCap` | `:59` | `0xc0d76d92` | Invalid supply cap for the reserve | libraries/configuration/ReserveConfiguration.sol |
+| `InvalidLiquidationProtocolFee` | `:60` | `0x239eacb9` | Invalid liquidation protocol fee for the reserve | libraries/configuration/ReserveConfiguration.sol; pool/PoolConfigurator.sol |
+| `InvalidReserveIndex` | `:61` | `0x85e98beb` | Invalid reserve index | libraries/configuration/UserConfiguration.sol x4; libraries/configuration/EModeConfiguration.sol x2 |
+| `AclAdminCannotBeZero` | `:62` | `0xbb5bfbae` | ACL admin cannot be set to the zero address | configuration/ACLManager.sol |
+| `InconsistentParamsLength` | `:63` | `0x0d10f63b` | Array parameters that should be equal length are not | (unused in protocol/) |
+| `ZeroAddressNotValid` | `:64` | `0x3bf95ba7` | Zero address not valid | tokenization/delegation/BaseDelegation.sol x2; tokenization/base/DebtTokenBase.sol; tokenization/AToken.sol x2; pool/Pool.sol x2 |
+| `InvalidExpiration` | `:65` | `0xfb2a6752` | Invalid expiration | tokenization/delegation/BaseDelegation.sol x2; tokenization/base/DebtTokenBase.sol; tokenization/AToken.sol |
+| `InvalidSignature` | `:66` | `0x8baa579f` | Invalid signature | tokenization/delegation/BaseDelegation.sol x2; tokenization/base/DebtTokenBase.sol; tokenization/AToken.sol |
+| `OperationNotSupported` | `:67` | `0x29a270f5` | Operation not supported | tokenization/VariableDebtToken.sol x7 |
+| `AssetNotListed` | `:68` | `0xb77e1e0f` | Asset is not listed | pool/PoolConfigurator.sol x3; pool/Pool.sol x2 |
+| `InvalidOptimalUsageRatio` | `:69` | `0x35a8aee7` | Invalid optimal usage ratio | (unused in protocol/) |
+| `UnderlyingCannotBeRescued` | `:70` | `0xbf9cb8bb` | The underlying asset cannot be rescued | tokenization/AToken.sol |
+| `AddressesProviderAlreadyAdded` | `:71` | `0x19e2f692` | Reserve has already been added to reserve list | configuration/PoolAddressesProviderRegistry.sol |
+| `PoolAddressesDoNotMatch` | `:72` | `0x4c2b89eb` | The token implementation pool address and the pool address provided by the initializing pool do not match | (unused in protocol/) |
+| `ReserveDebtNotZero` | `:74` | `0x4f9d999f` | the total debt of the reserve needs to be 0 | pool/PoolConfigurator.sol |
+| `FlashloanDisabled` | `:75` | `0x580f2f14` | FlashLoaning for this asset is disabled | libraries/logic/ValidationLogic.sol |
+| `InvalidMaxRate` | `:76` | `0xee69f6c0` | The expect maximum borrow rate is invalid | (unused in protocol/) |
+| `WithdrawToAToken` | `:77` | `0xdbc4273c` | Withdrawing to the aToken is not allowed | libraries/logic/SupplyLogic.sol |
+| `SupplyToAToken` | `:78` | `0x18d2badf` | Supplying to the aToken is not allowed | libraries/logic/ValidationLogic.sol |
+| `Slope2MustBeGteSlope1` | `:79` | `0xd33c1528` | Variable interest rate slope 2 can not be lower than slope 1 | (unused in protocol/) |
+| `CallerNotRiskOrPoolOrEmergencyAdmin` | `:80` | `0x803ddb7b` | The caller of the function is not a risk, pool or emergency admin | pool/PoolConfigurator.sol |
+| `LiquidationGraceSentinelCheckFailed` | `:81` | `0x9e3e6060` | Liquidation grace sentinel validation failed | libraries/logic/ValidationLogic.sol |
+| `InvalidGracePeriod` | `:82` | `0xd7c43e0f` | Grace period above a valid range | pool/PoolConfigurator.sol |
+| `InvalidFreezeState` | `:83` | `0x990c1656` | Reserve is already in the passed freeze state | pool/PoolConfigurator.sol |
+| `InvalidLtvzeroState` | `:84` | `0x24812247` | Reserve is already in the passed ltvzero state | pool/PoolConfigurator.sol |
+| `NotBorrowableInEMode` | `:85` | `0x57db5bba` | Asset not borrowable in eMode | libraries/logic/ValidationLogic.sol |
+| `CallerNotUmbrella` | `:86` | `0xc45a7cdd` | The caller of the function is not the umbrella contract | pool/Pool.sol |
+| `ReserveNotInDeficit` | `:87` | `0x94468f03` | The reserve is not in deficit | libraries/logic/LiquidationLogic.sol |
+| `MustNotLeaveDust` | `:88` | `0xb629b0e4` | Below a certain threshold liquidators need to take the full position | libraries/logic/LiquidationLogic.sol |
+| `UserCannotHaveDebt` | `:89` | `0x16f1ef81` | Thrown when a user tries to interact with a method that requires a position without debt | libraries/logic/LiquidationLogic.sol |
+| `SelfLiquidation` | `:90` | `0x44511af1` | Thrown when a user tries to liquidate themselves | libraries/logic/ValidationLogic.sol |
+| `CallerNotPositionManager` | `:91` | `0xabd80224` | Thrown when the caller has not been enabled as a position manager of the on-behalf-of user | pool/Pool.sol |
+| `InvalidCollateralInEmode(address,uint256)` | `:92` | `0xd2f93f12` | entering an eMode with a collateral asset that category does not allow | `libraries/logic/ValidationLogic.sol` |
+| `InvalidDebtInEmode(address,uint256)` | `:93` | `0x2c906631` | entering an eMode with a debt asset that category does not allow | `libraries/logic/ValidationLogic.sol` |
+| `MustBeEmodeCollateral(address,uint256)` | `:94` | `0xd039d03d` | configuring an asset as eMode-ltvzero when it is not eMode collateral | `pool/PoolConfigurator.sol` |
+
+
+---
+
+## 22. Use-case index
+
+"I want to do X" → the exact entry point and the full internal call chain. Every
+chain below was traced through the sections above; follow the section links for
+the per-function detail.
+
+Two structural facts make all of these readable:
+
+- **`Pool` never contains logic.** Every entry point validates almost nothing
+  itself and immediately `delegatecall`s into a linked logic library (§1.3).
+- **Almost every chain starts with `updateState` and ends with
+  `updateInterestRates`.** Accrue interest to now, do the thing, re-price the
+  reserve. If you only remember one shape, remember that one.
+
+### Supply and withdraw
+
+**Supply 1,000 USDC**
+
+```
+Pool.supply(asset, amount, onBehalfOf, referralCode)          pool/Pool.sol:118
+ └─ SupplyLogic.executeSupply(...)                            logic/SupplyLogic.sol:40
+     ├─ reserve.updateState(reserveCache)                     logic/ReserveLogic.sol  (§6)
+     ├─ ValidationLogic.validateSupply(...)                   logic/ValidationLogic.sol (§7)
+     │    └─ active / not frozen / not paused / supply cap
+     ├─ reserve.updateInterestRates(...)                      (§6)
+     ├─ IERC20(asset).safeTransferFrom(msg.sender → aToken)
+     ├─ IAToken(aToken).mint(msg.sender, onBehalfOf, amount, index)   (§18.3)
+     └─ if first supply: set the collateral bit in _usersConfig
+```
+Emits `Supply` (`IPool.sol:21`) and `ReserveDataUpdated` (`:147`).
+
+**Supply with an EIP-2612 permit, no prior approval** — `Pool.supplyWithPermit`
+(`:141`). Identical, with `IERC20WithPermit.permit` called first so approve and
+supply land in one transaction.
+
+**Withdraw**
+
+```
+Pool.withdraw(asset, amount, to)                              pool/Pool.sol:179
+ └─ SupplyLogic.executeWithdraw(...)                          logic/SupplyLogic.sol:106
+     ├─ reserve.updateState / validateWithdraw / updateInterestRates
+     ├─ IAToken.burn(msg.sender, to, amount, index)
+     └─ if it was collateral: ValidationLogic.validateHFAndLtv(...)   (§7)
+```
+The health-factor check runs **after** the burn, on the resulting state.
+
+### Borrow and repay
+
+**Borrow 500 USDC against supplied collateral**
+
+```
+Pool.borrow(asset, amount, interestRateMode, referralCode, onBehalfOf)   pool/Pool.sol:203
+ └─ BorrowLogic.executeBorrow(...)                            logic/BorrowLogic.sol:41
+     ├─ reserve.updateState
+     ├─ ValidationLogic.validateBorrow(...)                   (§7)
+     │    ├─ borrowing enabled / not paused / borrow cap
+     │    ├─ eMode borrowable bitmap
+     │    └─ GenericLogic.calculateUserAccountData(...)       logic/GenericLogic.sol:65
+     │         └─ loop every reserve, oracle price, weighted LTV → health factor
+     ├─ IVariableDebtToken.mint(user, onBehalfOf, ...)        (§18.5)
+     ├─ reserve.updateInterestRates(...)
+     └─ IAToken.transferUnderlyingTo(user, amount)
+```
+
+**Borrow on behalf of someone else (credit delegation).** Same chain. The
+delegator first calls `VariableDebtToken.approveDelegation(delegatee, amount)`
+(`DebtTokenBase`, §18.4); `mint` then decreases that allowance using the
+`correctedAmount` technique so the delegatee can never consume more value than
+authorised.
+
+**Repay** — `Pool.repay` (`:231`) → `BorrowLogic.executeRepay` (`:126`):
+`updateState` → `validateRepay` → `VariableDebtToken.burn` →
+`updateInterestRates` → `safeTransferFrom(payer → aToken)`.
+
+**Repay with aTokens, no underlying needed** — `Pool.repayWithATokens` (`:304`),
+same `executeRepay` with `useATokens = true`. Burns the caller's aTokens instead
+of pulling underlying, so a supplier can deleverage without an external token
+balance.
+
+**Repay with permit** — `Pool.repayWithPermit` (`:258`).
+
+### Collateral and eMode
+
+**Toggle an asset as collateral**
+
+```
+Pool.setUserUseReserveAsCollateral(asset, useAsCollateral)    pool/Pool.sol:330
+ └─ SupplyLogic.executeUseReserveAsCollateral(...)            logic/SupplyLogic.sol:240
+     ├─ validateSetUseReserveAsCollateral
+     ├─ flip the bit in _usersConfig
+     └─ if disabling: validateHFAndLtv(...)
+```
+Emits `ReserveUsedAsCollateralEnabled` / `Disabled`.
+
+**Enter an eMode category** — `Pool.setUserEMode(categoryId)` (`:754`) →
+`SupplyLogic.executeSetUserEMode` (`:304`). Validates every existing collateral
+against the category's collateral bitmap and every debt against its borrowable
+bitmap, reverting `InvalidCollateralInEmode` / `InvalidDebtInEmode` (§21.6).
+Emits `UserEModeSet`. **[3.6]** merged the old `EModeLogic` into `SupplyLogic`.
+
+**Do either on behalf of another user** — `setUserUseReserveAsCollateralOnBehalfOf`
+(`:859`) and `setUserEModeOnBehalfOf` (`:878`), both **[3.6]**, gated by
+`isApprovedPositionManager` and reverting `CallerNotPositionManager`.
+
+### Liquidation
+
+```
+Pool.liquidationCall(collateralAsset, debtAsset, user, debtToCover, receiveAToken)  pool/Pool.sol:348
+ └─ LiquidationLogic.executeLiquidationCall(...)              logic/LiquidationLogic.sol:166
+     ├─ calculateUserAccountData → health factor < 1?
+     ├─ validateLiquidationCall (grace period, SelfLiquidation, …)
+     ├─ close factor: 50% normally, 100% below CLOSE_FACTOR_HF_THRESHOLD
+     ├─ _calculateAvailableCollateralToLiquidate → bonus + protocol fee
+     ├─ _burnDebtTokens
+     ├─ receiveAToken ? _liquidateATokens : _burnCollateralATokens
+     └─ if collateral exhausted with debt left → deficit (DeficitCreated)  [3.3]
+```
+See §11 for the full branch-by-branch walk and the dust rules
+(`MustNotLeaveDust`, **[3.7]**).
+
+**Clear bad debt afterwards** — `Pool.eliminateReserveDeficit(asset, amount)`,
+**[3.3]**, burns the caller's aTokens to cover a recorded deficit. Emits
+`DeficitCovered`.
+
+### Flash loans
+
+**Simple, one asset** — `Pool.flashLoanSimple(receiver, asset, amount, params,
+referralCode)` (`:412`) → `FlashLoanLogic.executeFlashLoanSimple` (`:167`):
+transfer out → `receiver.executeOperation(...)` → pull back
+`amount + premium` → `updateState` / `updateInterestRates`. The receiver must
+approve the **Pool**, not the aToken (§12).
+
+**Complex, many assets** — `Pool.flashLoan(...)` (`:375`) →
+`executeFlashLoan` (`:57`). Each asset may be repaid or **left open as debt**
+via `interestRateModes[i] = 2`, which calls into `executeBorrow` with
+`releaseUnderlying = false`.
+
+Holders of `FLASH_BORROWER_ROLE` (§19.1) pay **no premium**.
+
+### Administration
+
+**List a new reserve**
+
+```
+PoolConfigurator.initReserves(input[])                        pool/PoolConfigurator.sol:78
+ └─ ConfiguratorLogic.executeInitReserve(...)                 logic/ConfiguratorLogic.sol:30
+     ├─ deploy the aToken proxy + initialize
+     ├─ deploy the variableDebtToken proxy + initialize
+     ├─ Pool.initReserve(asset, aToken, variableDebtToken)
+     └─ Pool.setConfiguration(asset, cfg)
+```
+Callable by `POOL_ADMIN_ROLE` or `ASSET_LISTING_ADMIN_ROLE`.
+
+**Freeze a reserve** — `PoolConfigurator.setReserveFreeze(asset, true)` (`:195`),
+`onlyRiskOrPoolAdmin`. Frozen means no new supply or borrow; repay, withdraw and
+liquidate still work. Contrast `setReserveActive(asset, false)` (`:186`), which
+blocks everything, and `setPoolPause` (`:474`, `:485`), the emergency admin's
+kill switch with a liquidation grace period.
+
+**Upgrade an aToken implementation** — `PoolConfigurator.updateAToken(input)`
+(`:96`) → `ConfiguratorLogic`, which calls `upgradeToAndCall` on the token proxy.
+The Pool proxy itself is upgraded from the other direction, through
+`PoolAddressesProvider.setPoolImpl` (§19.2).
+
+### Reading state off-chain
+
+**A user's health factor** — `Pool.getUserAccountData(user)` (`0xbf92857c`),
+which wraps `GenericLogic.calculateUserAccountData` (`:65`) and returns total
+collateral, total debt, available borrows, liquidation threshold, LTV and health
+factor, all in the oracle's base currency.
+
+**Current indexes without a state change** —
+`getReserveNormalizedIncome(asset)` and `getReserveNormalizedVariableDebt(asset)`
+compute the index as of `block.timestamp` from the stored index plus elapsed
+time (§6). Use these, never the raw stored `liquidityIndex`, which is stale
+between interactions.
+
+**Force the stored state up to date** — `syncIndexesState(asset)` and
+`syncRatesState(asset)` (both **[3.4]**) exist for integrations that need the
+persisted values refreshed rather than computed.
+
+**A whole market for a UI** — the aggregate getters live in
+`IPoolDataProvider.sol` (22 functions) and the periphery's
+`AaveProtocolDataProvider` / `UiPoolDataProviderV3`, documented in
+`aave/V3-PERIPHERY-COMPLETE-REFERENCE.md`.
+
+### On L2, at lower calldata cost
+
+Every core action has a `bytes32`-packed twin on `L2Pool` (§15): `supply`,
+`supplyWithPermit`, `withdraw`, `borrow`, `repay`, `repayWithPermit`,
+`repayWithATokens`, `setUserUseReserveAsCollateral`, `liquidationCall`. The
+encoding is symmetric with `CalldataLogic`'s decoder, and the periphery's
+`L2Encoder` builds the packed arguments.
+
+---
+
+## 23. Feature history: what arrived in each release
+
+Sourced from `docs/3.1/` … `docs/3.7/` and `CHANGELOG.md`. Use this to date any
+behaviour you find in the code, and to tell "this is intentional" from "this is
+a leftover".
+
+Remember the version banner at the top of this document: **the code here is
+v3.7** even though `package.json` still says `3.6.0`.
+
+### v3.1 — `docs/3.1/Aave-v3.1-features.md`
+
+| Feature | What it changed |
+|---|---|
+| **Virtual accounting** | `virtualUnderlyingBalance` per reserve. Utilization is computed from tracked liquidity, not `IERC20.balanceOf(aToken)`, so a donation can no longer move interest rates (§3.1, §6) |
+| **Stateful interest rate strategy** | rate parameters moved into the strategy contract itself, one deployment for all reserves |
+| Freezing by emergency guardian | `EMERGENCY_ADMIN_ROLE` gained freeze rights on `PoolConfigurator` |
+| Reserve data refreshed on RF / strategy change | prevents a parameter change from applying retroactively |
+| Minimum decimals for listed assets | blocks precision-loss listings |
+| Liquidation grace sentinel | `setLiquidationGracePeriod` (§22) |
+| **LTV0 on freezing** | freezing an asset sets its LTV to 0 so it cannot back new borrows |
+| Permissionless stable→variable migration | groundwork for 3.2 |
+| Library-address getters | `getSupplyLogic()` and friends (§21.1) |
+
+### v3.2 — `docs/3.2/Aave-v3.2-features.md`
+
+| Feature | What it changed |
+|---|---|
+| **Deprecation of stable debt** | the stable-rate model removed entirely. `StableDebtToken` is gone; `interestRateMode` survives in signatures as a vestigial parameter |
+| **Liquid eModes** | eMode split into two bitmaps — collateral and borrowable — so an asset can be collateral in a category without being borrowable (§4.3). The per-eMode oracle was removed |
+
+### v3.3 — `docs/3.3/Aave-v3.3-features.md`
+
+| Feature | What it changed |
+|---|---|
+| **Bad debt management** | `deficit` per reserve, `DeficitCreated` / `DeficitCovered`, and `eliminateReserveDeficit` (§11, §22) |
+| **Liquidation logic changes** | the 100% close factor below `CLOSE_FACTOR_HF_THRESHOLD`, and `MIN_LEFTOVER_BASE` dust rules |
+| Bitmap access optimization | cheaper `UserConfiguration` reads |
+| Additional getters | |
+
+### v3.4 — `docs/3.4/Aave-v3.4-features.md`
+
+| Feature | What it changed |
+|---|---|
+| GHO alignment | |
+| **Multicall** | batch several pool actions in one transaction |
+| **Position manager** | `approvePositionManager`, `renouncePositionManagerRole`, `isApprovedPositionManager`, and the `*OnBehalfOf` entry points (§22) |
+| Removal of "unbacked" | the Portal's unbacked-mint accounting retired |
+| **Immutability sweep** | interest strategy immutable on the Pool implementation; `rewardsController` immutable on both tokens; Pool immutable on the data provider; treasury immutable on the aToken |
+| Token storage alignment | `BaseDelegation` reworked; see `docs/3.4/appendix/*.diff` (§18.7) |
+
+### v3.5 — `docs/3.5/Aave-v3.5-features.md`
+
+| Feature | What it changed |
+|---|---|
+| **Rounding improvements** | `TokenMath` introduced, with an explicit rounding direction per operation, always favouring the protocol (§5.4) |
+| **Internal scaled accounting** | the Pool passes scaled amounts to tokens rather than re-deriving them |
+| Improved flag logic | collateral-bit handling simplified |
+| **Improved allowance** | the `correctedAmount` fix in `AToken.transferFrom` (§18.3) |
+
+### v3.6 — `docs/3.6/Aave-v3.6-features.md`
+
+| Feature | What it changed |
+|---|---|
+| **eMode improvements** | `EModeLogic` merged into `SupplyLogic`; `InvalidCollateralInEmode` / `InvalidDebtInEmode` carry the offending reserve |
+| **Automatic collateral behavior** | `validateAutomaticUseAsCollateral` reworked |
+| **Renounce allowance** | `renounceDelegation` on `DebtTokenBase` so a delegatee can drop its own allowance (§18.4) |
+| **OpenZeppelin alignment** | `_decreaseBorrowAllowance` no longer emits `BorrowAllowanceDelegated`, matching OZ semantics |
+| eMode category label soft-deprecated | `getEModeCategoryLabel` retained, no longer authoritative |
+
+### v3.7 — `docs/3.7/Aave-v3.7-changelog.md` (this tree)
+
+| Change | Consequence for a reader |
+|---|---|
+| **Isolation mode removed** | `setDebtCeiling`, `setBorrowableInIsolation`, `resetIsolationModeTotalDebt` gone; `isolationModeTotalDebt` marked `// DEPRECATED on v3.7.0` (`DataTypes.sol:38-39`) and returns 0 |
+| **Siloed borrowing removed** | `setSiloedBorrowing` gone, validation dropped from `validateBorrow` |
+| **Price oracle sentinel removed** | no sentinel contract exists; the addresses-provider getter/setter survive as dead API (§19.2) |
+| **`dropReserve` removed** | four `reserveAddress != address(0)` guards remain as harmless legacy defence |
+| **Isolated eMode added** | `configureEModeCategoryIsolated` / `getIsEModeCategoryIsolated`; `setEModeCategory` gained a `bool isolated` |
+| **Deterministic liquidation rounding** | `percentMulFloor` / `percentDivFloor` / `percentMulCeil` / `percentDivCeil` used explicitly in `_calculateAvailableCollateralToLiquidate`; `percentDivFloor` added at `PercentageMath.sol:94` |
+| **Better `hasNoCollateralLeft`** | now compares scaled-balance consumption instead of base-currency value, preventing stranded debt from ceil rounding |
+| **`MustNotLeaveDust`** | new error at `Errors.sol:88` |
+| `ConfiguratorLogic` internalised | no longer deployed separately; `getConfiguratorLogic()` removed |
+| Config engine inlined | no more `delegatecall` into engine libraries |
+| Revisions bumped | `POOL_REVISION` 10 → 11, `CONFIGURATOR_REVISION` 7 → 8 |
+
+**The recurring lesson across all seven releases:** Aave removes *features* but
+never removes *storage*. Configuration bits stay unoccupied, struct fields get
+renamed to `__deprecated*`, and public getters survive as no-ops. If you are
+reading storage directly or decoding a config word, always check the version
+that wrote it.
 
 ---

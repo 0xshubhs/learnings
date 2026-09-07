@@ -1588,3 +1588,1207 @@ must claim repeatedly.
 | `recover_balance(_coin) -> bool` | `:443` | admin; `assert _coin != self.token` (`:451`); `raw_call` transfer to `emergency_return`, tolerating non-standard ERC-20s (`:454-464`) |
 
 ---
+
+## 7. The proxy admin layer
+
+Four contracts sit **between the DAO's Aragon votes and the pools/gauges they
+own**. They exist for two reasons. First, pool ownership is a single address,
+but Curve wants three different privilege levels; the proxy demultiplexes one
+owner into `ownership_admin` / `parameter_admin` / `emergency_admin`. Second,
+they are where **admin fees are collected and handed to burners** (§11), which
+is the first link in the chain that ends at `FeeDistributor.burn` (§6.5).
+
+| Contract | Ver | Lines | Owns | Admin model |
+|---|---|---|---|---|
+| `PoolProxy.vy` | 0.2.7 | 494 | StableSwap pools on Ethereum | 3 admins |
+| `CryptoPoolProxy.vy` | 0.2.7 | 459 | CryptoSwap (v2) pools | 3 admins |
+| `PoolProxySidechain.vy` | 0.2.8 | 462 | pools on sidechains | 1 admin + bridging |
+| `GaugeProxy.vy` | 0.2.8 | 119 | LiquidityGaugeV2+ | 2 admins |
+
+### 7.1 The three-admin model — `PoolProxy.vy`
+
+Storage is six slots of admin plus the burner registry:
+
+| Slot | Line | Meaning |
+|---|---|---|
+| `ownership_admin` | `:63` | can transfer pool ownership, set burners, set referrals |
+| `parameter_admin` | `:64` | can commit fees / A ramps |
+| `emergency_admin` | `:65` | can `kill_me` a pool |
+| `future_*_admin` ×3 | `:67-69` | two-step handover |
+| `min_asymmetries` | `:71` | per-pool guard, see §7.3 |
+| `burners` | `:73` | coin → burner contract |
+| `burner_kill` | `:74` | global burn circuit breaker |
+| `donate_approval` | `:77` | pool → caller → may call `donate_admin_fees` |
+
+`__init__(_ownership_admin, _parameter_admin, _emergency_admin)` `:80` sets all
+three. `__default__()` `:92` is `@payable` and empty — **required**, because
+ETH-containing pools pay admin fees in native ETH.
+
+Handover is two-step but unusual: `commit_set_admins(_o, _p, _e)` `:98` and
+`apply_set_admins()` `:115` are **both** gated on the *current*
+`ownership_admin` (`:105`, `:119`). The incoming admin never signs. Contrast
+`GaugeProxy.accept_set_admins()` `:53`, which is gated on
+`future_ownership_admin` (`:58`) — the correct pattern. `PoolProxy`'s version
+can hand ownership to an address that cannot use it.
+
+### 7.2 Burner wiring — `_set_burner` `:132`
+
+```python
+old_burner: address = self.burners[_coin]
+if _coin != 0xEeee...eEEeE:                 # :134  not native ETH
+    if old_burner != ZERO_ADDRESS:
+        # revoke approval on previous burner
+        raw_call(_coin, concat(method_id("approve(address,uint256)"),
+                 convert(old_burner, bytes32), convert(0, bytes32)), max_outsize=32)
+    if _burner != ZERO_ADDRESS:
+        # infinite approval for current burner
+        raw_call(_coin, concat(method_id("approve(address,uint256)"),
+                 convert(_burner, bytes32), convert(MAX_UINT256, bytes32)), max_outsize=32)
+self.burners[_coin] = _burner
+```
+
+Each swap is *revoke-then-grant*, and each `raw_call` tolerates non-standard
+ERC-20s by only checking the return value when one exists (`:146-147`,
+`:160-161`). The ETH sentinel is skipped because native ETH has no `approve`.
+
+`set_burner(_coin, _burner)` `:170` and `set_many_burners(_coins[20],
+_burners[20])` `:183` are `ownership_admin`-only, `@nonreentrant('lock')`; the
+batch stops at the first `ZERO_ADDRESS` (`:193-194`).
+
+### 7.3 Fee collection and the asymmetry guard
+
+**`withdraw_admin_fees(_pool)` `:200`** and **`withdraw_many(_pools[20])`
+`:210`** are **permissionless** — no `assert` at all. Anyone may push a pool's
+accrued admin fees into the proxy. That is safe because the destination is
+fixed.
+
+**`burn(_coin)` `:223`** and **`burn_many(_coins[20])` `:241`** hand the coin to
+its burner:
+
+```python
+assert tx.origin == msg.sender          # :229  EOA only
+assert not self.burner_kill             # :230
+_value: uint256 = 0
+if _coin == 0xEeee...eEEeE:
+    _value = self.balance               # :234  forward all native ETH
+Burner(self.burners[_coin]).burn(_coin, value=_value)
+```
+
+`tx.origin == msg.sender` blocks contract callers, which the docstring
+(`:226`) explains as flash-loan protection: burners route through AMMs, so a
+contract could sandwich its own burn. `burner_kill` (`:284`, settable by
+emergency *or* ownership admin) is the panic switch.
+
+**`apply_new_parameters(_pool)` `:360`** is the only interesting parameter
+function. It is EOA-gated (`:366`) and, if a `min_asymmetry` was set for the
+pool, recomputes the pool's balance asymmetry before allowing the change:
+
+```
+asymmetry = prod(x_i) / (sum(x_i)/N)^N = prod( N*x_i / sum(x_j) )
+```
+
+Implemented at `:378-394`: normalise every underlying balance to 18 decimals
+(`:385`), sum them, then start from `N * 1e18` and multiply by `x/S` per coin.
+
+```python
+assert asymmetry >= min_asymmetry, "Unsafe to apply"    # :396
+```
+
+The point: a fee or `A` change re-prices the curve, and doing it while the pool
+is far off balance hands value to arbitrageurs. The DAO commits the parameters
+and the guard refuses to apply them until the pool is healthy enough.
+
+### 7.4 The rest of `PoolProxy`'s surface
+
+| Function | Line | Caller |
+|---|---|---|
+| `kill_me(_pool)` | `:263` | `emergency_admin` **only** |
+| `unkill_me(_pool)` | `:274` | emergency **or** ownership |
+| `set_burner_kill(_is_killed)` | `:284` | emergency **or** ownership |
+| `commit_transfer_ownership(_pool, new_owner)` | `:295` | ownership |
+| `apply_transfer_ownership(_pool)` | `:307` | **anyone** |
+| `accept_transfer_ownership(_pool)` | `:317` | **anyone** |
+| `revert_transfer_ownership(_pool)` | `:327` | ownership or emergency |
+| `commit_new_parameters(_pool, A, fee, admin_fee, min_asymmetry)` | `:338` | parameter |
+| `revert_new_parameters(_pool)` | `:403` | any of the three |
+| `commit_new_fee(_pool, new_fee, new_admin_fee)` | `:414` | parameter |
+| `apply_new_fee(_pool)` | `:427` | **anyone** |
+| `ramp_A(_pool, _future_A, _future_time)` | `:437` | parameter |
+| `stop_ramp_A(_pool)` | `:450` | parameter or emergency |
+| `set_aave_referral(_pool, referral_code)` | `:461` | ownership |
+| `set_donate_approval(_pool, _caller, _is_approved)` | `:472` | ownership |
+| `donate_admin_fees(_pool)` | `:486` | ownership, or an approved caller (`:492`) |
+
+The pattern is consistent and worth internalising: **`commit_*` is
+privileged, `apply_*` is usually not.** The timelock lives in the pool, so once
+the DAO has committed and the delay has passed, anybody may push the button.
+`revert_*` is deliberately available to more admins than `commit_*` — killing a
+pending change is safer than making one.
+
+Every pool call is annotated `# dev: if implemented by the pool` (e.g. `:355`,
+`:398`, `:468`) because the proxy owns pools of several vintages and older ones
+lack some of these entry points; the call simply reverts.
+
+### 7.5 `CryptoPoolProxy.vy` — the same shape for v2 pools
+
+Identical admin model, burner logic, `donate_approval` and EOA-gating. The
+differences are entirely in the pool interface:
+
+| `PoolProxy` | `CryptoPoolProxy` | Note |
+|---|---|---|
+| `ramp_A(_future_A, _future_time)` `:437` | `ramp_A_gamma(_pool, _A, _gamma, _time)` `:402` | CryptoSwap ramps `A` **and** `gamma` |
+| `stop_ramp_A` `:450` | `stop_ramp_A_gamma(_pool)` `:415` | |
+| `commit_new_parameters(A, fee, admin_fee, min_asymmetry)` `:338` | `commit_new_parameters(_pool, mid_fee, out_fee, admin_fee, fee_gamma, price_threshold, adjustment_step, ma_half_time)` `:344` | v2's dynamic-fee parameter set |
+| `commit_new_fee` / `apply_new_fee` | *absent* | folded into `commit_new_parameters` |
+| `min_asymmetries` `:71` | *absent* | `apply_new_parameters` `:379` is EOA-gated only (`:385`) |
+| — | `set_admin_fee_receiver` in the interface `:32` | v2 pools push fees themselves |
+| — | `claim_admin_fees()` in the interface `:15` | v2's name for `withdraw_admin_fees` |
+| — | `price_oracle(k)` in the interface `:28` | declared, unused by the proxy |
+
+Note the dropped asymmetry guard: CryptoSwap pools are *designed* to hold
+uncorrelated assets at arbitrary ratios, so "asymmetry" carries no information.
+
+### 7.6 `PoolProxySidechain.vy` — one admin plus a bridge
+
+Collapses the three admins into a single `admin` (`:62`) with a **correct**
+two-step handover: `commit_new_admin(addr)` `:80` (admin-only, `:85`) then
+`accept_new_admin()` `:92` gated on `msg.sender == future_admin` (`:97`).
+
+Everything from `set_burner` through `donate_admin_fees` mirrors `PoolProxy`
+with `self.admin` substituted for all three roles. Two extras:
+
+- `set_reward_receiver(_pool, _receiver)` `:404` and
+  `set_admin_fee_receiver(_pool, _receiver)` `:411`.
+- The bridging path: `bridging_contract` (`:58`), `bridge_minimums` (`:59`),
+  `set_bridging_contract` `:418`, `set_bridge_minimum(_coin, _min)` `:425`,
+  `set_bridge_root_receiver(_receiver)` `:432`.
+
+**`bridge(_coin)` `:438`** sends the proxy's whole balance of a coin to the
+bridging contract, then triggers the bridge:
+
+```python
+amount: uint256 = ERC20(_coin).balanceOf(self)
+if amount > 0:
+    raw_call(_coin, _abi_encode(bridging_contract, amount,
+             method_id=method_id("transfer(address,uint256)")), max_outsize=32)
+if msg.sender != self.admin:
+    minimum: uint256 = self.bridge_minimums[_coin]
+    assert minimum != 0,  "Coin not approved for bridging"
+    assert minimum >= ERC20(_coin).balanceOf(bridging_contract), "Balance below minimum bridge amount"
+Bridger(bridging_contract).bridge(_coin)
+```
+
+> **The comparison at `:460` is inverted.** The docstring (`:441-444`) says
+> non-admins may bridge only "where the balance exceeds a minimum amount",
+> to stop dust bridging that is uneconomic to claim on the root chain. The code
+> asserts `minimum >= balance`, i.e. the balance must be **at or below** the
+> minimum — the exact opposite. Combined with the transfer happening *before*
+> the check (`:450-455`), a non-admin can bridge any amount up to the minimum
+> and is blocked from bridging large amounts. The revert string
+> ("Balance below minimum bridge amount") describes the intent, not the code.
+> Verified by reading `:456-460`; setting `bridge_minimums[_coin] = 0` disables
+> non-admin bridging entirely, which is the intended default.
+
+### 7.7 `GaugeProxy.vy` — 119 lines, gauge ownership
+
+Two admins only (`:24-25`), because gauges have no fee parameters to tune.
+
+| Function | Line | Caller |
+|---|---|---|
+| `__init__(_ownership_admin, _emergency_admin)` | `:32` | |
+| `commit_set_admins(_o_admin, _e_admin)` | `:38` | ownership (`:44`) |
+| `accept_set_admins()` | `:53` | **`future_ownership_admin`** (`:58`) — the correct two-step |
+| `commit_transfer_ownership(_gauge, new_owner)` | `:69` | ownership (`:75`) |
+| `accept_transfer_ownership(_gauge)` | `:81` | anyone |
+| `set_killed(_gauge, _is_killed)` | `:91` | ownership or emergency (`:98`) |
+| `set_rewards(_gauge, _reward_contract, _sigs, _reward_tokens[8])` | `:105` | ownership (`:117`) |
+
+`set_killed` is the lever that zeroes a gauge's CRV rate (see §4.7); `set_rewards`
+installs the third-party staking contract and its four-byte selector triple
+described at `:111-114` and unpacked in §4.6.
+
+---
+
+## 8. Vesting
+
+Three contracts distribute the pre-mine (the 62 % of CRV allocated to
+shareholders, employees and the community reserve at genesis — see §1.1) on a
+linear schedule. None of them interacts with veCRV, gauges or the Minter; they
+are plain escrows over an ERC-20.
+
+| Contract | Ver | Lines | Recipients | Deployed |
+|---|---|---|---|---|
+| `vests/VestingEscrow.vy` | 0.2.4 | 275 | up to 100, funded in batches | directly |
+| `vests/VestingEscrowSimple.vy` | 0.2.4 | 235 | exactly one | as a forwarder clone |
+| `vests/VestingEscrowFactory.vy` | 0.2.4 | 113 | — | directly |
+
+### 8.1 The vesting curve
+
+Both escrows share the same three-line schedule
+(`VestingEscrowSimple.vy:124-131`, `VestingEscrow.vy:164-173`):
+
+```python
+if _time < start:
+    return 0
+return min(locked * (_time - start) / (end - start), locked)
+```
+
+So for a grant of `L` tokens over `[t0, t1]`:
+
+```
+vested(t) = 0                                   t <  t0
+          = L · (t − t0) / (t1 − t0)            t0 ≤ t ≤ t1
+          = L                                   t >  t1
+```
+
+**There is no cliff.** Vesting begins accruing the second `start_time` passes,
+and `min(..., locked)` clamps the tail. A cliff, where Curve wanted one, was
+implemented by setting `start_time` in the future rather than by any code here.
+The `_time` parameter defaults to `block.timestamp` but is passed explicitly by
+`claim` so a disabled recipient's clock can be frozen (§8.3).
+
+Integer division truncates, so `vested(t)` is always rounded **down** — the
+escrow keeps the dust until the schedule completes, at which point the `min`
+branch pays it out exactly.
+
+The five views are all thin wrappers on that one function:
+
+| View | Simple | Escrow | Returns |
+|---|---|---|---|
+| `vestedSupply()` | `:146` | `:186` | `_total_vested()` over `initial_locked_supply` |
+| `lockedSupply()` | `:156` | `:196` | `initial_locked_supply − _total_vested()` |
+| `vestedOf(_recipient)` | `:166` | `:206` | ever-vested, claimed or not |
+| `balanceOf(_recipient)` | `:176` | `:216` | `vestedOf − total_claimed` — the **claimable** amount |
+| `lockedOf(_recipient)` | `:186` | `:226` | `initial_locked − vestedOf` |
+
+Note `balanceOf` is not an ERC-20 balance; these contracts are not tokens.
+
+### 8.2 `VestingEscrowSimple.vy` — the clone target
+
+Storage (`:31-43`): `token`, `start_time`, `end_time`,
+`initial_locked`/`total_claimed` per recipient, `initial_locked_supply`,
+`can_disable` + `disabled_at`, `admin`/`future_admin`.
+
+The initialisation pattern is the interesting part:
+
+```python
+@external
+def __init__():
+    # ensure that the original contract cannot be initialized
+    self.admin = msg.sender          # :48
+```
+
+```python
+def initialize(_admin, _token, _recipient, _amount, _start_time, _end_time, _can_disable) -> bool:
+    assert self.admin == ZERO_ADDRESS  # dev: can only initialize once   # :75
+    ...
+    assert ERC20(_token).transferFrom(msg.sender, self, _amount)          # :83
+    self.initial_locked[_recipient] = _amount
+    self.initial_locked_supply = _amount
+```
+
+The constructor deliberately **poisons the master copy** by setting a non-zero
+admin, so `initialize` can never run on it. A `create_forwarder_to` clone has
+fresh storage, so its `admin` reads zero and the guard passes exactly once
+(`:53`, `@nonreentrant('lock')`). This is the standard minimal-proxy
+initialisation dance, written before OpenZeppelin's `Initializable` was common
+in Vyper.
+
+`initialize` pulls the tokens from `msg.sender` — the factory — which is why the
+factory must approve first (§8.4).
+
+### 8.3 `claim` and the disable mechanism
+
+```python
+@external
+@nonreentrant('lock')
+def claim(addr: address = msg.sender):          # :196
+    t: uint256 = self.disabled_at[addr]
+    if t == 0:
+        t = block.timestamp
+    claimable: uint256 = self._total_vested_of(addr, t) - self.total_claimed[addr]
+    self.total_claimed[addr] += claimable
+    assert ERC20(self.token).transfer(addr, claimable)
+    log Claim(addr, claimable)
+```
+
+`claim` takes an address so anyone may push a claim to its rightful recipient;
+funds always go to `addr`, never to `msg.sender`.
+
+**`toggle_disable(_recipient)` `:93`** (admin-only `:101`, and only while
+`can_disable` `:102`) writes `disabled_at[_recipient] = block.timestamp`, or
+clears it back to zero if already set (`:104-108`). Because `claim` evaluates
+the schedule at `t = disabled_at` rather than now, disabling **freezes the
+vesting clock**: already-vested tokens stay claimable forever, future vesting
+stops. The docstring at `:96-98` states this explicitly. Re-enabling resumes on
+the original schedule — the paused interval is *not* credited back, but neither
+is it lost, since the curve is a function of absolute time.
+
+**`disable_can_disable()` `:114`** (admin-only) flips `can_disable` to `False`
+permanently, renouncing the power. There is no matching re-enable.
+
+Ownership: `commit_transfer_ownership(addr)` `:212` and
+`apply_transfer_ownership()` `:225`, both admin-gated (`:217`, `:229`), with
+`assert _admin != ZERO_ADDRESS` (`:231`) preventing accidental renouncement.
+
+### 8.4 `VestingEscrowFactory.vy`
+
+Three storage slots: `admin`, `future_admin`, `target` (`:33-35`). `__init__(
+_target, _admin)` `:38` records the pre-deployed `VestingEscrowSimple` master
+copy, which the docstring at `:41-42` says must exist first.
+
+```python
+def deploy_vesting_contract(_token, _recipient, _amount, _can_disable,
+                            _vesting_duration, _vesting_start = block.timestamp) -> address:
+    assert msg.sender == self.admin              # :70
+    assert _vesting_start >= block.timestamp     # :71  dev: start time too soon
+    assert _vesting_duration >= MIN_VESTING_DURATION   # :72  dev: duration too short
+
+    _contract: address = create_forwarder_to(self.target)     # :74
+    assert ERC20(_token).approve(_contract, _amount)          # :75
+    VestingEscrowSimple(_contract).initialize(
+        self.admin, _token, _recipient, _amount,
+        _vesting_start, _vesting_start + _vesting_duration, _can_disable)
+    return _contract
+```
+
+`MIN_VESTING_DURATION = 86400 * 365` (`:11`) — **one year minimum**, enforced on
+every grant. `create_forwarder_to` is Vyper's EIP-1167 minimal proxy: the clone
+holds only a `delegatecall` stub, so all logic executes from `target` against
+the clone's own storage. That is why `VestingEscrowSimple.__init__` never runs
+for a clone and `initialize` has to exist.
+
+The order at `:74-76` matters: deploy, then `approve` the clone, then let the
+clone `transferFrom` the factory during `initialize`. Tokens must therefore be
+sitting in the *factory* beforehand — the docstring says so at `:60-62`.
+
+Ownership is the usual `commit_transfer_ownership` `:90` /
+`apply_transfer_ownership` `:103` pair, both admin-gated (`:95`, `:107`). The
+docstring at `:92` mistakenly says "Transfer ownership of GaugeController" — a
+copy-paste from `GaugeController.vy`.
+
+### 8.5 `VestingEscrow.vy` — many recipients, one contract
+
+Same schedule and same views, but built for the genesis distribution where one
+escrow serves up to 100 addresses. Differences from `VestingEscrowSimple`:
+
+| | `VestingEscrowSimple` | `VestingEscrow` |
+|---|---|---|
+| Deployment | clone via factory, `initialize` `:53` | direct, `__init__` `:51` |
+| Recipients | one, set at init | many, set by `fund` `:99` |
+| Extra storage | — | `unallocated_supply` `:38`, `fund_admins` `:47`, `fund_admins_enabled` `:46` |
+| Funding | `transferFrom` inside `initialize` `:83` | `add_tokens` `:86` then `fund` `:99` |
+| Time guards | none | `_start_time >= block.timestamp` `:66`, `_end_time > _start_time` `:67` |
+
+`__init__` `:51` takes `_fund_admins: address[4]` and sets
+`fund_admins_enabled` if any is non-zero (`:75-82`).
+
+**`add_tokens(_amount)` `:86`** — admin-only (`:92`); pulls tokens and credits
+`unallocated_supply`. Kept separate from `fund` so that funding admins, who may
+not hold tokens, can still allocate.
+
+**`fund(_recipients[100], _amounts[100])` `:99`** — admin, or a fund admin while
+`fund_admins_enabled` (`:106-107`). Loops to the first `ZERO_ADDRESS`
+(`:115-116`), accumulates into `initial_locked[recipient]` with `+=` so a
+recipient may be funded across several calls, then moves the total from
+`unallocated_supply` into `initial_locked_supply` (`:121-122`). That subtraction
+underflows and reverts if the batch over-allocates, which is the only check that
+the escrow is solvent.
+
+**`disable_fund_admins()` `:154`** — admin-only (`:158`); permanently revokes
+the temporary funding accounts once the distribution is loaded.
+
+---
+
+## 9. Streamers
+
+Gauges on sidechains cannot mint CRV — the Minter and GaugeController live on
+Ethereum. `RewardsOnlyGauge` (§4.10) therefore has no CRV integral at all; it
+only knows how to pull *reward tokens* from a `reward_contract` and account
+them per-LP. The streamers are what sits on the other side of that pull: they
+receive a lump sum bridged from mainnet and release it at a constant rate so the
+gauge sees a smooth stream instead of a step function.
+
+| Contract | Ver | Lines | Role |
+|---|---|---|---|
+| `streamers/RewardStream.vy` | 0.2.12 | 166 | one token, split evenly between N receivers |
+| `streamers/ChildChainStreamer.vy` | 0.2.16 | 225 | up to 8 tokens, one receiver |
+| `streamers/RewardClaimer.vy` | 0.2.16 | 91 | passthrough over up to 4 streamers |
+
+```
+mainnet                          sidechain
+-------                          ---------
+RootGauge*  --bridge-->  ChildChainStreamer.notify_reward_amount(token)
+                                  |  rate = amount / duration
+                                  v  get_reward()  (called by the gauge)
+                          RewardsOnlyGauge  --> LPs
+```
+
+### 9.1 `RewardStream.vy` — even split, no stake weighting
+
+Storage (`:12-25`): `owner`/`future_owner`, `distributor`, `reward_token`,
+`period_finish`, `reward_rate`, `reward_duration`, `last_update_time`,
+`reward_per_receiver_total`, `receiver_count`, `reward_receivers` (a set), and
+private `reward_paid`.
+
+The accounting is the same "growth per unit" trick as the gauges (§4.1), but the
+denominator is a **head count**, not a stake:
+
+```python
+@internal
+def _update_per_receiver_total() -> uint256:            # :37
+    total: uint256 = self.reward_per_receiver_total
+    count: uint256 = self.receiver_count
+    if count == 0:
+        return total
+    last_time: uint256 = min(block.timestamp, self.period_finish)
+    total += (last_time - self.last_update_time) * self.reward_rate / count
+    self.reward_per_receiver_total = total
+    self.last_update_time = last_time
+    return total
+```
+
+`reward_per_receiver_total` is a monotonically increasing "how much has each
+receiver earned in total, ever" counter. A receiver's claim is
+`total − reward_paid[receiver]`. The `min(block.timestamp, period_finish)` clamp
+(`:44`) is what stops accrual after the period ends. When `count == 0` the
+function returns early **without** advancing `last_update_time` (`:41-42`), so
+the elapsed time is not lost — it is credited to whoever is added next. That is
+a subtle leak: rewards accrue to nobody yet the clock keeps running from the old
+`last_update_time`, so the first receiver added after an empty period collects
+the whole backlog.
+
+| Function | Line | Caller | Behaviour |
+|---|---|---|---|
+| `add_receiver(_receiver)` | `:53` | owner (`:61`) | settles first, then sets `reward_paid[_receiver] = total` (`:67`) so the newcomer starts at zero — the docstring at `:56-57` promises exactly this |
+| `remove_receiver(_receiver)` | `:71` | owner (`:77`) | settles, decrements the count, **pays out** the balance (`:83-85`), zeroes `reward_paid` |
+| `get_reward()` | `:90` | any active receiver (`:94`) | settles, transfers `total − reward_paid[msg.sender]` |
+| `notify_reward_amount(_amount)` | `:103` | distributor (`:110`) | see below |
+| `set_reward_duration(_duration)` | `:127` | owner; only when `block.timestamp > period_finish` (`:134`) |
+| `set_reward_distributor(_distributor)` | `:137` | owner (`:144`) |
+| `commit_transfer_ownership(_owner)` / `accept_transfer_ownership()` | `:147` / `:158` | owner / future owner (`:163`) — correct two-step |
+
+**`notify_reward_amount`** is the Synthetix rate-reset formula:
+
+```python
+self._update_per_receiver_total()
+assert ERC20(self.reward_token).transferFrom(msg.sender, self, _amount)
+duration: uint256 = self.reward_duration
+if block.timestamp >= self.period_finish:
+    self.reward_rate = _amount / duration
+else:
+    remaining: uint256 = self.period_finish - block.timestamp
+    leftover: uint256 = remaining * self.reward_rate
+    self.reward_rate = (_amount + leftover) / duration
+self.last_update_time = block.timestamp
+self.period_finish = block.timestamp + duration
+```
+
+Topping up mid-period folds the undistributed remainder into the new rate and
+restarts the clock, so the stream never stalls but always stretches to a full
+`duration` from now. Note `reward_rate` is **per second for the whole set**,
+divided by `count` only at accrual time — so adding a receiver dilutes everyone
+going forward without touching what they have already earned.
+
+### 9.2 `ChildChainStreamer.vy` — up to 8 tokens, one receiver
+
+Storage (`:20-27`): `owner`/`future_owner`, `reward_receiver`,
+`reward_tokens: address[8]`, `reward_count`, `reward_data`, `last_update_time`.
+Each token carries a `RewardToken` struct (`:11-18`): `distributor`,
+`period_finish`, `rate`, `duration`, `received`, `paid`.
+
+The key structural difference from `RewardStream`: there is exactly one
+receiver, so there is no per-receiver bookkeeping. `_update_reward` simply
+**pushes** tokens out.
+
+```python
+@internal
+def _update_reward(_token: address, _last_update: uint256):     # :94
+    last_time: uint256 = min(block.timestamp, self.reward_data[_token].period_finish)
+    if last_time > _last_update:
+        amount: uint256 = (last_time - _last_update) * self.reward_data[_token].rate
+        if amount > 0:
+            self.reward_data[_token].paid += amount
+            raw_call(_token, concat(method_id("transfer(address,uint256)"),
+                     convert(self.reward_receiver, bytes32),
+                     convert(amount, bytes32)), max_outsize=32)
+```
+
+`raw_call` with a conditional return check (`:110-111`) again tolerates
+non-standard ERC-20s. Because tokens are *pushed*, `set_receiver` warns at
+`:117-118` that a contract receiver must recognise rewards that arrive without a
+`get_reward` call — which is exactly how `RewardsOnlyGauge` works, since it
+reads its own balance.
+
+| Function | Line | Caller | Notes |
+|---|---|---|---|
+| `__init__(_owner, _receiver, _reward)` | `:31` | | seeds the first reward token |
+| `add_reward(_token, _distributor, _duration)` | `:42` | owner (`:49`) | `"Reward token already added"` (`:50`) |
+| `remove_reward(_token)` | `:60` | owner (`:66`) | `"Reward token not added"` (`:67`); sweeps the remaining balance out (`:81`) |
+| `set_receiver(_receiver)` | `:115` | owner (`:122`) | |
+| `get_reward()` | `:127` | **anyone** | loops all 8 slots, pushes each, then stamps `last_update_time` (`:136`) |
+| `notify_reward_amount(_token)` | `:140` | see below | |
+| `set_reward_duration(_token, _duration)` | `:183` | owner; `"Reward period still active"` (`:191`) |
+| `set_reward_distributor(_token, _distributor)` | `:196` | owner (`:202`) |
+| `commit_transfer_ownership` / `accept_transfer_ownership` | `:207` / `:218` | owner / future owner (`:223`) |
+
+**`notify_reward_amount(_token)` `:140` is permissionless when the period has
+expired.** It works by balance diff rather than `transferFrom`:
+
+```python
+received: uint256 = self.reward_data[token].received
+expected_balance: uint256 = received - self.reward_data[token].paid
+actual_balance: uint256 = ERC20(token).balanceOf(self)
+if actual_balance > expected_balance:
+    new_amount: uint256 = actual_balance - expected_balance
+    duration: uint256 = self.reward_data[token].duration
+    if block.timestamp >= self.reward_data[token].period_finish:
+        self.reward_data[token].rate = new_amount / duration
+    else:
+        assert msg.sender == self.reward_data[_token].distributor, "Reward period still active"
+        ...
+```
+
+This is the design that makes bridging work. A bridge deposits tokens with a
+plain `transfer` — it cannot call `transferFrom` or any custom function. So the
+streamer detects the surplus itself, and **anyone may start the new period once
+the old one has finished** (`:167-168`). Only shortening an *active* period is
+restricted to the distributor (`:169`). `assert is_updated` (`:178`) rejects a
+call naming a token that is not registered or has nothing new.
+
+Note the loop calls `_update_reward` for **every** token before checking the
+named one (`:161-165`), so a single `notify_reward_amount` flushes all pending
+streams. Also note `:169` reads `self.reward_data[_token].distributor` (the
+argument) while the surrounding block otherwise uses `token` (the loop
+variable); they are equal on the only branch that reaches it, so the behaviour
+is correct, but the inconsistency is worth knowing when reading.
+
+### 9.3 `RewardClaimer.vy` — a 91-line fan-in
+
+Sits between a gauge and up to four streamers. `reward_data: RewardData[4]`
+(`:25`) holds `{claim, reward}` pairs (`:16-18`).
+
+```python
+@external
+def get_reward():                                   # :40
+    assert msg.sender == self.reward_receiver       # :45
+    for i in range(4):
+        data: RewardData = self.reward_data[i]
+        if data.reward == ZERO_ADDRESS:
+            break
+        RewardStream(data.claim).get_reward()
+        amount: uint256 = ERC20(data.reward).balanceOf(self)
+        if amount > 0:
+            assert ERC20(data.reward).transfer(msg.sender, amount)
+```
+
+It calls each streamer, then forwards whatever landed. `RewardsOnlyGauge`
+accepts a single `reward_contract` address with a single claim selector, so this
+is the adapter that lets one gauge draw from several independent streams.
+`set_reward_data(_idx, _claim, _reward)` `:59` is owner-only (`:67`) and does no
+bounds-checking beyond Vyper's own array bound. Ownership is the standard
+two-step (`:73`, `:84`).
+
+---
+
+## 10. Sidechain root gauges and wrappers
+
+Nine contracts that extend the gauge system past its two structural limits:
+CRV can only be minted on Ethereum, and a gauge deposit is a non-transferable
+storage entry.
+
+| Contract | Ver | Lines | Purpose |
+|---|---|---|---|
+| `gauges/sidechain/RootGaugeXdai.vy` | 0.2.8 | 216 | mint + bridge to Gnosis Chain |
+| `gauges/sidechain/RootGaugePolygon.vy` | 0.2.8 | 218 | mint + bridge to Polygon |
+| `gauges/sidechain/RootGaugeHarmony.vy` | 0.2.8 | 213 | mint + bridge to Harmony |
+| `gauges/sidechain/RootGaugeAnyswap.vy` | 0.2.12 | 216 | mint + bridge via Anyswap |
+| `gauges/sidechain/RootGaugeArbitrum.vy` | 0.2.12 | 285 | mint + bridge to Arbitrum |
+| `gauges/sidechain/CheckpointProxy.vy` | 0.2.12 | 20 | EOA-only `checkpoint` shim |
+| `gauges/wrappers/LiquidityGaugeWrapper.vy` | 0.2.8 | 360 | tokenise a `LiquidityGauge` position |
+| `gauges/wrappers/LiquidityGaugeRewardWrapper.vy` | 0.2.8 | 408 | same, for `LiquidityGaugeReward` |
+| `gauges/wrappers/LiquidityGaugeWrapperUnit.vy` | 0.2.8 | 346 | wrapper usable as unit.xyz collateral |
+
+### 10.1 Root gauges — a gauge with no LPs
+
+A root gauge registers with the `GaugeController` like any other gauge and
+receives a weight from veCRV votes. But it has **no depositors**. Its entire job
+is: once a week, work out how much CRV its weight entitles it to, mint that from
+the `Minter`, and push it over a bridge. The sidechain side then distributes it
+through a streamer (§9) into a `RewardsOnlyGauge` (§4.10).
+
+The `Minter` interface it satisfies is minimal, and deliberately self-referential:
+
+```python
+@view
+@external
+def integrate_fraction(addr: address) -> uint256:      # RootGaugeXdai.vy:166
+    assert addr == self, "Gauge can only mint for itself"
+    return self.emissions
+```
+
+`Minter._mint_for` (§5) computes `integrate_fraction(addr) - minted[addr][gauge]`
+and transfers the difference. By reporting a cumulative `emissions` counter for
+itself, the root gauge makes the Minter pay it exactly the new emissions.
+`user_checkpoint(addr)` `:160` is a no-op returning `True` — the Minter calls it
+first, and there is nothing per-user to record.
+
+**`checkpoint()` `:92`** is the whole contract. Storage it maintains:
+`period` (`:54`, the last week index processed), `emissions` (`:55`, cumulative),
+`inflation_rate` (`:56`), `start_epoch_time` (`:52`).
+
+```python
+assert self.checkpoint_admin in [ZERO_ADDRESS, msg.sender]      # :97
+last_period: uint256 = self.period
+current_period: uint256 = block.timestamp / WEEK - 1
+if last_period < current_period:
+    Controller(controller).checkpoint_gauge(self)
+    rate: uint256 = self.inflation_rate
+    ...
+    for i in range(last_period, last_period + 255):
+        if i > current_period: break
+        gauge_weight: uint256 = Controller(controller).gauge_relative_weight(self, i * WEEK)
+        if next_epoch_time >= period_time and next_epoch_time < period_time + WEEK:
+            # the week straddles an inflation epoch — split it
+            period_emission = gauge_weight * rate * (next_epoch_time - period_time) / 10**18
+            rate = rate * RATE_DENOMINATOR / RATE_REDUCTION_COEFFICIENT
+            period_emission += gauge_weight * rate * (period_time + WEEK - next_epoch_time) / 10**18
+            self.inflation_rate = rate
+            self.start_epoch_time = next_epoch_time
+            next_epoch_time += RATE_REDUCTION_TIME
+        else:
+            period_emission = gauge_weight * rate * WEEK / 10**18
+        new_emissions += period_emission
+```
+
+Three things worth pinning down:
+
+- **`current_period = block.timestamp / WEEK - 1`** (`:99`). It always works on
+  *completed* weeks. `gauge_relative_weight` for a future week is not final
+  because votes can still move, so the root gauge lags one week behind.
+- **The epoch-crossing branch recomputes the rate locally** rather than reading
+  `ERC20CRV.rate()`. The comment at `:117-120` explains why: emissions are being
+  generated for a week that may span the annual reduction, and `ERC20CRV` may not
+  have had `update_mining_parameters` called yet. So the constants
+  `RATE_REDUCTION_COEFFICIENT = 1189207115002721024` and `RATE_REDUCTION_TIME =
+  YEAR` (`:44-45`) are duplicated here, mirroring §1.3 exactly.
+- **`range(last_period, last_period + 255)`** caps catch-up at 255 weeks (~4.9
+  years), the same bound the gauges use.
+
+Then the payout:
+
+```python
+self.period = current_period
+self.emissions += new_emissions
+if new_emissions > 0 and not self.is_killed:
+    Minter(self.minter).mint(self)
+    raw_call(XDAI_BRIDGE, concat(method_id("relayTokens(address,address,uint256)"),
+             convert(self.crv_token, bytes32), convert(self, bytes32),
+             convert(new_emissions, bytes32)))
+```
+
+`emissions` is credited **even when killed** — only the mint-and-bridge is
+skipped (`:138`). Killing therefore permanently forfeits that week's CRV rather
+than deferring it, because the Minter will later net it out against `minted`.
+
+**The five root gauges differ only in the bridge call:**
+
+| Gauge | Bridge target | Mechanism |
+|---|---|---|
+| `RootGaugeXdai` | `XDAI_BRIDGE` const `:46` | `raw_call relayTokens(token, receiver, amount)` `:139-147` |
+| `RootGaugePolygon` | `POLYGON_BRIDGE_MANAGER` `:46`, `POLYGON_BRIDGE_RECEIVER` `:47` | infinite `approve` in `__init__` `:89`, then `raw_call` on the manager `:141` |
+| `RootGaugeHarmony` | `HARMONY_BRIDGE` const `:49` | infinite `approve` in `__init__` `:93`, then `lockToken(crv, amount, self)` `:144` |
+| `RootGaugeAnyswap` | `anyswap_bridge` **storage** `:62`, set in `__init__` `:86` | plain `ERC20.transfer(bridge, amount)` `:147` |
+| `RootGaugeArbitrum` | `GATEWAY_ROUTER` `:46`, `GATEWAY` `:47` | needs ETH for L2 gas; exposes `get_total_bridge_cost()` `:118` and the caller must send that value (`:133`) |
+
+`RootGaugeArbitrum` is the outlier: Arbitrum retryable tickets require prepaid
+L2 gas, so `checkpoint` is `@payable` and the docstring at `:133` instructs
+callers to quote `get_total_bridge_cost()` first.
+
+Common admin surface on all five: `set_killed(_is_killed)` `:172` (admin
+`:178`), `commit_transfer_ownership(addr)` `:184` / `accept_transfer_ownership()`
+`:196` (correct two-step, `:201`), `set_checkpoint_admin(_admin)` `:208`
+(admin `:214`), and the view `future_epoch_time()` `:154`.
+
+`checkpoint_admin` (`:60`) defaults to `ZERO_ADDRESS`, which the guard at `:97`
+treats as "anyone may checkpoint". Setting it restricts checkpointing to one
+address — used with `CheckpointProxy`.
+
+### 10.2 `CheckpointProxy.vy` — 20 lines, one assert
+
+```python
+@external
+def checkpoint(_gauge: address) -> bool:
+    # anyswap bridge cannot handle multiple transfers in one call, so we
+    # block smart contracts that could checkpoint multiple gauges at once
+    assert msg.sender == tx.origin        # :17
+    RootGauge(_gauge).checkpoint()
+    return True
+```
+
+Set as a root gauge's `checkpoint_admin` so that the gauge can only be
+checkpointed through this EOA-gated shim. The comment at `:15-16` gives the
+reason: the Anyswap bridge cannot process two transfers in one transaction, so
+batching checkpoints would silently drop emissions.
+
+### 10.3 The wrappers — making a gauge position transferable
+
+A `LiquidityGauge` balance is a plain storage entry: it cannot be transferred,
+used as collateral, or held by a contract on someone's behalf. The wrappers fix
+that by holding the gauge position themselves and issuing a **real ERC-20**
+against it (`implements: ERC20`).
+
+`LiquidityGaugeWrapper.vy` is the base case. `deposit(_value, addr)` `:177` pulls
+LP tokens, deposits them into the gauge, and mints wrapper tokens 1:1;
+`withdraw(_value)` `:203` reverses it. In between, the wrapper token behaves
+normally: `transfer` `:249`, `transferFrom` `:262`, `approve` `:279`,
+`increaseAllowance` `:299`, `decreaseAllowance` `:317`, `allowance` `:223`.
+
+The CRV accounting is a second integral layered on the gauge's own:
+
+```python
+@internal
+def _checkpoint(addr: address):                       # :105
+    crv_token: address = self.crv_token
+    d_reward: uint256 = ERC20(crv_token).balanceOf(self)
+    Minter(self.minter).mint(self.gauge)
+    d_reward = ERC20(crv_token).balanceOf(self) - d_reward
+
+    total_balance: uint256 = self.totalSupply
+    dI: uint256 = 0
+    if total_balance > 0:
+        dI = 10 ** 18 * d_reward / total_balance
+    I: uint256 = self.crv_integral + dI
+    self.crv_integral = I
+    self.claimable_crv[addr] += self.balanceOf[addr] * (I - self.crv_integral_for[addr]) / 10 ** 18
+    self.crv_integral_for[addr] = I
+```
+
+Balance-diff around the `Minter.mint` call measures what actually arrived, then
+`crv_integral` is CRV-per-wrapper-token scaled by 1e18 and each holder's
+`crv_integral_for` snapshot yields their share. `_transfer` `:234` checkpoints
+**both** sides before moving balances, which is what keeps the integral honest
+across transfers.
+
+**The cost of wrapping is the boost.** The wrapper is a single depositor from
+the gauge's point of view, so `working_balance` is computed against the
+*wrapper's* veCRV — normally zero. Every wrapper holder therefore earns the
+unboosted 0.4× rate, and the 2.5× boost (§4.2) is unavailable. That is the
+trade for transferability.
+
+| Function | Line | Notes |
+|---|---|---|
+| `user_checkpoint(addr)` | `:123` | public checkpoint |
+| `claimable_tokens(addr)` | `:135` | `@nonreentrant`-free view that mutates via `mint` |
+| `claim_tokens(addr = msg.sender)` | `:154` | checkpoints then transfers `claimable_crv` |
+| `set_approve_deposit(addr, can_deposit)` | `:166` | lets a third party deposit on your behalf |
+| `kill_me()` | `:335` | admin |
+| `commit_transfer_ownership` / `apply_transfer_ownership` | `:341` / `:352` | |
+
+**`LiquidityGaugeRewardWrapper.vy`** adds a parallel integral for the Synthetix
+`rewarded_token` (§4.5): `_checkpoint` `:115` claims both CRV and the reward,
+and `claimable_reward(addr)` `:179` mirrors `claimable_tokens`. Otherwise the
+function list is identical, offset by the extra code.
+
+**`LiquidityGaugeWrapperUnit.vy`** is built for the unit.xyz lending vault and
+changes the checkpoint in three ways (`:107-130`):
+
+```python
+if block.timestamp != claim_data % 2**40:
+    last_claimable: uint256 = shift(claim_data, -40)
+    claimable: uint256 = LiquidityGauge(self.gauge).claimable_tokens(self)
+    d_reward: uint256 = claimable - last_claimable
+    ...
+    self.last_claim_data = block.timestamp + shift(claimable, 40)
+
+for addr in _user_addresses:
+    if addr in [ZERO_ADDRESS, UNIT_VAULT]:
+        # do not calculate an integral for the vault to ensure it cannot ever claim
+        continue
+    user_balance: uint256 = self.balanceOf[addr] + self.depositedBalanceOf[addr]
+```
+
+- It reads `claimable_tokens` instead of minting, and packs
+  `(timestamp, claimable)` into one slot as `timestamp + (claimable << 40)`
+  (`:119`) — the same throttling trick as `LiquidityGaugeV3` (§4.7), one SLOAD
+  per block.
+- It checkpoints **two** addresses at once (`address[2]`), because a vault
+  deposit moves tokens between two accounts.
+- `UNIT_VAULT` is explicitly skipped (`:122-123`) so that collateral sitting in
+  the vault still accrues to its **depositor**, tracked via
+  `depositedBalanceOf` (`:127`), not to the vault. That single `continue` is the
+  entire reason this variant exists.
+
+It also declares `decimals()` as a function `:102` rather than a public constant.
+
+---
+
+## 11. The burner family
+
+Thirty contracts, 6,441 lines, all implementing one interface:
+
+```python
+def burn(_coin: address) -> bool: payable
+```
+
+`PoolProxy.burn` (§7.3) looks up `burners[_coin]` and calls it. Each burner
+converts one *kind* of asset one step closer to 3CRV, then forwards to the next
+burner in the chain. The chain terminates at `UnderlyingBurner`, which mints
+3CRV and hands it to `FeeDistributor` (§6.5).
+
+```
+pool admin fees
+      | PoolProxy.withdraw_admin_fees / burn
+      v
+[ specialist burner ]   aToken -> USDC,  cToken -> USDC,  LP -> coins,  synth -> sUSD ...
+      |  receiver
+      v
+UnderlyingBurner   DAI/USDC/USDT -> add_liquidity(3pool) -> 3CRV
+      |  receiver
+      v
+FeeDistributor.burn(3CRV)  ->  veCRV holders claim
+```
+
+### 11.1 The shared skeleton
+
+Every burner has the same six-slot storage and the same admin surface. Using
+`eth/ABurner.vy` as the reference:
+
+| Slot | Line | Meaning |
+|---|---|---|
+| `receiver` | `:17` | next hop in the chain |
+| `recovery` | `:18` | where `recover_balance` sends tokens |
+| `is_killed` | `:19` | circuit breaker |
+| `owner`, `emergency_owner` | `:21-22` | two-tier admin |
+| `future_owner`, `future_emergency_owner` | `:23-24` | two-step handover |
+
+| Function | ABurner line | Caller |
+|---|---|---|
+| `__init__(_receiver, _recovery, _owner, _emergency_owner)` | `:28` | |
+| `burn(_coin) -> bool` | `:47` | anyone (but `PoolProxy` gates on EOA) |
+| `recover_balance(_coin) -> bool` | `:72` | owner **or** emergency owner (`:79`) |
+| `set_recovery(_recovery) -> bool` | `:98` | owner only (`:104`) |
+| `set_killed(_is_killed) -> bool` | — | owner or emergency owner |
+| `commit_transfer_ownership` / `accept_transfer_ownership` | — | owner / future owner |
+| `commit_transfer_emergency_ownership` / `accept_transfer_emergency_ownership` | — | emergency owner / future |
+
+The two-tier admin split is the point: the **emergency owner** can kill and
+recover but cannot change *where* recovery sends funds. Only the full owner can
+call `set_recovery`. So compromising the emergency key lets you freeze the fee
+chain, not steal from it.
+
+**The `burn` preamble is identical everywhere:**
+
+```python
+assert not self.is_killed  # dev: is killed                  # :53
+amount: uint256 = ERC20(_coin).balanceOf(msg.sender)
+if amount != 0:
+    ERC20(_coin).transferFrom(msg.sender, self, amount)      # :58
+# get actual balance in case of transfer fee or pre-existing balance
+amount = ERC20(_coin).balanceOf(self)                        # :61
+```
+
+Pull everything the caller holds, then **re-read own balance**. The comment at
+`:60` gives both reasons: fee-on-transfer tokens deliver less than requested,
+and a previous partial burn may have left a residue. Every subsequent step
+operates on the re-read figure, never the requested one.
+
+`recover_balance` uses the same `raw_call` + conditional-return-check pattern as
+`PoolProxy._set_burner` (`:82-92`), tolerating non-standard ERC-20s.
+
+### 11.2 Complete inventory
+
+| Contract | Ver | Lines | Converts | To |
+|---|---|---|---|---|
+| `eth/ABurner.vy` | 0.2.8 | 173 | Aave aTokens | underlying → `UnderlyingBurner` |
+| `eth/CBurner.vy` | 0.2.8 | 186 | Compound cTokens | underlying → `UnderlyingBurner` |
+| `eth/YBurner.vy` | 0.2.8 | 260 | yEarn yTokens | underlying → `UnderlyingBurner` |
+| `eth/UnderlyingBurner.vy` | 0.2.8 | 294 | DAI/USDC/USDT | **3CRV → FeeDistributor** |
+| `eth/LPBurner.vy` | 0.2.7 | 263 | Curve LP tokens | one coin, configurable |
+| `eth/MetaBurner.vy` | 0.2.7 | 212 | metapool coins | 3CRV directly |
+| `eth/SynthBurner.vy` | 0.2.8 | 294 | Synthetix synths | sUSD via `exchangeWithTracking` |
+| `eth/UniswapBurner.vy` | 0.2.8 | 241 | arbitrary tokens | USDC via Uniswap |
+| `eth/USDNBurner.vy` | 0.2.7 | 224 | USDN | 3CRV (bespoke) |
+| `eth/WrappedBurner.vy` | 0.3.3 | 53 | WETH | native ETH |
+| `eth/wstETHBurner.vy` | 0.3.7 | 60 | wstETH | stETH |
+| `eth/CryptoLPBurner.vy` | 0.3.0 | 224 | CryptoSwap LP | configurable |
+| `eth/CryptoFactoryLPBurner.vy` | 0.3.7 | 385 | factory CryptoSwap LP | configurable |
+| `eth/TricryptoFactoryLPBurner.vy` | 0.3.7 | 308 | tricrypto factory LP | configurable |
+| `eth/SwapStableBurner.vy` | 0.3.7 | 276 | stable pool coins | configurable |
+| `eth/SwapCryptoBurner.vy` | 0.3.7 | 354 | crypto pool coins | configurable |
+| `eth/crvUSDBurner.vy` | 0.3.7 | 341 | anything | crvUSD |
+| `eth/deprecated/BTCBurner.vy` | 0.2.8 | 272 | BTC synths | *deprecated* |
+| `eth/deprecated/ETHBurner.vy` | 0.2.8 | 291 | ETH synths | *deprecated* |
+| `eth/deprecated/EuroBurner.vy` | 0.2.8 | 269 | EUR synths | *deprecated* |
+| `fantom/CBurnerFantom.vy` | 0.3.0 | 166 | cTokens on Fantom | underlying |
+| `fantom/GBurnerFantom.vy` | 0.3.0 | 158 | gTokens (Geist) | underlying |
+| `fantom/BTCBurnerFantom.vy` | 0.3.0 | 173 | BTC assets | — |
+| `fantom/LPBurnerFantom.vy` | 0.3.0 | 182 | LP tokens | configurable |
+| `fantom/TripCryptoBurnerFantom.vy` | 0.3.0 | 125 | tricrypto LP | — |
+| `fantom/UnderlyingBurnerFantom.vy` | 0.3.0 | 147 | stablecoins | LP → bridge |
+| `polygon/ABurnerPolygon.vy` | 0.3.0 | 158 | amTokens (Aave Polygon) | underlying |
+| `polygon/BTCBurnerPolygon.vy` | 0.3.0 | 180 | BTC assets | — |
+| `polygon/TriCryptoBurnerPolygon.vy` | 0.3.0 | 142 | tricrypto LP | — |
+| `optimism/TricrvBurnerOptimism.vy` | 0.3.7 | 139 | stablecoins | 3CRV on Optimism |
+
+Sidechain burners forward to a `PoolProxySidechain` (§7.6), whose `bridge`
+sends the proceeds to Ethereum rather than to a `FeeDistributor`.
+
+### 11.3 The unwrap burners — `ABurner`, `CBurner`, `YBurner`
+
+The simplest shape. `ABurner.burn` `:47` after the shared preamble:
+
+```python
+if amount != 0:
+    underlying: address = aToken(_coin).UNDERLYING_ASSET_ADDRESS()
+    LendingPool(0x7d2768dE32b0b80b7a3454c06BdAc94A69DDc7A9).withdraw(underlying, amount, self.receiver)
+```
+
+One call, straight to `receiver` — the burner never holds the underlying. The
+Aave v2 `LendingPool` address is hardcoded at `:66`. `CBurner` and `YBurner`
+differ only in the unwrap method (`redeem` / `withdraw`) and in that they must
+transfer the proceeds themselves, since those protocols do not take a receiver.
+
+`ABurnerPolygon` is the same contract pointed at Aave's Polygon deployment.
+
+### 11.4 `UnderlyingBurner.vy` — the terminus
+
+The only burner that produces 3CRV. Constants at `:37-51` pin the whole path:
+`TRIPOOL`, `TRIPOOL_LP`, `TRIPOOL_COINS` (DAI/USDC/USDT), `USDC = TRIPOOL_COINS[1]`,
+plus Synthetix's `SNX`, `SUSD`, `SUSD_CURRENCY_KEY` and `TRACKING_CODE` (the
+ASCII string `CURVE`, used to credit Curve in Synthetix's fee rebates).
+
+It has **two** entry points instead of one:
+
+- **`burn(_coin)` `:100`** — accepts a 3pool coin and simply holds it, or
+  routes a non-3pool coin through `exchange_with_best_rate` into USDC.
+- **`execute()` `:169`** — the second half, callable once the balances have
+  accumulated:
+
+```python
+amounts: uint256[3] = [
+    ERC20(TRIPOOL_COINS[0]).balanceOf(self),
+    ERC20(TRIPOOL_COINS[1]).balanceOf(self),
+    ERC20(TRIPOOL_COINS[2]).balanceOf(self),
+]
+if amounts[0] != 0 and amounts[1] != 0 and amounts[2] != 0:
+    StableSwap(TRIPOOL).add_liquidity(amounts, 0)
+amount: uint256 = ERC20(TRIPOOL_LP).balanceOf(self)
+if amount != 0:
+    ERC20(TRIPOOL_LP).transfer(self.receiver, amount)
+```
+
+Two details matter. **`min_mint_amount` is 0** — this deposit accepts unlimited
+slippage, which is why `PoolProxy.burn` insists on an EOA caller: a contract
+could sandwich the 3pool deposit. And **all three balances must be non-zero**
+for the deposit to happen; a single missing coin silently skips it and the funds
+wait for the next call.
+
+`convert_synth(_currency_key, _amount)` `:155` handles Synthetix's deferred
+settlement: synth exchanges have a waiting period, so the burner settles and
+converts in a separate transaction.
+
+### 11.5 The configurable burners
+
+Twelve burners store a per-coin route rather than hardcoding one. `grep -l
+'swap_data'` finds them: `LPBurner`, `CryptoLPBurner`, `CryptoFactoryLPBurner`,
+`crvUSDBurner`, `SwapStableBurner`, `SwapCryptoBurner`, `SynthBurner`,
+`YBurner`, the three deprecated synth burners, and `LPBurnerFantom`.
+
+The pattern is a `swap_data` mapping plus an owner-only `set_swap_data` that
+records, per coin, which pool to trade through and which indices to use. This
+is what lets one deployment serve many coins without a redeploy, and it is why
+these burners are larger.
+
+`crvUSDBurner.vy` (0.3.7, 341 lines) is the most modern. It carries
+`MAX_NUM = 8` (`:36`), `BPS = 10000` (`:37`) and `SLIPPAGE = 2 * 100` (`:38`,
+2 %) — unlike `UnderlyingBurner` it enforces a real slippage bound, computed
+against `price_oracle()` / `get_virtual_price()` (`:17-18`). It adds a
+`set_pools(_pools: DynArray[address, MAX_NUM])` `:186` route registry and a
+third admin role, `manager`, with `commit_new_manager` `:319` /
+`accept_new_manager` `:333`. It also splits burning into `burn(_coin)` `:145`
+and `burn_amount(_coin, _amount_to_burn)` `:165` so a large position can be
+drained in slices.
+
+### 11.6 The two tiny modern burners
+
+`WrappedBurner.vy` (53 lines) is the whole pattern stripped to nothing —
+`immutable` state, no admin, no kill switch:
+
+```python
+@external
+def burn(_coin: address) -> bool:      # :42
+    amount: uint256 = WETH.balanceOf(msg.sender)
+    WETH.transferFrom(msg.sender, self, amount)
+    amount = WETH.balanceOf(self)
+    WETH.withdraw(amount)
+    raw_call(RECEIVER, b"", value=self.balance)
+    return True
+```
+
+`_coin` is ignored — the docstring at `:45` says "Remained for compatability".
+`__default__()` `:31` is payable so the WETH withdrawal can land.
+
+`wstETHBurner.vy` (60 lines) is the same shape for Lido: `WSTETH.unwrap(amount)`
+then `STETH.transfer(RECEIVER, amount)`. Note it re-reads `STETH.balanceOf(self)`
+after unwrapping rather than trusting the return value, because stETH is a
+rebasing token and its transfers are share-based — a 1-wei rounding difference
+is normal and expected.
+
+---
+
+## 12. Bridging
+
+Three small contracts that move sidechain fee proceeds back to Ethereum. They
+are the counterpart to `PoolProxySidechain.bridge` (§7.6), which calls
+`Bridger(bridging_contract).bridge(_coin)`.
+
+| Contract | Ver | Lines | Chain | Mechanism |
+|---|---|---|---|---|
+| `bridging/AnyswapBridger.vy` | 0.3.0 | 86 | any | `Swapout(amount, root_receiver)` |
+| `bridging/PolygonBridger.vy` | 0.3.0 | 73 | Polygon | `withdraw(amount)` on the child token |
+| `bridging/RootForwarder.vy` | 0.3.0 | 77 | Ethereum | receives and forwards to `PoolProxy` |
+
+### 12.1 `AnyswapBridger.vy`
+
+Storage: `admin`/`future_admin` (`:24-25`) and `root_receiver` (`:27`). The
+constructor docstring (`:33-35`) states the admin **should be the
+`PoolProxySidechain`**, which is what makes the `assert` below meaningful.
+
+```python
+@external
+def bridge(_token: address) -> bool:        # :42
+    assert msg.sender == self.admin
+    amount: uint256 = AnyswapToken(_token).balanceOf(self)
+    AnyswapToken(_token).Swapout(amount, self.root_receiver)
+    log AssetBridged(_token, amount)
+    return True
+```
+
+It bridges its **own** balance, which the proxy has just transferred in. The
+`root_receiver` is named explicitly, so no forwarder is needed on the far side.
+`set_root_receiver(_receiver)` `:80` and the standard two-step ownership
+(`commit_transfer_ownership` `:56`, `accept_transfer_ownership` `:68`, gated on
+`future_admin` at `:73`) complete the surface. The docstring at `:58` again says
+"Transfer ownership of GaugeController" — the same copy-paste as §8.4.
+
+### 12.2 `PolygonBridger.vy`
+
+Identical shape minus `root_receiver`, because Polygon's PoS bridge credits the
+**same address** on L1:
+
+```python
+amount: uint256 = BridgeToken(_token).balanceOf(self)
+BridgeToken(_token).withdraw(amount)        # :46
+```
+
+`withdraw` burns the child token and emits the event that the Polygon checkpoint
+mechanism later proves on Ethereum. Because the L1 recipient is fixed to this
+contract's address, `RootForwarder` must be deployed at the same address on
+Ethereum. The docstring at `:41` mistakenly says "via Anyswap".
+
+### 12.3 `RootForwarder.vy`
+
+Deployed on Ethereum at the **same address** as the sidechain bridger — the
+docstring at `:6-8` is explicit that this is required for bridges that cannot
+name a receiver. Storage: `owner`/`future_owner` (`:15-16`) and `pool_proxy`
+(`:18`).
+
+```python
+@external
+def transfer(_token: address) -> bool:      # :28
+    amount: uint256 = ERC20(_token).balanceOf(self)
+    raw_call(_token, _abi_encode(self.pool_proxy, amount,
+             method_id=method_id("transfer(address,uint256)")), max_outsize=32)
+```
+
+`transfer_many(_tokens: address[10])` `:43` is the batched form, breaking at the
+first `ZERO_ADDRESS` (`:46-47`). Both are **permissionless** — there is no
+`assert msg.sender` — which is safe because the destination is the immutable
+`pool_proxy` and the contract holds nothing else. From there the funds re-enter
+the burner chain (§11) as if they had been earned on Ethereum.
+
+---
+
+## 13. `CRVInfo.vy`
+
+A 0.3.7 utility (100 lines) by "fiddy" that estimates CRV circulating supply by
+subtracting known non-circulating balances from `totalSupply`. It is not part of
+the protocol; nothing else in the tree reads it.
+
+Storage: `admin` (`:13`), `contracts: address[100000]` (`:16`), `num_contracts`
+(`:17`). `CRV` is a public constant (`:14`), and `cached_contracts` is a public
+constant array of 18 hardcoded addresses (`:19-38`) with inline comments naming
+each: employees, vesting, community fund, the token minter, founder, investors,
+the CRV token itself, LPs and veCRV.
+
+```python
+@external
+@view
+def circulating_supply() -> uint256:        # :60
+    crv_total_supply: uint256 = ERC20(CRV).totalSupply()
+    not_circulating: uint256 = self._get_crv_balances_of_cached_contracts()
+    return crv_total_supply - not_circulating
+```
+
+| Function | Line | Caller |
+|---|---|---|
+| `__init__()` | `:42` | sets `admin = msg.sender`, `num_contracts = 18` |
+| `add_contract(_contract)` | `:48` | admin (`:54`) |
+| `circulating_supply() -> uint256` | `:60` | view |
+| `set_admin(_new_admin)` | `:70` | admin (`:76`); the docstring at `:73` calls it "lazy admin transfer" — deliberately one-step |
+| `_add_contract(_contract)` `@internal` | `:81` | `assert _contract not in self.contracts` |
+| `_get_crv_balances_of_cached_contracts()` `@internal @view` | `:88` | |
+
+> **`add_contract` has no effect on the result.** `__init__` sets
+> `num_contracts = 18` (`:44`) but never writes to `self.contracts`, so indices
+> 0–17 of that array stay empty. `_add_contract` (`:81-84`) writes to
+> `self.contracts[self.num_contracts]`, i.e. index **18** for the first
+> addition. But the summation loop is
+> ```python
+> for i in range(10000):
+>     if self.contracts[i] == empty(address):
+>         break
+>     balances += ERC20(CRV).balanceOf(self.contracts[i])
+> ```
+> (`:95-98`), which reads from index 0, finds `empty(address)`, and breaks
+> immediately. Every address added after deployment is silently ignored; only
+> the 18 compile-time `cached_contracts` (`:92-93`) are ever counted. The
+> contract's own docstring already calls the figure "an estimate" (`:5-7`), and
+> nothing depends on it, so the effect is cosmetic — but do not use this as a
+> data source.
+
+---
+
+## 14. Testing helpers
+
+Three contracts under `contracts/testing/`, compiled only for the test suite.
+They are not deployed and nothing in the protocol imports them.
+
+| Contract | Ver | Lines | Purpose |
+|---|---|---|---|
+| `testing/CurvePool.vy` | 0.2.4 | 773 | a full two-coin StableSwap pool, used to give gauges a real LP token to stake |
+| `testing/ERC20LP.vy` | 0.2.4 | 176 | a minimal `implements: ERC20` LP token for that pool |
+| `testing/UnitVault.vy` | 0.2.11 | 32 | a stub of the unit.xyz vault |
+
+`CurvePool.vy` is a trimmed copy of the mainline StableSwap implementation
+("Pool for two plain coins", `:2`) — `get_D`, `get_y`, `exchange`,
+`add_liquidity`, the three `remove_liquidity*` variants and the `A`-ramp
+machinery. It is documented in full in
+[`CLASSIC-POOLS-COMPLETE-REFERENCE.md`](CLASSIC-POOLS-COMPLETE-REFERENCE.md);
+the invariant math is derived in
+[`CURVE-DEEP-DIVE.md`](CURVE-DEEP-DIVE.md) §1.
+
+`ERC20LP.vy` is a stock ERC-20 with `mint`/`burnFrom` restricted to the pool.
+
+`UnitVault.vy` is 32 lines and exists only so `LiquidityGaugeWrapperUnit` (§10.3)
+has something to call:
+
+```python
+collaterals: public(HashMap[address, HashMap[address, uint256]])   # :6
+```
+
+It records `asset -> owner -> amount` so the wrapper's `depositedBalanceOf`
+logic can be exercised.
+
+---

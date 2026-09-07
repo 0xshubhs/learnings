@@ -1490,3 +1490,1305 @@ All 8 `updateStateOn*` mutators and `setUserUseReserveAsCollateral` are
 | Freeze a reserve | `LendingPoolConfigurator.freezeReserve(asset)` | deposits and new borrows blocked; repay and redeem still work |
 
 ---
+
+# Part 2 — Aave v2
+
+Aave v2 shipped in December 2020. It keeps v1's economics almost intact — the
+same kinked rate curve, the same stable/variable duality, the same liquidation
+bonus — and rewrites the plumbing underneath. Three structural changes account
+for nearly every difference in this Part:
+
+1. **Funds moved out of a monolith and into the aTokens.** v1's
+   `LendingPoolCore` held every reserve's balance. In v2 each aToken holds its
+   own underlying, and there is no core contract at all.
+2. **Debt became a token.** v1 stored `principalBorrowBalance` in a struct. v2
+   mints `StableDebtToken` or `VariableDebtToken` to the borrower, which makes
+   debt readable by any ERC20-aware tool and makes credit delegation possible.
+3. **Logic moved into linked libraries.** `LendingPool` is a thin dispatcher
+   over `ReserveLogic`, `ValidationLogic` and `GenericLogic`, which keeps the
+   deployed bytecode under the 24 KB limit that v1's 1,775-line core was
+   straining against.
+
+## 2.1 Architecture
+
+```
+                        LendingPoolAddressesProvider
+                     (per-market registry, owns every proxy)
+                                    |
+        +---------------------------+---------------------------+
+        |                           |                           |
+   LendingPool               LendingPoolConfigurator      AaveOracle
+   (proxied, entry point)    (proxied, admin surface)     LendingRateOracle
+        |
+        |  linked libraries (delegatecall at the EVM level, but
+        |  `internal` at the language level — no storage of their own)
+        +-- ReserveLogic       index accrual, rate refresh, treasury mint
+        +-- ValidationLogic    every precondition
+        +-- GenericLogic       health factor, account aggregation
+        +-- Helpers            debt lookups
+        |
+        |  delegatecall (shares LendingPoolStorage layout)
+        +-- LendingPoolCollateralManager    liquidationCall
+        |
+        |  external calls, one set per reserve
+        +-- AToken              holds the underlying, mints/burns scaled balances
+        +-- StableDebtToken     non-transferable, weighted-average rate
+        +-- VariableDebtToken   non-transferable, scaled by borrow index
+        +-- DefaultReserveInterestRateStrategy   pure rate math
+```
+
+Compare with v1's diagram in [1.1](#11-architecture-and-the-delegatecall-storage-contract).
+The `delegatecall` trick survives in exactly one place — the collateral manager —
+and for the same reason: `liquidationCall` is too big to inline into
+`LendingPool` without breaching the contract size limit. `LendingPoolStorage`
+exists solely so that the two contracts agree on the layout, exactly as
+`LendingPoolLiquidationManager` had to mirror `LendingPool`'s first seven slots
+in v1.
+
+- **What v1's `LendingPoolCore` became.** Its state split into
+  `LendingPoolStorage._reserves` (reserve data) and the two debt tokens (user
+  debt). Its funds moved into the aTokens. Its ~35 getters became
+  `AaveProtocolDataProvider`. Its `updateStateOn*` mutators became
+  `ReserveLogic.updateState` plus token mints and burns.
+
+## 2.2 `DataTypes` and `LendingPoolStorage`
+
+### `DataTypes.ReserveData` (`aave/v2-protocol/contracts/protocol/libraries/types/DataTypes.sol:6-28`)
+
+| Field | Type | Unit | Meaning |
+|---|---|---|---|
+| `configuration` | `ReserveConfigurationMap` | packed | The 256-bit risk bitmap, [2.4](#24-reserveconfiguration--the-bitmap) |
+| `liquidityIndex` | `uint128` | ray | Cumulative supply interest. Starts at `1e27`, only grows |
+| `variableBorrowIndex` | `uint128` | ray | Cumulative variable-borrow interest, same scale |
+| `currentLiquidityRate` | `uint128` | ray/yr | Supply APR at the last update |
+| `currentVariableBorrowRate` | `uint128` | ray/yr | Variable borrow APR at the last update |
+| `currentStableBorrowRate` | `uint128` | ray/yr | The rate a **new** stable borrow would receive |
+| `lastUpdateTimestamp` | `uint40` | seconds | When the indexes were last accrued |
+| `aTokenAddress` | `address` | — | Holds the underlying |
+| `stableDebtTokenAddress` | `address` | — | |
+| `variableDebtTokenAddress` | `address` | — | |
+| `interestRateStrategyAddress` | `address` | — | Pure math, swappable by the configurator |
+| `id` | `uint8` | — | Index into `_reservesList`; the bit position in every user's config map |
+
+- **Packing.** `configuration` takes slot 0. The five `uint128` rates and
+  indexes plus `uint40 lastUpdateTimestamp` pack into slots 1–3. The four
+  addresses take slots 4–7, with `id` sharing slot 7. Eight slots per reserve
+  against roughly twenty in v1.
+- **Gotcha.** `id` is `uint8`, and `_maxNumberOfReserves` defaults to 128,
+  because each reserve consumes **two** bits of a user's 256-bit configuration
+  word. 128 reserves is the hard ceiling of the design, not a policy choice.
+- **No stable-rate aggregate here.** v1 kept `currentStableBorrowRate` *and* the
+  weighted average on the reserve. v2 delegates the average to
+  `StableDebtToken.getAverageStableRate()`, so the reserve struct only carries
+  the offer rate for new borrows.
+
+### `DataTypes.ReserveConfigurationMap` / `UserConfigurationMap` (`:30-45`)
+
+Both are a lone `uint256 data`. Wrapping them in structs lets Solidity attach
+the `using ... for` libraries and prevents accidentally passing one where the
+other is expected.
+
+### `DataTypes.InterestRateMode` (`:47`)
+
+`NONE = 0`, `STABLE = 1`, `VARIABLE = 2`. The numeric values are part of the
+public ABI: `borrow(asset, amount, 2, ...)` means variable, and the same
+convention carried into v3.
+
+### `LendingPoolStorage` (`aave/v2-protocol/contracts/protocol/lendingpool/LendingPoolStorage.sol:10-32`)
+
+| Slot | Type | Name | Purpose |
+|---:|---|---|---|
+| 0 | `ILendingPoolAddressesProvider` | `_addressesProvider` | The market registry |
+| 1 | `mapping(address => ReserveData)` | `_reserves` | Per-asset reserve state |
+| 2 | `mapping(address => UserConfigurationMap)` | `_usersConfig` | Per-user 256-bit flags |
+| 3 | `mapping(uint256 => address)` | `_reservesList` | `id` → asset, a mapping not an array |
+| 4 | `uint256` | `_reservesCount` | Length of the list |
+| 5 | `bool` | `_paused` | Global emergency stop |
+| 6 | `uint256` | `_maxStableRateBorrowSizePercent` | Cap on a single stable borrow |
+| 7 | `uint256` | `_flashLoanPremiumTotal` | Flash loan fee in bps |
+| 8 | `uint256` | `_maxNumberOfReserves` | Listing ceiling |
+
+- **Why `_reservesList` is a mapping.** The comment at `:21` says "structured as
+  a mapping for gas savings reasons". An `address[]` would pay for a length
+  SLOAD on every access and for bounds checks; the mapping plus a separate
+  `_reservesCount` is cheaper because the count is read once per loop.
+- **The delegatecall contract.** `LendingPool` and
+  `LendingPoolCollateralManager` both inherit this contract in the same
+  position, so slots 0–8 line up. Any reordering here silently corrupts
+  liquidations — the same class of hazard as v1's slot mirroring, but at least
+  now expressed as shared inheritance rather than duplicated declarations.
+
+## 2.3 Math libraries
+
+### `WadRayMath` (`aave/v2-protocol/contracts/protocol/libraries/math/WadRayMath.sol`)
+
+Identical in spirit to v1's, with overflow guards moved into `require`s.
+
+| Constant | Line | Value |
+|---|---:|---|
+| `WAD` | `:13` | `1e18` |
+| `halfWAD` | `:14` | `0.5e18` |
+| `RAY` | `:16` | `1e27` |
+| `halfRAY` | `:17` | `0.5e27` |
+| `WAD_RAY_RATIO` | `:19` | `1e9` |
+
+`rayMul(a,b)` (`:87`) computes `(a*b + halfRAY) / RAY`; `rayDiv(a,b)` (`:103`)
+computes `(a*RAY + b/2) / b`. Both **round half up**, which is the single most
+consequential rounding decision in the protocol: it means a scaled balance can
+round in the user's favour by one wei, and v3 spent several releases (the
+`TokenMath` library) undoing exactly this.
+
+`rayToWad` (`:117`) and `wadToRay` (`:130`) convert with the same half-rounding.
+
+### `PercentageMath` (`aave/v2-protocol/contracts/protocol/libraries/math/PercentageMath.sol`)
+
+`PERCENTAGE_FACTOR = 1e4` (`:15`), so "100.00%" is `10000` and one basis point
+is `1`. `percentMul` (`:24`) is `(value * pct + HALF_PERCENT) / 1e4` and
+`percentDiv` (`:43`) is `(value * 1e4 + pct/2) / pct`. Both revert with
+`Errors.MATH_MULTIPLICATION_OVERFLOW` / `MATH_DIVISION_BY_ZERO` on the guards at
+`:30` and `:48`.
+
+Every risk parameter — LTV, liquidation threshold, liquidation bonus, reserve
+factor, flash loan premium — is a bps number consumed through these two.
+
+### `MathUtils` (`aave/v2-protocol/contracts/protocol/libraries/math/MathUtils.sol`)
+
+`SECONDS_PER_YEAR = 365 days`, i.e. exactly `31_536_000`. Leap seconds and leap
+days are ignored, so a "year" of interest is a fixed number of seconds.
+
+**`calculateLinearInterest(rate, lastUpdateTimestamp)` (`:21-30`)**
+
+```solidity
+uint256 timeDifference = block.timestamp.sub(uint256(lastUpdateTimestamp));
+return (rate.mul(timeDifference) / SECONDS_PER_YEAR).add(WadRayMath.ray());
+```
+
+Returns `1 + r·Δt/T` in ray. Used for the **supply** side only.
+
+- **Why suppliers get simple interest.** Their principal is not itself lent out
+  and re-lent; the compounding a supplier experiences comes from borrowers'
+  compounded debt flowing into the reserve, which raises `liquidityRate` at the
+  next update. Applying compounding here as well would double-count.
+
+**`calculateCompoundedInterest(rate, lastUpdateTimestamp, currentTimestamp)` (`:45-70`)**
+
+The exact figure is `(1 + r/T)^Δt`. Computing that on-chain needs a loop or a
+fixed-point `exp`; v2 instead truncates the binomial series after three terms.
+With `x = r/T` (the per-second rate) and `n = Δt`:
+
+```
+(1+x)^n  =  1 + n·x + [n(n-1)/2]·x² + [n(n-1)(n-2)/6]·x³ + …
+```
+
+and the code computes exactly the first four terms:
+
+| Code | Line | Series term |
+|---|---:|---|
+| `ratePerSecond = rate / SECONDS_PER_YEAR` | `:61` | `x` |
+| `basePowerTwo = ratePerSecond.rayMul(ratePerSecond)` | `:63` | `x²` |
+| `basePowerThree = basePowerTwo.rayMul(ratePerSecond)` | `:64` | `x³` |
+| `secondTerm = exp·expMinusOne·basePowerTwo / 2` | `:66` | `[n(n-1)/2]·x²` |
+| `thirdTerm = exp·expMinusOne·expMinusTwo·basePowerThree / 6` | `:67` | `[n(n-1)(n-2)/6]·x³` |
+| `ray() + ratePerSecond·exp + secondTerm + thirdTerm` | `:69` | the sum |
+
+Two guards matter. `exp == 0` returns `ray()` immediately (`:53-55`), so a
+same-block second call is a no-op. `expMinusTwo` is clamped to `0` when
+`exp <= 2` (`:59`), because `exp - 2` would underflow on `uint256` for `exp` of
+0, 1 or 2 — and at those values the third term is genuinely zero anyway.
+
+**Bounding the error.** The truncation drops the fourth term onward, which is
+positive, so the approximation always **under**-estimates. The dominant omitted
+term is `[n(n-1)(n-2)(n-3)/24]·x⁴ ≈ (n·x)⁴/24` for large `n`. Writing
+`y = n·x` for the nominal simple interest over the period:
+
+| Period without an update | `y` at 5% APR | Relative shortfall ≈ `y⁴/24` |
+|---|---|---|
+| 1 day | `1.37e-4` | `1.5e-17` |
+| 30 days | `4.1e-3` | `1.2e-11` |
+| 1 year | `0.05` | `2.6e-7` |
+| 5 years | `0.25` | `1.6e-4` |
+
+At any realistic update cadence the error is far below one ray. Even a reserve
+untouched for a year is off by roughly 0.26 parts per million, and the sign is
+always in the protocol's favour, which is why the doc comment at `:38` says it
+"slightly underpays liquidity providers and undercharges borrowers". That
+asymmetry is safe: the protocol never over-credits.
+
+- **Gotcha.** The error compounds with *neglect*, not with usage. A busy reserve
+  updates every block and the approximation is exact to the wei. A dormant
+  reserve is where the drift lives.
+
+The two-argument overload at `:77-83` just passes `block.timestamp`.
+
+## 2.4 `ReserveConfiguration` — the bitmap
+
+`aave/v2-protocol/contracts/protocol/libraries/configuration/ReserveConfiguration.sol`.
+One `uint256` holds every risk parameter for a reserve.
+
+```
+ bit  255                                    80 79      64 63  60 59 58 57 56 55    48 47      32 31      16 15       0
+     +----------------------------------------+----------+------+--+--+--+--+--------+----------+----------+----------+
+     |                unused                  | reserve  |unused|S |B |F |A |decimals| liq.     | liq.     |   LTV    |
+     |                                        | factor   |      |t |o |r |c |        | bonus    | threshold|          |
+     +----------------------------------------+----------+------+--+--+--+--+--------+----------+----------+----------+
+                                                 16 bits    4     1  1  1  1   8 bits   16 bits    16 bits    16 bits
+```
+
+| Field | Bits | Mask constant | Start-bit constant | Getter | Setter | Max |
+|---|---|---|---|---|---|---|
+| LTV | 0–15 | `LTV_MASK` `:13` | — (0) | `getLtv` `:55` | `setLtv` `:44` | 65535 |
+| Liquidation threshold | 16–31 | `LIQUIDATION_THRESHOLD_MASK` `:14` | `:24` = 16 | `:80` | `:64` | 65535 |
+| Liquidation bonus | 32–47 | `LIQUIDATION_BONUS_MASK` `:15` | `:25` = 32 | `:109` | `:93` | 65535 |
+| Decimals | 48–55 | `DECIMALS_MASK` `:16` | `:26` = 48 | `:136` | `:122` | 255 |
+| Active | 56 | `ACTIVE_MASK` `:17` | `:27` = 56 | `:160` | `:149` | flag |
+| Frozen | 57 | `FROZEN_MASK` `:18` | `:28` = 57 | `:180` | `:169` | flag |
+| Borrowing enabled | 58 | `BORROWING_MASK` `:19` | `:29` = 58 | `:203` | `:189` | flag |
+| Stable borrowing enabled | 59 | `STABLE_BORROWING_MASK` `:20` | `:30` = 59 | `:230` | `:216` | flag |
+| *(reserved)* | 60–63 | — | — | — | — | — |
+| Reserve factor | 64–79 | `RESERVE_FACTOR_MASK` `:21` | `:31` = 64 | `:259` | `:243` | 65535 |
+| *(unused)* | 80–255 | — | — | — | — | — |
+
+Every mask is the **complement** of its field: `LTV_MASK` is all-ones except the
+low 16 bits. So a setter is `(data & MASK) | (value << START)` — clear then
+write — and a getter is `(data & ~MASK) >> START`. The flag getters skip the
+shift entirely and just test `!= 0` (`:161`, `:181`, `:208`, `:235`), which is
+one opcode cheaper than shifting down to a boolean.
+
+Each setter `require`s its bound with a specific error: `RC_INVALID_LTV` (`:45`),
+`RC_INVALID_LIQ_THRESHOLD` (`:68`), `RC_INVALID_LIQ_BONUS` (`:97`),
+`RC_INVALID_DECIMALS` (`:126`), `RC_INVALID_RESERVE_FACTOR` (`:247`).
+
+**Batch readers.** Four functions exist so callers pay one SLOAD instead of five:
+
+| Function | Line | Returns |
+|---|---:|---|
+| `getFlags(storage)` | `:272` | `(active, frozen, borrowingEnabled, stableBorrowingEnabled)` |
+| `getParams(storage)` | `:297` | `(ltv, liqThreshold, liqBonus, decimals, reserveFactor)` |
+| `getParamsMemory(memory)` | `:324` | same, for a struct already in memory |
+| `getFlagsMemory(memory)` | `:349` | same as `getFlags`, memory flavour |
+
+`getParams` caches `self.data` into `dataLocal` at `:305` before the five
+extractions — the whole point of the batch form.
+
+- **Gotcha.** Setters take `memory`, getters take `storage`. The configurator
+  therefore reads the map into memory, mutates, and writes the whole word back
+  (see [2.14](#214-lendingpoolconfigurator-v2)). Calling a setter on a storage
+  copy would compile but silently discard the write.
+- **The four reserved bits (60–63)** are what v3 later spent on `borrowCap`
+  boundaries and the eMode category, which is why v3's map looks like a
+  continuation rather than a redesign.
+
+## 2.5 `UserConfiguration` — 2 bits per reserve
+
+`aave/v2-protocol/contracts/protocol/libraries/configuration/UserConfiguration.sol`.
+One `uint256` per user describes their relationship to all 128 possible
+reserves:
+
+```
+   reserve id:      2         1         0
+                 +----+----+ +----+----+ +----+----+
+                 | C  | B  | | C  | B  | | C  | B  |     C = using as collateral
+                 +----+----+ +----+----+ +----+----+     B = borrowing
+   bit index:      5    4      3    2      1    0
+```
+
+Reserve `i` owns bits `2i` (borrowing) and `2i+1` (collateral).
+
+| Function | Line | Expression | Note |
+|---|---:|---|---|
+| `setBorrowing(self, i, bool)` | `:22` | `(data & ~(1 << 2i)) \| (b << 2i)` | Clear then set |
+| `setUsingAsCollateral(self, i, bool)` | `:39` | `(data & ~(1 << (2i+1))) \| (b << (2i+1))` | |
+| `isUsingAsCollateralOrBorrowing(self, i)` | `:56` | `(data >> 2i) & 3 != 0` | Both bits at once |
+| `isBorrowing(self, i)` | `:70` | `(data >> 2i) & 1 != 0` | |
+| `isUsingAsCollateral(self, i)` | `:85` | `(data >> (2i+1)) & 1 != 0` | |
+| `isBorrowingAny(self)` | `:99` | `data & BORROWING_MASK != 0` | |
+| `isEmpty(self)` | `:108` | `data == 0` | |
+
+`BORROWING_MASK` (`:13`) is `0x5555…5555` — every even bit set — so
+`isBorrowingAny` answers "does this user have *any* debt?" in one AND. `isEmpty`
+answers "can I skip this user's whole loop?" in one comparison.
+
+- **Why this matters for gas.** `GenericLogic.calculateUserAccountData` loops
+  over every listed reserve, and the health-factor check runs on nearly every
+  action. These two constant-time early exits are what keep an unused reserve
+  from costing an SLOAD per user per action.
+- **Gotcha.** The bit position is `reserve.id`, assigned at listing time from
+  `_reservesCount` and **never reused**. `LendingPoolConfigurator` has no
+  `dropReserve`, so a delisted reserve permanently burns its two bits. v3 added
+  `dropReserve` and with it the requirement that the reserve be completely
+  empty first.
+
+## 2.6 `ReserveLogic`
+
+`aave/v2-protocol/contracts/protocol/libraries/logic/ReserveLogic.sol`. The
+interest engine. Everything that changes a reserve's balance calls
+`updateState()` first and `updateInterestRates()` last; this library is what
+sits between those two bookends.
+
+### `event ReserveDataUpdated(...)` (`:38-45`)
+
+`(address indexed asset, uint256 liquidityRate, uint256 stableBorrowRate,
+uint256 variableBorrowRate, uint256 liquidityIndex, uint256
+variableBorrowIndex)`. Emitted by `updateInterestRates` only — the single event
+an indexer needs to reconstruct a reserve's rate history. Note it is emitted
+*after* the indexes were written by `updateState`, so the indexes in the event
+are always the fresh ones.
+
+### `getNormalizedIncome(reserve) internal view returns (uint256)` (`:57-77`)
+
+- **Purpose.** The liquidity index *as of now*, without writing storage. This is
+  the multiplier `AToken.balanceOf` uses.
+- **Checks.** None.
+- **State writes.** None (`view`).
+- **Body.** If `reserve.lastUpdateTimestamp == block.timestamp` it returns the
+  stored index unchanged (`:65-68`) — the index was already accrued this block.
+  Otherwise it returns
+  `calculateLinearInterest(currentLiquidityRate, timestamp).rayMul(liquidityIndex)`.
+- **Returns.** Ray. `1e27` means no income has ever accrued.
+- **Called by.** `LendingPool.getReserveNormalizedIncome`, `AToken.balanceOf`,
+  `AToken.totalSupply`, `AToken.transfer`, `GenericLogic`, the data providers.
+- **Gotcha.** This is a *projection* using the rate captured at the last update.
+  If utilization changed since, the projection is still based on the stale rate
+  — which is correct, because the rate genuinely was that value for the whole
+  elapsed interval. No action can change a rate without first calling
+  `updateState`.
+
+### `getNormalizedDebt(reserve) internal view returns (uint256)` (`:85-105`)
+
+Identical in shape, but uses `calculateCompoundedInterest` against
+`currentVariableBorrowRate` and `variableBorrowIndex`. Same same-block short
+circuit at `:93-96`.
+
+### `updateState(reserve) internal` (`:110-141`)
+
+- **Purpose.** Accrue both indexes to now, then hand the reserve factor's share
+  of the newly accrued debt to the treasury. **This is the first line of every
+  state-changing pool action.**
+- **Parameters.** The reserve storage pointer only.
+- **Checks.** None directly; the overflow `require`s live in the two callees.
+- **Body, in order:**
+  1. Read `scaledVariableDebt = IVariableDebtToken.scaledTotalSupply()` (`:111`).
+  2. Cache `previousVariableBorrowIndex`, `previousLiquidityIndex`,
+     `lastUpdatedTimestamp` (`:113-115`).
+  3. `_updateIndexes(...)` → new indexes, and `lastUpdateTimestamp = now`.
+  4. `_mintToTreasury(...)` using **both** the previous and new indexes.
+- **External calls.** One `staticcall` to the variable debt token, plus whatever
+  the two internal helpers make.
+- **Returns / events.** Nothing. `ReserveDataUpdated` comes later, from
+  `updateInterestRates`.
+- **Gotcha — ordering is load-bearing.** The previous indexes must be captured
+  *before* `_updateIndexes` overwrites them, because `_mintToTreasury` computes
+  accrued debt as the difference between debt-at-new-index and
+  debt-at-old-index. Reordering these two calls silently mints zero to the
+  treasury forever.
+
+### `cumulateToLiquidityIndex(reserve, totalLiquidity, amount) internal` (`:143-158`)
+
+- **Purpose.** Distribute a lump sum to *all current suppliers at once* by
+  ratcheting the liquidity index, rather than minting aTokens to anyone.
+- **Parameters.** `totalLiquidity` is the aToken total supply before the
+  distribution; `amount` is the windfall.
+- **Body.**
+  ```solidity
+  uint256 amountToLiquidityRatio = amount.wadToRay().rayDiv(totalLiquidity.wadToRay());
+  uint256 result = amountToLiquidityRatio.add(WadRayMath.ray());
+  result = result.rayMul(reserve.liquidityIndex);
+  require(result <= type(uint128).max, Errors.RL_LIQUIDITY_INDEX_OVERFLOW);
+  reserve.liquidityIndex = uint128(result);
+  ```
+  i.e. `index *= (1 + amount/totalLiquidity)`.
+- **State writes.** `reserve.liquidityIndex`.
+- **Called by.** `LendingPool.flashLoan` (`:512`) to spread the flash-loan
+  premium, and nothing else.
+- **Gotcha.** Every existing holder is diluted *upward* proportionally. Someone
+  who deposits one block later gets none of it. This is also the only place in
+  v2 where the liquidity index moves for a reason other than elapsed time.
+- **Gotcha.** `totalLiquidity` of zero would divide by zero; the flash loan path
+  cannot reach it because a flash loan requires liquidity to exist.
+
+### `init(reserve, aToken, stableDebt, variableDebt, strategy) external` (`:164-179`)
+
+- **Purpose.** First-time setup of a reserve.
+- **Checks.** `require(reserve.aTokenAddress == address(0),
+  Errors.RL_RESERVE_ALREADY_INITIALIZED)` (`:171`) — listing is one-shot.
+- **State writes.** Both indexes set to `1e27` (`:173-174`), the four addresses
+  stored (`:175-178`).
+- **Access.** Reachable only through `LendingPool.initReserve`, which is
+  `onlyLendingPoolConfigurator`.
+- **Gotcha.** Declared `external`, not `internal`, so it is a genuine
+  `delegatecall` into the linked library rather than inlined code. That is
+  deliberate: it runs once per reserve and keeping it out of `LendingPool`'s
+  bytecode saves deployed size on the hot path.
+
+### `updateInterestRates(reserve, reserveAddress, aTokenAddress, liquidityAdded, liquidityTaken) internal` (`:198-249`)
+
+- **Purpose.** Recompute all three rates after a balance change. **The last line
+  of every state-changing action.**
+- **Parameters.** `liquidityAdded` / `liquidityTaken` describe the change that
+  is *about to* or *has just* happened, so the strategy prices the post-action
+  utilization. Exactly one is non-zero in practice.
+- **Body, in order:**
+  1. `(totalStableDebt, avgStableRate) = IStableDebtToken.getTotalSupplyAndAvgRate()` (`:210`).
+  2. `totalVariableDebt = IVariableDebtToken.scaledTotalSupply().rayMul(reserve.variableBorrowIndex)` (`:216`).
+     The comment at `:213-215` explains why: `scaledTotalSupply` is one SLOAD
+     versus `totalSupply()`'s recomputation, and the index is already fresh
+     because `updateState` ran first.
+  3. `IReserveInterestRateStrategy.calculateInterestRates(...)` with eight
+     arguments including `reserve.configuration.getReserveFactor()` (`:222-232`).
+  4. Three `require`s that each rate fits `uint128`:
+     `RL_LIQUIDITY_RATE_OVERFLOW`, `RL_STABLE_BORROW_RATE_OVERFLOW`,
+     `RL_VARIABLE_BORROW_RATE_OVERFLOW` (`:233-235`).
+  5. Write all three rates (`:237-239`), emit `ReserveDataUpdated` (`:241-248`).
+- **External calls.** Stable debt token, variable debt token, rate strategy.
+- **Gotcha.** `UpdateInterestRatesLocalVars` (`:181-190`) exists purely to dodge
+  "stack too deep". The same pattern recurs in `_mintToTreasury`,
+  `GenericLogic`, `LendingPool` and the collateral manager — a v2 house style.
+- **Gotcha.** The strategy is called with the aToken address so it can read
+  `availableLiquidity` as the aToken's own underlying balance. That is why
+  donating tokens directly to an aToken lowers the utilization ratio and hence
+  everyone's borrow rate. v3 replaced this with an explicit
+  `virtualUnderlyingBalance` for exactly this reason.
+
+### `_mintToTreasury(reserve, scaledVariableDebt, previousVariableBorrowIndex, newLiquidityIndex, newVariableBorrowIndex, timestamp) internal` (`:274-324`)
+
+- **Purpose.** Mint the reserve factor's cut of newly accrued interest to the
+  treasury, as aTokens.
+- **Early exit.** `if (reserveFactor == 0) return;` (`:285-287`) — most reserves
+  in the original deployment had a zero factor, so this saves the whole path.
+- **Body.**
+  1. `getSupplyData()` returns `(principalStableDebt, currentStableDebt,
+     avgStableRate, stableSupplyUpdatedTimestamp)` (`:290-296`).
+  2. `previousVariableDebt = scaledVariableDebt.rayMul(previousVariableBorrowIndex)` (`:299`).
+  3. `currentVariableDebt = scaledVariableDebt.rayMul(newVariableBorrowIndex)` (`:302`).
+  4. `cumulatedStableInterest = calculateCompoundedInterest(avgStableRate,
+     stableSupplyUpdatedTimestamp, timestamp)` (`:305-309`), then
+     `previousStableDebt = principalStableDebt.rayMul(cumulatedStableInterest)` (`:311`).
+  5. ```
+     totalDebtAccrued = currentVariableDebt + currentStableDebt
+                      - previousVariableDebt - previousStableDebt
+     ```
+     (`:314-318`).
+  6. `amountToMint = totalDebtAccrued.percentMul(reserveFactor)` (`:320`); if
+     non-zero, `IAToken.mintToTreasury(amountToMint, newLiquidityIndex)` (`:323`).
+- **External calls.** Stable debt token (`getSupplyData`), aToken
+  (`mintToTreasury`).
+- **Gotcha — the stable side is reconstructed, not read.** `currentStableDebt`
+  comes straight from the token, but `previousStableDebt` must be *recomputed*
+  by compounding the principal forward to `timestamp`, because the stable token
+  keeps only a principal and its own timestamp. This is why
+  `stableSupplyUpdatedTimestamp` is returned at all.
+- **Gotcha.** The treasury receives *aTokens*, not underlying, minted against
+  `newLiquidityIndex`. The protocol's fee therefore earns supply interest from
+  the moment it is taken.
+
+### `_updateIndexes(reserve, scaledVariableDebt, liquidityIndex, variableBorrowIndex, timestamp) internal returns (uint256, uint256)` (`:334-370`)
+
+- **Purpose.** Advance both indexes to `block.timestamp`.
+- **Body.**
+  - Guard `if (currentLiquidityRate > 0)` (`:346`). With no supply rate there is
+    no income to accrue and both indexes stay put.
+  - Liquidity: `newLiquidityIndex = calculateLinearInterest(rate,
+    timestamp).rayMul(liquidityIndex)`, `require(<= type(uint128).max,
+    RL_LIQUIDITY_INDEX_OVERFLOW)`, store (`:347-352`).
+  - Variable: nested guard `if (scaledVariableDebt != 0)` (`:356`), then
+    `calculateCompoundedInterest(currentVariableBorrowRate, timestamp)`,
+    `require(<= type(uint128).max, RL_VARIABLE_BORROW_INDEX_OVERFLOW)`, store
+    (`:357-364`).
+  - Unconditionally `reserve.lastUpdateTimestamp = uint40(block.timestamp)` (`:368`).
+- **Returns.** `(newLiquidityIndex, newVariableBorrowIndex)` for
+  `_mintToTreasury` to use without re-reading storage.
+- **Gotcha — the nested guard.** The comment at `:354-355` explains it: the
+  liquidity rate can be entirely produced by *stable* borrowers, in which case
+  there is income to distribute but no variable debt to index. Advancing
+  `variableBorrowIndex` then would charge interest to variable borrowers who do
+  not exist yet, and the first one to appear would inherit it.
+- **Gotcha.** The timestamp is written even when both indexes are frozen, which
+  is what makes the `> 0` guard safe: the skipped interval can never be
+  re-accrued later.
+
+## 2.7 `GenericLogic`
+
+`aave/v2-protocol/contracts/protocol/libraries/logic/GenericLogic.sol`. Answers
+one question — "is this user solvent?" — and two derived ones.
+
+`HEALTH_FACTOR_LIQUIDATION_THRESHOLD = 1 ether` (`:28`), i.e. `1e18`. Health
+factor is a **wad**, so `1e18` means exactly 1.0.
+
+### `balanceDecreaseAllowed(asset, user, amount, reservesData, userConfig, reserves, reservesCount, oracle) internal view returns (bool)` (`:55-116`)
+
+- **Purpose.** May this user lose `amount` of `asset` collateral and still be
+  solvent? Used for withdrawals and aToken transfers.
+- **Fast paths, in order:**
+  - `if (!userConfig.isBorrowingAny() || !userConfig.isUsingAsCollateral(reserve.id)) return true;`
+    — no debt at all, or this asset is not collateral, so nothing can break.
+  - After computing account data, `if (vars.totalDebtInETH == 0) return true;`.
+- **Body.** Reads the reserve's liquidation threshold and decimals via
+  `getParams()`, calls `calculateUserAccountData`, converts `amount` to ETH with
+  the oracle, then recomputes the health factor with collateral and the weighted
+  threshold both reduced by the withdrawn amount, and compares against
+  `HEALTH_FACTOR_LIQUIDATION_THRESHOLD`.
+- **Returns.** `true` if the post-withdrawal health factor is still `>= 1e18`.
+- **Called by.** `ValidationLogic.validateWithdraw`, `ValidationLogic.validateTransfer`.
+- **Gotcha.** It recomputes the *weighted average* threshold after removal, not
+  just the collateral total. Removing high-threshold collateral hurts twice:
+  the numerator shrinks and the average threshold falls.
+
+### `calculateUserAccountData(user, reservesData, userConfig, reserves, reservesCount, oracle) internal view returns (uint256,uint256,uint256,uint256,uint256)` (`:150-232`)
+
+- **Purpose.** The whole-account aggregation. Returns
+  `(totalCollateralETH, totalDebtETH, avgLtv, avgLiquidationThreshold, healthFactor)`.
+- **Fast path.** `if (userConfig.isEmpty()) return (0, 0, 0, 0, uint256(-1));`
+  (`:170-172`) — an untouched account is infinitely healthy for free.
+- **The loop** (`:173-214`), once per listed reserve:
+  1. `if (!userConfig.isUsingAsCollateralOrBorrowing(i)) continue;` — one shift
+     and mask, no SLOAD, for reserves the user never touched.
+  2. `(ltv, liquidationThreshold, , decimals, ) = configuration.getParams()`.
+  3. `tokenUnit = 10**decimals`, `reserveUnitPrice = oracle.getAssetPrice(asset)`.
+  4. **Collateral leg**, if `liquidationThreshold != 0 && isUsingAsCollateral(i)`:
+     ```solidity
+     vars.compoundedLiquidityBalance = IERC20(currentReserve.aTokenAddress).balanceOf(user);
+     uint256 liquidityBalanceETH =
+       vars.reserveUnitPrice.mul(vars.compoundedLiquidityBalance).div(vars.tokenUnit);
+     vars.totalCollateralInETH = vars.totalCollateralInETH.add(liquidityBalanceETH);
+     vars.avgLtv = vars.avgLtv.add(liquidityBalanceETH.mul(vars.ltv));
+     vars.avgLiquidationThreshold = vars.avgLiquidationThreshold.add(
+       liquidityBalanceETH.mul(vars.liquidationThreshold)
+     );
+     ```
+     The two averages accumulate **value-weighted sums**, divided down later.
+  5. **Debt leg**, if `isBorrowing(i)`: `stableDebtToken.balanceOf(user) +
+     variableDebtToken.balanceOf(user)`, converted to ETH and added to
+     `totalDebtInETH`.
+- **After the loop** (`:216-232`): divide both weighted sums by
+  `totalCollateralInETH` (guarded against zero), then
+  `calculateHealthFactorFromBalances`.
+- **External calls.** Per participating reserve: one oracle call and one to
+  three `balanceOf` calls. This is the protocol's dominant gas cost.
+- **Gotcha — the `liquidationThreshold != 0` test.** A reserve whose threshold
+  was set to zero (risk admin disabling it as collateral) stops counting as
+  collateral for *existing* positions immediately, without any user action.
+- **Gotcha — "ETH" is nominal.** The unit is whatever the oracle's base
+  currency is. On the original Ethereum market that was ETH; later markets used
+  USD. The variable names never caught up, and v3 renamed them to `...InBaseCurrency`.
+- **Gotcha.** `balanceOf` on the aToken is the *rebased* balance, so this
+  function sees accrued interest even if no index write has happened this block
+  — because `AToken.balanceOf` itself calls `getNormalizedIncome`.
+
+### `calculateHealthFactorFromBalances(totalCollateralInETH, totalDebtInETH, liquidationThreshold) internal pure returns (uint256)` (`:242-250`)
+
+```solidity
+if (totalDebtInETH == 0) return uint256(-1);
+return (totalCollateralInETH.percentMul(liquidationThreshold)).wadDiv(totalDebtInETH);
+```
+
+`HF = (collateral × threshold_bps / 1e4) × 1e18 / debt`. No debt returns
+`type(uint256).max`, which every caller treats as "infinitely safe".
+
+### `calculateAvailableBorrowsETH(totalCollateralInETH, totalDebtInETH, ltv) internal pure returns (uint256)` (`:261-274`)
+
+`collateral × ltv − debt`, floored at zero (`:269-271`). Note it uses **LTV**,
+not the liquidation threshold: borrowing power is strictly tighter than
+solvency, and the gap between the two is the buffer a healthy position lives in.
+
+- **Gotcha.** Both helpers are `public constant`/`pure` on a library that
+  `LendingPool` links against, so `HEALTH_FACTOR_LIQUIDATION_THRESHOLD` is
+  readable on-chain from the deployed `GenericLogic` address.
+
+## 2.8 `ValidationLogic`
+
+`aave/v2-protocol/contracts/protocol/libraries/logic/ValidationLogic.sol`. Every
+precondition in the protocol, one function per action. `LendingPool` calls
+these before touching state, so a revert here costs only the checks.
+
+Two constants govern stable-rate rebalancing:
+`REBALANCE_UP_LIQUIDITY_RATE_THRESHOLD = 4000` (40% in bps, `:33`) and
+`REBALANCE_UP_USAGE_RATIO_THRESHOLD = 0.95 * 1e27` (95% in ray, `:34`).
+
+| Function | Line | Guards |
+|---|---:|---|
+| `validateDeposit(reserve, amount)` | `:41` | `amount != 0` → `VL_INVALID_AMOUNT`; reserve active → `VL_NO_ACTIVE_RESERVE`; not frozen → `VL_RESERVE_FROZEN` |
+| `validateWithdraw(...)` | `:60` | `amount != 0`; `amount <= userBalance` → `VL_NOT_ENOUGH_AVAILABLE_USER_BALANCE`; active; `balanceDecreaseAllowed` → `VL_TRANSFER_NOT_ALLOWED` |
+| `validateBorrow(...)` | `:120` | see below |
+| `validateRepay(...)` | `:223` | active; `amount != 0`; debt exists in the chosen mode → `VL_NO_DEBT_OF_SELECTED_TYPE`; `amount != uint(-1) \|\| msg.sender == onBehalfOf` → `VL_NO_EXPLICIT_AMOUNT_TO_REPAY_ON_BEHALF` |
+| `validateSwapRateMode(...)` | `:259` | active; not frozen; debt exists in the *current* mode; when switching **to** stable, the same stable-rate rules as borrowing |
+| `validateRebalanceStableBorrowRate(...)` | `:303` | active; the two threshold conditions below, else `VL_INTEREST_RATE_REBALANCE_CONDITIONS_NOT_MET` |
+| `validateSetUseReserveAsCollateral(...)` | `:344` | `underlyingBalance > 0` → `VL_UNDERLYING_BALANCE_NOT_GREATER_THAN_0`; `balanceDecreaseAllowed` when disabling → `VL_DEPOSIT_ALREADY_IN_USE` |
+| `validateFlashloan(assets, amounts)` | `:379` | `assets.length == amounts.length` → `VL_INCONSISTENT_FLASHLOAN_PARAMS` |
+| `validateLiquidationCall(...)` | `:392` | see [2.11](#211-lendingpoolcollateralmanager) |
+| `validateTransfer(from, ...)` | `:446` | health factor `>= 1e18` → `VL_TRANSFER_NOT_ALLOWED` |
+
+### `validateBorrow` (`:120-221`) in detail
+
+The densest validator in the protocol. In order:
+
+1. Reserve `isActive` → `VL_NO_ACTIVE_RESERVE`; `!isFrozen` → `VL_RESERVE_FROZEN`.
+2. `amount != 0` → `VL_INVALID_AMOUNT`.
+3. `borrowingEnabled` → `VL_BORROWING_NOT_ENABLED`.
+4. Mode is `STABLE` or `VARIABLE` → `VL_INVALID_INTEREST_RATE_MODE_SELECTED`.
+5. `calculateUserAccountData` → collateral, debt, ltv, threshold, health factor.
+6. `userCollateralBalanceETH > 0` → `VL_COLLATERAL_BALANCE_IS_0`.
+7. `healthFactor > HEALTH_FACTOR_LIQUIDATION_THRESHOLD` →
+   `VL_HEALTH_FACTOR_LOWER_THAN_LIQUIDATION_THRESHOLD`.
+8. Convert the requested amount to ETH, add to existing debt, and require it
+   `<= availableBorrowsETH` → `VL_COLLATERAL_CANNOT_COVER_NEW_BORROW`.
+9. **Stable-rate only:**
+   - `stableRateBorrowingEnabled` → `VL_STABLE_BORROWING_NOT_ENABLED`.
+   - The user must not be using *this same asset* as collateral, or must have an
+     aToken balance smaller than the amount borrowed →
+     `VL_COLLATERAL_SAME_AS_BORROWING_CURRENCY`.
+   - `amount <= availableLiquidity × maxStableLoanPercent` →
+     `VL_AMOUNT_BIGGER_THAN_MAX_LOAN_SIZE_STABLE`.
+
+- **Gotcha — step 9's second rule.** Without it a user could deposit USDC, borrow
+  USDC at a fixed stable rate, redeposit, and repeat, locking in a spread
+  against the pool at zero risk. The rule breaks the loop at the first hop.
+- **Gotcha — step 7 uses strict `>`.** A position sitting exactly at `1e18`
+  cannot borrow, though it also cannot yet be liquidated (liquidation uses `<`).
+
+### `validateRebalanceStableBorrowRate` (`:303-342`)
+
+Anyone may force another user's stable rate to be re-set, but only when the
+reserve has drifted far from the assumptions under which that rate was granted.
+Both conditions must hold:
+
+- `totalDebt / (availableLiquidity + totalDebt) >= 0.95e27` — utilization above
+  95%, so liquidity is scarce; **and**
+- `currentLiquidityRate <= maxVariableBorrowRate.percentMul(4000)` — the supply
+  rate is below 40% of the maximum variable rate, meaning old stable borrowers
+  are paying far less than current conditions justify.
+
+Otherwise `VL_INTEREST_RATE_REBALANCE_CONDITIONS_NOT_MET`.
+
+- **Gotcha.** This is v2's answer to v1's identical problem: stable rates are
+  only "stable" until the reserve is stressed. The permissionless rebalance is
+  what keeps a stable borrower from holding a below-market rate forever. v3.2
+  removed stable borrowing entirely rather than keep patching this.
+
+## 2.9 `Helpers`
+
+`aave/v2-protocol/contracts/protocol/libraries/helpers/Helpers.sol`. Two
+functions, one job: fetch both debt balances at once.
+
+### `getUserCurrentDebt(user, reserve) internal view returns (uint256, uint256)` (`:18-27`)
+
+Returns `(stableDebt, variableDebt)` as
+`IERC20(reserve.stableDebtTokenAddress).balanceOf(user)` and
+`IERC20(reserve.variableDebtTokenAddress).balanceOf(user)`.
+
+### `getUserCurrentDebtMemory(user, reserve) internal view returns (uint256, uint256)` (`:29-38`)
+
+Identical, but takes `DataTypes.ReserveData memory`. The duplication exists
+because Solidity 0.6 cannot overload on the data location of a struct parameter
+through a `using ... for` binding, and `LendingPoolCollateralManager` works with
+a memory copy.
+
+## 2.10 `LendingPool`
+
+`aave/v2-protocol/contracts/protocol/lendingpool/LendingPool.sol` (946 lines).
+The single entry point. It holds no funds, does no arithmetic beyond an oracle
+conversion, and mostly sequences four steps: **validate → `updateState` →
+mint/burn tokens → `updateInterestRates`**.
+
+`LENDINGPOOL_REVISION = 0x2` (`:52`), returned by `getRevision()` (`:75`) for
+`VersionedInitializable`.
+
+### Modifiers
+
+| Modifier | Line | Effect |
+|---|---:|---|
+| `whenNotPaused` | `:54` | Calls `_whenNotPaused()` (`:64`): `require(!_paused, Errors.LP_IS_PAUSED)` |
+| `onlyLendingPoolConfigurator` | `:59` | `_onlyLendingPoolConfigurator()` (`:68`): sender must equal `_addressesProvider.getLendingPoolConfigurator()`, else `Errors.LP_CALLER_NOT_LENDING_POOL_CONFIGURATOR` |
+
+- **Gotcha.** The bodies are separate `internal` functions rather than inline
+  modifier code. Modifiers are inlined at every use site; a function is a single
+  `JUMP`. With a dozen guarded functions this measurably shrinks bytecode — the
+  same size pressure that forced the library split.
+
+### `initialize(ILendingPoolAddressesProvider provider) public initializer` (`:86-91`)
+
+Sets `_addressesProvider`, `_maxStableRateBorrowSizePercent = 2500` (25%),
+`_flashLoanPremiumTotal = 9` (0.09%), `_maxNumberOfReserves = 128`. Guarded by
+`VersionedInitializable.initializer`.
+
+### `deposit(asset, amount, onBehalfOf, referralCode) external whenNotPaused` (`:104-129`)
+
+- **Checks.** `ValidationLogic.validateDeposit(reserve, amount)`.
+- **Body, in order:**
+  ```solidity
+  reserve.updateState();
+  reserve.updateInterestRates(asset, aToken, amount, 0);
+  IERC20(asset).safeTransferFrom(msg.sender, aToken, amount);
+  bool isFirstDeposit = IAToken(aToken).mint(onBehalfOf, amount, reserve.liquidityIndex);
+  if (isFirstDeposit) {
+    _usersConfig[onBehalfOf].setUsingAsCollateral(reserve.id, true);
+    emit ReserveUsedAsCollateralEnabled(asset, onBehalfOf);
+  }
+  ```
+- **External calls.** Underlying `transferFrom` (sender → aToken), then
+  `AToken.mint`.
+- **Events.** `Deposit(asset, msg.sender, onBehalfOf, amount, referralCode)`,
+  optionally `ReserveUsedAsCollateralEnabled`.
+- **Gotcha — auto-collateral.** The *first* deposit of an asset silently enables
+  it as collateral. Subsequent deposits do not re-enable it, so a user who
+  deliberately disabled an asset keeps it disabled when topping up.
+- **Gotcha — the underlying goes straight to the aToken**, never through the
+  pool. `LendingPool` is never a token custodian, which is the central
+  difference from v1's `LendingPoolCore`.
+
+### `withdraw(asset, amount, to) external whenNotPaused returns (uint256)` (`:142-190`)
+
+- **Max handling.** `amount == type(uint256).max` becomes the caller's full
+  aToken balance (`:157-159`).
+- **Checks.** `ValidationLogic.validateWithdraw(...)` — includes the
+  `balanceDecreaseAllowed` solvency test.
+- **Body.** `updateState()` → `updateInterestRates(asset, aToken, 0,
+  amountToWithdraw)` → if withdrawing the entire balance, clear the collateral
+  bit and emit `ReserveUsedAsCollateralDisabled` → `IAToken.burn(msg.sender, to,
+  amountToWithdraw, reserve.liquidityIndex)`.
+- **Returns.** `amountToWithdraw`.
+- **Events.** `Withdraw(asset, msg.sender, to, amount)`.
+- **Gotcha.** The collateral bit is cleared *before* the burn, so the
+  `ReserveUsedAsCollateralDisabled` event precedes the transfer in the log
+  ordering.
+
+### `borrow(asset, amount, interestRateMode, referralCode, onBehalfOf) external whenNotPaused` (`:201-215`)
+
+Packs its arguments into `ExecuteBorrowParams` (`:844-853`) with
+`releaseUnderlying = true` and delegates to `_executeBorrow`. The `aTokenAddress`
+is read from the reserve here so `_executeBorrow` need not.
+
+- **Credit delegation.** `onBehalfOf` may differ from `msg.sender`; the debt
+  token's `mint` is what enforces the allowance (see
+  [2.13](#213-tokenization)).
+
+### `_executeBorrow(ExecuteBorrowParams memory vars) internal` (`:855-929`)
+
+- **Body, in order:**
+  1. `amountInETH = oracle.getAssetPrice(asset) * amount / 10**decimals` (`:861-864`).
+  2. `ValidationLogic.validateBorrow(...)` with twelve arguments (`:866-879`).
+  3. `reserve.updateState()`.
+  4. Mint debt. Stable branch captures `currentStableRate =
+     reserve.currentStableBorrowRate` first, then
+     `IStableDebtToken.mint(user, onBehalfOf, amount, currentStableRate)`.
+     Variable branch calls `IVariableDebtToken.mint(user, onBehalfOf, amount,
+     reserve.variableBorrowIndex)`. Both return `isFirstBorrowing`.
+  5. `if (isFirstBorrowing) userConfig.setBorrowing(reserve.id, true);`
+  6. `updateInterestRates(asset, aTokenAddress, 0, releaseUnderlying ? amount : 0)`.
+  7. `if (releaseUnderlying) IAToken.transferUnderlyingTo(user, amount);`
+- **Events.** `Borrow(asset, user, onBehalfOf, amount, interestRateMode, rate,
+  referralCode)` where `rate` is the stable rate just locked in or the reserve's
+  current variable rate.
+- **Gotcha — `releaseUnderlying`.** `false` only in the flash-loan mode-1/2 path,
+  where the borrower already holds the funds. The flag also removes the amount
+  from `liquidityTaken` in step 6, because the aToken's balance was already
+  reduced when the flash loan was dispensed.
+
+### `repay(asset, amount, rateMode, onBehalfOf) external whenNotPaused returns (uint256)` (`:236-289`)
+
+- **Body.** `Helpers.getUserCurrentDebt` → `validateRepay` → clamp
+  `paybackAmount` to the debt in the chosen mode, then to `amount` if smaller →
+  `updateState()` → burn from the stable or variable debt token →
+  `updateInterestRates(asset, aToken, paybackAmount, 0)` → if total debt now
+  zero, `setBorrowing(reserve.id, false)` → `safeTransferFrom(msg.sender, aToken,
+  paybackAmount)` → `IAToken.handleRepayment(msg.sender, paybackAmount)`.
+- **Returns.** `paybackAmount`.
+- **Events.** `Repay(asset, onBehalfOf, msg.sender, paybackAmount)`.
+- **Gotcha.** Repaying `type(uint256).max` clears the whole debt of that mode,
+  but `validateRepay` forbids it when `onBehalfOf != msg.sender`
+  (`VL_NO_EXPLICIT_AMOUNT_TO_REPAY_ON_BEHALF`) — otherwise a griefer could drain
+  an approving wallet by repaying someone else's unbounded debt.
+- **Gotcha.** `handleRepayment` is a no-op hook in the standard `AToken`
+  (`:395`), present so a custom aToken can react. It is called *after* the
+  transfer, so the aToken already holds the funds.
+
+### `swapBorrowRateMode(asset, rateMode) external whenNotPaused` (`:297-341`)
+
+Burns the entire debt in the current mode and mints the same amount in the
+other, at the reserve's current rate for that mode. `validateSwapRateMode`
+re-applies the stable-rate eligibility rules when switching to stable. Emits
+`Swap(asset, msg.sender, rateMode)`.
+
+### `rebalanceStableBorrowRate(asset, user) external whenNotPaused` (`:350-378`)
+
+Permissionless. Validates the two stress conditions, burns and re-mints the
+user's stable debt at `reserve.currentStableBorrowRate`, and emits
+`RebalanceStableBorrowRate(asset, user)`.
+
+### `setUserUseReserveAsCollateral(asset, useAsCollateral) external whenNotPaused` (`:387-417`)
+
+Validates via `validateSetUseReserveAsCollateral`, flips the bit, and emits
+`ReserveUsedAsCollateralEnabled` or `...Disabled`.
+
+### `liquidationCall(collateralAsset, debtAsset, user, debtToCover, receiveAToken) external whenNotPaused` (`:425-449`)
+
+```solidity
+address collateralManager = _addressesProvider.getLendingPoolCollateralManager();
+(bool success, bytes memory result) = collateralManager.delegatecall(
+  abi.encodeWithSignature(
+    'liquidationCall(address,address,address,uint256,bool)',
+    collateralAsset, debtAsset, user, debtToCover, receiveAToken
+  )
+);
+require(success, Errors.LP_LIQUIDATION_CALL_FAILED);
+(uint256 returnCode, string memory returnMessage) = abi.decode(result, (uint256, string));
+require(returnCode == 0, string(abi.encodePacked(returnMessage)));
+```
+
+- **Gotcha — two failure layers.** A reverting `delegatecall` gives
+  `LP_LIQUIDATION_CALL_FAILED`; a *successful* call that returns a non-zero code
+  re-reverts with the manager's own message. This mirrors v1's
+  `LiquidationErrors` enum, and exists because the manager cannot cheaply bubble
+  a revert reason through `delegatecall` in Solidity 0.6.
+- **Gotcha.** The selector is built with `encodeWithSignature`, a plain string.
+  A typo would compile and fail only at runtime.
+
+### `flashLoan(receiverAddress, assets, amounts, modes, onBehalfOf, params, referralCode) external whenNotPaused` (`:483-563`)
+
+- **Checks.** `validateFlashloan(assets, amounts)` — arrays must be equal length.
+- **Phase 1** (`:502-508`): for each asset, record the aToken, compute
+  `premium = amount * _flashLoanPremiumTotal / 10000`, and
+  `transferUnderlyingTo(receiverAddress, amount)`.
+- **Callback** (`:510-513`): `require(receiver.executeOperation(assets, amounts,
+  premiums, msg.sender, params), Errors.LP_INVALID_FLASH_LOAN_EXECUTOR_RETURN)`.
+- **Phase 2** (`:515-562`), per asset, branching on `modes[i]`:
+  - `NONE` (0) — repay. `updateState()`, then
+    `cumulateToLiquidityIndex(aToken.totalSupply(), premium)` to hand the fee to
+    suppliers, then `updateInterestRates(..., amount + premium, 0)`, then
+    `safeTransferFrom(receiver, aToken, amount + premium)`.
+  - `STABLE` (1) or `VARIABLE` (2) — keep the funds and open debt via
+    `_executeBorrow(... releaseUnderlying: false)`.
+- **Events.** `FlashLoan(receiver, msg.sender, asset, amount, premium,
+  referralCode)` per asset.
+- **Gotcha — no reentrancy guard on the pool itself.** Safety comes from the
+  balance being pulled back with `safeTransferFrom` at the end. A receiver *can*
+  re-enter `LendingPool` during `executeOperation`; that is the whole point, and
+  it is what the adapters in [2.17](#217-adapters--flash-loan-powered-position-management) rely on.
+- **Gotcha — mode 1/2 opens debt against `onBehalfOf`**, so a flash loan can
+  create a debt position for a third party who has granted credit delegation.
+  v1 had no equivalent.
+- **Gotcha.** `cumulateToLiquidityIndex` reads `aToken.totalSupply()` *after*
+  `updateState`, so the index ratchet is computed against the post-accrual
+  supply. Doing it in the other order would over-distribute.
+
+### Admin functions
+
+| Function | Line | Access | Effect |
+|---|---:|---|---|
+| `initReserve(asset, aToken, stableDebt, variableDebt, strategy)` | `:785` | configurator | `reserve.init(...)`, then `_addReserveToList(asset)` |
+| `setReserveInterestRateStrategyAddress(asset, strategy)` | `:808` | configurator | Swap the rate strategy |
+| `setConfiguration(asset, configuration)` | `:822` | configurator | Write the whole 256-bit risk word |
+| `setPause(bool)` | `:835` | configurator | Global stop; emits `Paused`/`Unpaused` |
+
+`_addReserveToList(asset)` (`:932-946`) requires
+`reservesCount < _maxNumberOfReserves` (`LP_NO_MORE_RESERVES_ALLOWED`), assigns
+`reserve.id = uint8(reservesCount)`, appends to `_reservesList`, and increments
+the count. It is idempotent: a reserve already in the list is skipped.
+
+### `finalizeTransfer(asset, from, to, amount, balanceFromBefore, balanceToBefore) external whenNotPaused` (`:739-778`)
+
+- **Access.** `require(msg.sender == reserve.aTokenAddress,
+  Errors.LP_CALLER_MUST_BE_AN_ATOKEN)`.
+- **Body.** `ValidationLogic.validateTransfer(from, ...)` — the sender must stay
+  solvent. Then, if `from != to`: if `balanceFromBefore - amount == 0`, clear
+  `from`'s collateral bit and emit `ReserveUsedAsCollateralDisabled`; if
+  `balanceToBefore == 0 && amount != 0`, set `to`'s collateral bit and emit
+  `ReserveUsedAsCollateralEnabled`.
+- **Gotcha.** Receiving an aToken transfer silently turns that asset into
+  collateral for the recipient, exactly as a first deposit does. Sending someone
+  aTokens therefore changes their risk profile without their consent — harmless
+  in itself, since it only ever adds collateral.
+
+### View functions
+
+| Function | Line | Returns |
+|---|---:|---|
+| `getReserveData(asset)` | `:571` | The whole `ReserveData` struct |
+| `getUserAccountData(user)` | `:590` | `(totalCollateralETH, totalDebtETH, availableBorrowsETH, currentLiquidationThreshold, ltv, healthFactor)` |
+| `getConfiguration(asset)` | `:630` | `ReserveConfigurationMap` |
+| `getUserConfiguration(user)` | `:644` | `UserConfigurationMap` |
+| `getReserveNormalizedIncome(asset)` | `:658` | Projected liquidity index |
+| `getReserveNormalizedVariableDebt(asset)` | `:673` | Projected variable borrow index |
+| `paused()` | `:685` | `_paused` |
+| `getReservesList()` | `:692` | Materialises `_reservesList` into an array |
+| `getAddressesProvider()` | `:704` | The provider |
+| `MAX_STABLE_RATE_BORROW_SIZE_PERCENT()` | `:711` | `2500` |
+| `FLASHLOAN_PREMIUM_TOTAL()` | `:718` | `9` |
+| `MAX_NUMBER_RESERVES()` | `:725` | `128` |
+
+## 2.11 `LendingPoolCollateralManager`
+
+`aave/v2-protocol/contracts/protocol/lendingpool/LendingPoolCollateralManager.sol`
+(317 lines). Reached only through `LendingPool.liquidationCall`'s `delegatecall`,
+so it executes **in `LendingPool`'s storage context**. It inherits
+`LendingPoolStorage` and `VersionedInitializable` so the slot layout matches
+exactly.
+
+`LIQUIDATION_CLOSE_FACTOR_PERCENT = 5000` (`:39`) — at most 50% of a borrower's
+debt in one call.
+
+`getRevision()` (`:66`) returns `0x1` with a comment explaining the value is
+irrelevant, because `initialize` is never called on this contract — it has no
+proxy of its own.
+
+### `liquidationCall(collateralAsset, debtAsset, user, debtToCover, receiveAToken) external returns (uint256, string memory)` (`:81-197`)
+
+Returns a `(code, message)` pair instead of reverting, which `LendingPool`
+decodes and re-reverts on.
+
+- **Step 1 — health factor.** `GenericLogic.calculateUserAccountData(...)`
+  (`:94`), keeping only `healthFactor`.
+- **Step 2 — debts.** `Helpers.getUserCurrentDebt(user, debtReserve)` (`:103`).
+- **Step 3 — validate.** `ValidationLogic.validateLiquidationCall(...)` (`:105`)
+  returns an error code; if non-zero the function returns early (`:114-116`).
+  The codes come from `Errors.CollateralManagerErrors`.
+- **Step 4 — close factor.**
+  ```solidity
+  vars.maxLiquidatableDebt = vars.userStableDebt.add(vars.userVariableDebt).percentMul(
+    LIQUIDATION_CLOSE_FACTOR_PERCENT
+  );
+  vars.actualDebtToLiquidate = debtToCover > vars.maxLiquidatableDebt
+    ? vars.maxLiquidatableDebt
+    : debtToCover;
+  ```
+- **Step 5 — collateral.** `_calculateAvailableCollateralToLiquidate(...)`
+  returns `(maxCollateralToLiquidate, debtAmountNeeded)`. If the borrower does
+  not hold enough collateral, `debtAmountNeeded < actualDebtToLiquidate` and the
+  debt figure is revised down (`:146-148`).
+- **Step 6 — liquidity check when `receiveAToken == false`** (`:152-160`): the
+  aToken's actual underlying balance must cover the seizure, else
+  `LP_LIQUIDATION_CALL_FAILED` / `NOT_ENOUGH_LIQUIDITY`.
+- **Step 7 — burn debt** (`:164-185`). `debtReserve.updateState()` first, then:
+  - If `userVariableDebt >= actualDebtToLiquidate`, burn it all from the
+    variable token.
+  - Otherwise burn the entire variable debt (if any), then burn
+    `actualDebtToLiquidate - userVariableDebt` from the stable token.
+- **Step 8 — rates.** `debtReserve.updateInterestRates(debtAsset, aToken,
+  actualDebtToLiquidate, 0)`.
+- **Step 9 — move collateral** (`:193-218`):
+  - `receiveAToken == true`: record the liquidator's prior aToken balance, call
+    `collateralAtoken.transferOnLiquidation(user, msg.sender,
+    maxCollateralToLiquidate)`, and if the liquidator held none before, set
+    their collateral bit and emit `ReserveUsedAsCollateralEnabled`.
+  - `receiveAToken == false`: `collateralReserve.updateState()`,
+    `updateInterestRates(collateralAsset, aToken, 0, maxCollateralToLiquidate)`,
+    then `collateralAtoken.burn(user, msg.sender, maxCollateralToLiquidate,
+    collateralReserve.liquidityIndex)`.
+- **Step 10 — collateral bit.** If the seizure took the borrower's entire
+  balance, clear their collateral bit and emit
+  `ReserveUsedAsCollateralDisabled` (`:222-225`).
+- **Step 11 — pull the debt payment.** `safeTransferFrom(msg.sender,
+  debtReserve.aTokenAddress, actualDebtToLiquidate)`.
+- **Event.** `LiquidationCall(collateralAsset, debtAsset, user,
+  actualDebtToLiquidate, maxCollateralToLiquidate, msg.sender, receiveAToken)`.
+- **Returns.** `(uint256(Errors.CollateralManagerErrors.NO_ERROR), Errors.LPCM_NO_ERRORS)`.
+
+- **Gotcha — variable debt is burned first.** The borrower's cheaper, floating
+  debt is retired before their fixed-rate debt. This is not neutral: it leaves
+  the borrower holding proportionally more stable debt after a partial
+  liquidation.
+- **Gotcha — `receiveAToken` skips the liquidity check.** Taking aTokens moves a
+  claim, not underlying, so it works even when the reserve is fully utilised.
+  That is precisely when liquidations matter most.
+- **Gotcha.** The liquidator's payment lands in the aToken at the very end,
+  after the collateral has already moved. The `delegatecall` context means a
+  revert anywhere unwinds everything, so the ordering is safe.
+
+### `_calculateAvailableCollateralToLiquidate(collateralReserve, debtReserve, collateralAsset, debtAsset, debtToCover, userCollateralBalance) internal view returns (uint256, uint256)` (`:272-317`)
+
+- **Purpose.** Convert a debt amount into the collateral amount to seize,
+  applying the liquidation bonus and the borrower's balance ceiling.
+- **Body.**
+  ```solidity
+  vars.collateralPrice = oracle.getAssetPrice(collateralAsset);
+  vars.debtAssetPrice = oracle.getAssetPrice(debtAsset);
+  (, , vars.liquidationBonus, vars.collateralDecimals, ) =
+      collateralReserve.configuration.getParams();
+  vars.debtAssetDecimals = debtReserve.configuration.getDecimals();
+
+  vars.maxAmountCollateralToLiquidate = vars.debtAssetPrice
+      .mul(debtToCover)
+      .mul(10**vars.collateralDecimals)
+      .percentMul(vars.liquidationBonus)
+      .div(vars.collateralPrice.mul(10**vars.debtAssetDecimals));
+  ```
+  i.e. `collateral = debt × P_debt / P_coll × bonus`, with the decimal factors
+  making the units line up.
+- **The ceiling** (`:303-313`): if that exceeds `userCollateralBalance`, the
+  collateral is capped at the balance and the *debt* is recomputed backwards
+  with `percentDiv(liquidationBonus)` — the exact inverse — so the liquidator is
+  never charged for collateral that does not exist.
+- **Returns.** `(collateralAmount, debtAmountNeeded)`.
+- **Gotcha — the bonus is a multiplier above 100%.** A `liquidationBonus` of
+  `10500` means the liquidator receives 105% of the value they repay. The 5%
+  spread is their entire profit and the borrower's entire penalty.
+- **Gotcha.** Both prices come from the same oracle in the same call, so a stale
+  or manipulated feed on either side moves the seizure amount directly. This is
+  the protocol's sharpest oracle dependency.
+
+## 2.12 `DefaultReserveInterestRateStrategy` (v2)
+
+`aave/v2-protocol/contracts/protocol/lendingpool/DefaultReserveInterestRateStrategy.sol`
+(260 lines). Pure math, no storage beyond immutables set in the constructor.
+
+| Immutable | Meaning |
+|---|---|
+| `OPTIMAL_UTILIZATION_RATE` | The kink, in ray |
+| `EXCESS_UTILIZATION_RATE` | `1e27 − OPTIMAL_UTILIZATION_RATE`, precomputed |
+| `_baseVariableBorrowRate` | Rate at 0% utilization |
+| `_variableRateSlope1` / `_variableRateSlope2` | Below and above the kink |
+| `_stableRateSlope1` / `_stableRateSlope2` | Same, for stable |
+| `addressesProvider` | To reach the lending rate oracle |
+
+### `calculateInterestRates(...)` (the 8-argument overload)
+
+- **Inputs.** `reserve`, `aToken`, `liquidityAdded`, `liquidityTaken`,
+  `totalStableDebt`, `totalVariableDebt`, `averageStableBorrowRate`,
+  `reserveFactor`.
+- **Step 1.** `availableLiquidity = IERC20(reserve).balanceOf(aToken) +
+  liquidityAdded − liquidityTaken`. The pending action is applied *before*
+  pricing, so rates reflect the post-action state.
+- **Step 2.** Forward to the internal overload with that figure.
+
+### The internal overload — the kinked curve
+
+```
+utilizationRate = totalDebt == 0 ? 0 : totalDebt.rayDiv(availableLiquidity + totalDebt)
+
+if utilizationRate > OPTIMAL:
+    excessRatio = (U − OPTIMAL) / EXCESS_UTILIZATION_RATE
+    variableRate = base + slope1 + slope2 × excessRatio
+    stableRate   = marketRate + stableSlope1 + stableSlope2 × excessRatio
+else:
+    variableRate = base + slope1 × (U / OPTIMAL)
+    stableRate   = marketRate + stableSlope1 × (U / OPTIMAL)
+```
+
+`marketRate` comes from `ILendingRateOracle.getMarketBorrowRate(reserve)` — the
+stable curve is anchored to an external rate rather than to zero.
+
+### The supply rate
+
+```
+overallBorrowRate = weighted average of (totalStableDebt @ avgStableRate)
+                    and (totalVariableDebt @ currentVariableRate)
+
+liquidityRate = overallBorrowRate × utilizationRate × (1 − reserveFactor)
+```
+
+computed as `.rayMul(utilizationRate).percentMul(PERCENTAGE_FACTOR − reserveFactor)`.
+
+- **The reserve factor appears here and nowhere else in the rate math.** It is
+  the wedge between what borrowers pay and what suppliers receive, and the same
+  fraction is minted to the treasury by `_mintToTreasury`. Both must use the
+  same number or the accounting drifts.
+- **Gotcha — `availableLiquidity` is the aToken's raw ERC20 balance.** Anyone can
+  donate underlying to an aToken and push utilization down, cutting every
+  borrower's rate. Harmless as an attack, expensive as a subsidy, and the reason
+  v3 tracks a `virtualUnderlyingBalance` instead.
+- **Gotcha — v1 parity.** The shape is identical to v1's
+  `DefaultReserveInterestRateStrategy` ([1.8](#18-defaultreserveinterestratestrategy-v1))
+  including the weighted overall borrow rate. The only economic addition is the
+  reserve factor.
+
+## 2.13 Tokenization
+
+Six contracts in
+`aave/v2-protocol/contracts/protocol/tokenization/`. This is the layer that most
+distinguishes v2 from v1: supply *and* debt are ERC20s, and the aToken is the
+custodian.
+
+```
+        IncentivizedERC20 (ERC20 + handleAction hook)
+            |                              |
+            +-- AToken                     +-- DebtTokenBase (abstract, non-transferable)
+            |     |                              |          |
+            |     +-- DelegationAwareAToken      |          +-- VariableDebtToken
+            |                                    +-- StableDebtToken
+```
+
+### `IncentivizedERC20` (`IncentivizedERC20.sol`, 255 lines)
+
+A plain ERC20 with one addition: `_transfer`, `_mint` and `_burn` each call
+`_getIncentivesController().handleAction(user, oldTotalSupply, oldBalance)`
+before mutating. That is how liquidity mining accrues without a separate
+staking step — every balance change is a checkpoint.
+
+The full ERC20 surface is present: `name`, `symbol`, `decimals`, `totalSupply`,
+`balanceOf`, `transfer`, `allowance`, `approve`, `transferFrom`,
+`increaseAllowance`, `decreaseAllowance`.
+
+- **Gotcha.** `handleAction` receives the balances *before* the change, and the
+  controller re-reads current state itself. A controller that reverts bricks
+  every transfer of that token, so the address is set once at initialization and
+  is not user-settable.
+
+### `AToken` (`AToken.sol`, 406 lines)
+
+Holds the reserve's underlying and represents a supplier's claim. Rebasing:
+`balanceOf` grows without transfers.
+
+| Function | Access | Behaviour |
+|---|---|---|
+| `initialize(...)` | `initializer` | Sets pool, treasury, underlying, incentives controller, name, symbol, decimals |
+| `mint(user, amount, index)` | `onlyLendingPool` | `amountScaled = amount.rayDiv(index)`, `require(amountScaled != 0, CT_INVALID_MINT_AMOUNT)`, `_mint(user, amountScaled)`. Returns `previousBalance == 0` |
+| `burn(user, receiverOfUnderlying, amount, index)` | `onlyLendingPool` | `amountScaled = amount.rayDiv(index)`, `require(amountScaled != 0, CT_INVALID_BURN_AMOUNT)`, `_burn`, then `safeTransfer(receiverOfUnderlying, amount)` |
+| `mintToTreasury(amount, index)` | `onlyLendingPool` | `_mint(RESERVE_TREASURY_ADDRESS, amount.rayDiv(index))`; returns early if `amount == 0` |
+| `transferOnLiquidation(from, to, value)` | `onlyLendingPool` | `_transfer(from, to, value, false)` — skips the health check |
+| `transferUnderlyingTo(target, amount)` | `onlyLendingPool` | Sends raw underlying; used by borrow and flash loan |
+| `handleRepayment(user, amount)` | `onlyLendingPool` | Empty hook for subclasses |
+| `balanceOf(user)` | view | `super.balanceOf(user).rayMul(POOL.getReserveNormalizedIncome(underlying))` |
+| `scaledBalanceOf(user)` | view | The raw stored balance |
+| `getScaledUserBalanceAndSupply(user)` | view | Both at once, for the incentives controller |
+| `totalSupply()` | view | `super.totalSupply().rayMul(normalizedIncome)` |
+| `scaledTotalSupply()` | view | Raw |
+| `permit(...)` | anyone | EIP-2612, with `PERMIT_TYPEHASH` and a cached `DOMAIN_SEPARATOR` |
+| `_transfer(from, to, amount, validate)` | internal | See below |
+
+**`_transfer`** reads `index = POOL.getReserveNormalizedIncome(underlying)`,
+records both parties' balances *before*, moves `amount.rayDiv(index)` scaled
+units, and if `validate` is true calls
+`POOL.finalizeTransfer(underlying, from, to, amount, fromBalanceBefore,
+toBalanceBefore)`. It emits `BalanceTransfer(from, to, amount, index)` in
+addition to the ERC20 `Transfer`.
+
+- **Gotcha — two `Transfer` semantics.** The ERC20 `Transfer` event carries the
+  *scaled* amount from `IncentivizedERC20._transfer`, while `BalanceTransfer`
+  carries the *underlying* amount plus the index. Indexers that read only
+  `Transfer` will under-report aToken movements.
+- **Gotcha — `require(amountScaled != 0)`.** Depositing an amount so small it
+  scales to zero reverts rather than silently taking the funds. As the index
+  grows this threshold rises: at index `2e27` the minimum meaningful deposit is
+  2 wei.
+- **Gotcha.** `RESERVE_TREASURY_ADDRESS` is immutable after initialization, so
+  redirecting protocol revenue requires deploying a new aToken implementation
+  and upgrading the proxy.
+
+### `DelegationAwareAToken` (`DelegationAwareAToken.sol`, 30 lines)
+
+Adds `delegateUnderlyingTo(address delegatee)`, `onlyPoolAdmin`, which calls
+`IDelegationToken(underlying).delegate(delegatee)`. Exists so that governance
+tokens deposited into Aave do not lose their voting power. Used for aAAVE and
+aUNI.
+
+### `DebtTokenBase` (`base/DebtTokenBase.sol`, 137 lines)
+
+Abstract. Two jobs.
+
+1. **Disable transferability.** `transfer`, `allowance`, `approve`,
+   `transferFrom`, `increaseAllowance`, `decreaseAllowance` all
+   `revert('TRANSFER_NOT_SUPPORTED')`. Debt cannot be sold.
+2. **Credit delegation.** `_borrowAllowances[delegator][delegatee]`, exposed as
+   `approveDelegation(delegatee, amount)` (emits `BorrowAllowanceDelegated`) and
+   `borrowAllowanceDelegated`. `_decreaseBorrowAllowance(delegator, delegatee,
+   amount)` subtracts with `Errors.BORROW_ALLOWANCE_NOT_ENOUGH`.
+
+- **Gotcha.** Delegation is per debt token, so delegating variable USDC debt
+  says nothing about stable USDC debt. Both must be approved separately.
+- **Gotcha.** The allowance is denominated in underlying, not scaled units, and
+  is not re-indexed. An old allowance therefore buys progressively less debt as
+  interest accrues.
+
+### `VariableDebtToken` (`VariableDebtToken.sol`, 209 lines)
+
+The simple case: debt is a scaled balance times the borrow index, exactly
+mirroring the aToken.
+
+| Function | Access | Behaviour |
+|---|---|---|
+| `mint(user, onBehalfOf, amount, index)` | `onlyLendingPool` | If `user != onBehalfOf`, `_decreaseBorrowAllowance(onBehalfOf, user, amount)`. Then `amountScaled = amount.rayDiv(index)`, `require(amountScaled != 0, CT_INVALID_MINT_AMOUNT)`, `_mint(onBehalfOf, amountScaled)`. Returns `previousBalance == 0` |
+| `burn(user, amount, index)` | `onlyLendingPool` | `amountScaled = amount.rayDiv(index)`, `require(amountScaled != 0, CT_INVALID_BURN_AMOUNT)`, `_burn(user, amountScaled)` |
+| `balanceOf(user)` | view | `scaledBalance.rayMul(POOL.getReserveNormalizedVariableDebt(underlying))` |
+| `scaledBalanceOf` / `scaledTotalSupply` / `getScaledUserBalanceAndSupply` | view | Raw |
+| `totalSupply()` | view | `super.totalSupply().rayMul(normalizedDebt)` |
+
+### `StableDebtToken` (`StableDebtToken.sol`, 435 lines)
+
+The hard case. Each borrower has their **own** fixed rate, and the reserve needs
+a single weighted-average rate for the supply-side math. Storage:
+`_avgStableRate`, `_timestamps[user]`, `_usersStableRate[user]`,
+`_totalSupplyTimestamp`.
+
+**`_calculateBalanceIncrease(user)` (`:264-290`)** returns
+`(previousPrincipal, currentBalance, balanceIncrease)`. It reads
+`super.balanceOf(user)` (the stored principal), returns `(0,0,0)` if that is
+zero, and otherwise computes `balanceIncrease = balanceOf(user) −
+previousPrincipal` — where the public `balanceOf` compounds the user's own rate
+from `_timestamps[user]` to now.
+
+**`balanceOf(account)` (`:106`)** is
+`principal.rayMul(calculateCompoundedInterest(_usersStableRate[account], _timestamps[account]))`.
+
+**`_calcTotalSupply(avgRate)` (`:385-397`)** compounds the *principal* total
+supply at the average rate from `_totalSupplyTimestamp`. So supply and
+individual balances accrue on two independent clocks — the source of the
+rounding caveats below.
+
+**`mint(user, onBehalfOf, amount, rate) onlyLendingPool returns (bool)` (`:136-195`)**
+
+1. Credit delegation check if `user != onBehalfOf`.
+2. `(, currentBalance, balanceIncrease) = _calculateBalanceIncrease(onBehalfOf)`.
+3. Cache `previousSupply`, `currentAvgStableRate`; set
+   `_totalSupply = previousSupply + amount`.
+4. **The user's new personal rate** — a balance-weighted blend of their old rate
+   and the new borrow's rate:
+   ```solidity
+   vars.newStableRate = _usersStableRate[onBehalfOf]
+     .rayMul(currentBalance.wadToRay())
+     .add(vars.amountInRay.rayMul(rate))
+     .rayDiv(currentBalance.add(amount).wadToRay());
+   ```
+   i.e. `r_new = (r_old·B + r·A) / (B + A)`. Guarded by
+   `require(<= type(uint128).max, Errors.SDT_STABLE_DEBT_OVERFLOW)`.
+5. `_totalSupplyTimestamp = _timestamps[onBehalfOf] = block.timestamp`.
+6. **The reserve's new average rate**, weighted by supply the same way:
+   ```solidity
+   _avgStableRate = currentAvgStableRate
+     .rayMul(previousSupply.wadToRay())
+     .add(rate.rayMul(vars.amountInRay))
+     .rayDiv(vars.nextSupply.wadToRay());
+   ```
+7. `_mint(onBehalfOf, amount + balanceIncrease, previousSupply)` — the accrued
+   interest is capitalised into principal at the same moment.
+8. Emits `Transfer(0, onBehalfOf, amount)` and `Mint(...)` with eight fields.
+9. Returns `currentBalance == 0` as `isFirstBorrowing`.
+
+**`burn(user, amount) onlyLendingPool` (`:197-257`)**
+
+1. `_calculateBalanceIncrease(user)`.
+2. **Supply and average rate.** If `previousSupply <= amount`, set both
+   `_avgStableRate` and `_totalSupply` to zero. Otherwise
+   `nextSupply = previousSupply − amount` and
+   ```
+   newAvgStableRate = (avgRate·previousSupply − userRate·amount) / nextSupply
+   ```
+   with a second guard: if `secondTerm >= firstTerm`, zero everything.
+3. If the user is fully repaid, clear `_usersStableRate[user]` and
+   `_timestamps[user]`; otherwise refresh the timestamp.
+4. **Mint or burn.** If `balanceIncrease > amount` the interest accrued since
+   the last touch exceeds the repayment, so the net effect is a `_mint` of the
+   difference. Otherwise `_burn(user, amount − balanceIncrease)`.
+5. Emits `Mint` or `Burn`, then `Transfer(user, 0, amount)`.
+
+- **Gotcha — the two zeroing guards are not defensive padding.** The comments at
+  `:205-208` and `:217-219` state the reason: total supply and individual
+  balances compound on separate timestamps, so tiny divergences accumulate. The
+  *last* borrower repaying can legitimately owe more than the recorded total
+  supply. Without the clamps the subtraction would underflow and the final
+  repayment would be impossible.
+- **Gotcha — line `:221`.** `newAvgStableRate = _avgStableRate = _totalSupply = 0`
+  assigns zero to `_totalSupply` as well, inside a branch where `nextSupply` was
+  already written. The chained assignment is deliberate: hitting this case means
+  the accounting has degenerated and the only consistent state is empty.
+- **Gotcha — interest capitalises on every touch.** Both `mint` and `burn` fold
+  `balanceIncrease` into principal. A stable borrower who repeatedly borrows
+  small amounts compounds more often than one who does not.
+
+**Views.** `getAverageStableRate()` (`:81`), `getUserLastUpdated(user)` (`:89`),
+`getUserStableRate(user)` (`:98`), `getSupplyData()` (`:292`) returning
+`(principalSupply, calcTotalSupply, avgRate, totalSupplyTimestamp)`,
+`getTotalSupplyAndAvgRate()` (`:310`), `totalSupply()` (`:318`),
+`getTotalSupplyLastUpdated()` (`:325`), `principalBalanceOf(user)` (`:334`).
+
+`getSupplyData` is the four-tuple `_mintToTreasury` needs; `getTotalSupplyAndAvgRate`
+is the two-tuple `updateInterestRates` needs. Two accessors instead of one
+because each caller pays only for what it reads.

@@ -2651,10 +2651,621 @@ those selectors from the compiled ABI rather than by hand.
 
 ### 19.6 `ReentrancyGuard` inheritors
 
-`Periphery/Executor.sol` plus 29 facets: `AcrossFacet`, `AcrossFacetV4`,
-`AcrossV4SwapFacet`, `AllBridgeFacet`, `ArbitrumBridgeFacet`, `ChainflipFacet`,
-`DeBridgeDlnFacet`, `EcoFacet`, `GardenFacet`, `GasZipFacet`, `GlacisFacet`,
-`GnosisBridgeFacet`, `LiFiIntentEscrowFacetV2`, `MayanFacet`, `MegaETHBridgeFacet`,
+`Periphery/Executor.sol` plus **31 facets**: `AcrossFacet`, `AcrossFacetV4`,
+`AcrossV4SwapFacet`, `AllBridgeFacet`, `ArbitrumBridgeFacet`,
+`CelerCircleBridgeFacet`, `ChainflipFacet`, `DeBridgeDlnFacet`, `EcoFacet`,
+`FraxFacet`, `GardenFacet`, `GasZipFacet`, `GlacisFacet`, `GnosisBridgeFacet`,
+`LayerSwapFacet`, `LiFiIntentEscrowFacetV2`, `MayanFacet`, `MegaETHBridgeFacet`,
 `NEARIntentsFacet`, `OmniBridgeFacet`, `OptimismBridgeFacet`, `PaxosTransitFacet`,
 `PolygonBridgeFacet`, `PolymerCCTPFacet`, `RelayDepositoryFacet`, `SquidFacet`,
 `StargateFacetV2`, `SupersetFacet`, `SymbiosisFacet`, `ThorSwapFacet`, `UnitFacet`.
+
+Reproduce with:
+
+```bash
+grep -l 'ReentrancyGuard' src/Facets/*.sol | xargs -n1 basename
+```
+
+Note that the guard is *per-contract storage*, not per-call-frame: all inheritors
+share the single namespace `com.lifi.reentrancyguard` ([§6.3](#63-reentrancyguardsol)),
+so entering any guarded facet locks every other guarded facet for that
+transaction. That is the intended behaviour for a diamond, where all facets are
+one contract.
+
+---
+
+## 20. Use-case index
+
+Each entry is "what you want to do" → the exact entry point → the full internal
+call chain. Facet-side entry points are documented in
+[`FACETS-COMPLETE-REFERENCE.md`](FACETS-COMPLETE-REFERENCE.md); everything they
+delegate into is documented here.
+
+### 20.1 Add a facet to the diamond
+
+Entry: `DiamondCutFacet.diamondCut(FacetCut[], address _init, bytes _calldata)`
+(`src/Facets/DiamondCutFacet.sol:18`).
+
+```
+DiamondCutFacet.diamondCut                       Facets/DiamondCutFacet.sol:18
+ |-- LibDiamond.enforceIsContractOwner()          Libraries/LibDiamond.sol:97
+ |     `-- reverts NotDiamondOwner if msg.sender != ds.contractOwner
+ |-- LibDiamond.diamondCut(_cut, _init, _calldata)  Libraries/LibDiamond.sol:103
+ |     |-- for each FacetCut, switch on action:
+ |     |     Add     -> addFunctions(facet, selectors)     :136
+ |     |     Replace -> replaceFunctions(facet, selectors)
+ |     |     Remove  -> removeFunctions(facet, selectors)
+ |     |-- emit DiamondCut(_cut, _init, _calldata)          :132
+ |     `-- initializeDiamondCut(_init, _calldata)           :326
+ |           `-- delegatecall into _init (reverts InitReverted on failure)
+ `-- selectors now resolve in LiFiDiamond.fallback          LiFiDiamond.sol
+```
+
+In production the owner is `LiFiTimelockController`
+([§9](#9-security-lifitimelockcontrollersol)), so the real sequence is
+`schedule()` → wait `minDelay` → `execute()`, and only then does the cut land.
+
+**Gotcha.** `addFunctions` reverts `FunctionAlreadyExists` if any selector is
+already registered. Upgrading an existing facet is a `Replace`, not an `Add`, and
+a mixed upgrade needs both actions in one `FacetCut[]`.
+
+### 20.2 Allowlist a DEX
+
+Entry: `WhitelistManagerFacet.setContractSelectorWhitelist(address, bytes4, bool)`
+(`src/Facets/WhitelistManagerFacet.sol:18`).
+
+```
+WhitelistManagerFacet.setContractSelectorWhitelist    Facets/WhitelistManagerFacet.sol:18
+ |-- LibDiamond.enforceIsContractOwner()               Libraries/LibDiamond.sol:97
+ `-- _setContractSelectorWhitelist(c, sel, approved)   Facets/WhitelistManagerFacet.sol:94
+       |-- LibAllowList.contractSelectorIsAllowed(...)  Libraries/LibAllowList.sol:140  (idempotence check)
+       |-- LibAllowList.addAllowedContractSelector(...) Libraries/LibAllowList.sol:70
+       |     |-- _addAllowedContract(c)                 Libraries/LibAllowList.sol:200
+       |     `-- _addAllowedSelector(sel)               Libraries/LibAllowList.sol:258
+       `-- emit ContractSelectorWhitelistChanged(c, sel, approved)
+```
+
+Use `batchSetContractSelectorWhitelist` (`:30`) to list a whole router in one
+transaction. Removal is the same path through
+`removeAllowedContractSelector` (`Libraries/LibAllowList.sol:108`), which also
+walks `_removeSelectorFromIterableList` (`:313`) to keep the enumerable list
+compact.
+
+**The `approveTo` rule.** If a DEX takes approvals at a different address from
+the one you call, that address must *also* be whitelisted, paired with the
+sentinel selector `APPROVE_TO_ONLY_SELECTOR` = `0xffffffff`. See
+`SwapperV2._executeSwaps:211`. Forgetting this is the single most common cause of
+`ContractCallNotAllowed()` on an otherwise correct route.
+
+### 20.3 Grant a per-selector permission
+
+Entry: `AccessManagerFacet.setCanExecute(bytes4, address, bool)`
+(`src/Facets/AccessManagerFacet.sol:24`).
+
+```
+AccessManagerFacet.setCanExecute            Facets/AccessManagerFacet.sol:24
+ |-- LibDiamond.enforceIsContractOwner()     Libraries/LibDiamond.sol:97
+ `-- LibAccess.addAccess(selector, executor) Libraries/LibAccess.sol:40
+       |-- accessStorage().execAccess[selector][executor] = true
+       `-- emit AccessGranted(executor, selector)
+```
+
+The permission is consumed by `LibAccess.enforceAccessControl()`
+(`Libraries/LibAccess.sol:60`), which a facet calls at the top of a restricted
+function. It permits the diamond owner *or* an address explicitly granted that
+selector. This is orthogonal to the allowlist of [§20.2](#202-allowlist-a-dex):
+allowlist answers "what may the diamond call out to", access control answers "who
+may call into the diamond".
+
+### 20.4 Execute a destination swap after a bridge fills
+
+Entry: a bridge calls its Receiver, which calls the Executor. Nothing here is
+user-initiated on the destination chain.
+
+```
+<bridge fills on destination chain>
+ |
+ `-- ReceiverAcrossV4.handleV3AcrossMessage(token, amount, relayer, message)
+       |                                     Periphery/ReceiverAcrossV4.sol
+       |-- onlySpokepool modifier (:24): msg.sender must be the spoke pool
+       |-- decode message -> (transactionId, swapData[], receiver)
+       |-- LibAsset.maxApproveERC20(token, executor, amount)
+       `-- try executor.swapAndCompleteBridgeTokens(...)   Periphery/Executor.sol:91
+             |   |-- _processSwaps(...)                     Periphery/Executor.sol:139
+             |   |     |-- snapshot startingBalance + finalAssetStartingBalance
+             |   |     |-- pull funds (erc20Proxy.transferFrom or depositAsset)
+             |   |     |-- _executeSwaps(...)               Periphery/Executor.sol:217
+             |   |     |     `-- per swap: revert UnAuthorized if callTo == erc20Proxy
+             |   |     |         then LibSwap.swap(...)     Libraries/LibSwap.sol:51
+             |   |     |           |-- InvalidContract if callTo has no code   :53
+             |   |     |           |-- NoSwapFromZeroBalance if fromAmount==0  :57
+             |   |     |           |-- LibAsset.maxApproveERC20(...)           :71
+             |   |     |           |-- callTo.call{value}(callData)   <-- UNTRUSTED  :87
+             |   |     |           `-- emit AssetSwapped                       :97
+             |   |     |-- noLeftovers modifier sweeps dust to _leftoverReceiver
+             |   |     |-- transfer surplus input + final asset to receiver
+             |   |     `-- emit LiFiTransferCompleted                          :204
+             |   `-- (success)
+             `-- catch: send raw tokens to receiver, emit LiFiTransferRecovered
+                                                     Periphery/ReceiverAcrossV4.sol:111
+```
+
+The `try`/`catch` is the whole point: a destination swap that reverts must never
+strand the bridged funds. The recovery path pays the user in the bridged asset
+instead of the requested one.
+
+### 20.5 Collect an integrator fee
+
+Entry: `FeeCollector.collectTokenFees(address, uint256, uint256, address)`
+(`src/Periphery/FeeCollector.sol:54`), normally invoked as one `SwapData` step
+inside a route rather than called directly.
+
+```
+route step: callTo = FeeCollector, callData = collectTokenFees(...)
+ `-- FeeCollector.collectTokenFees(token, integratorFee, lifiFee, integrator)
+       |                              Periphery/FeeCollector.sol:54
+       |-- LibAsset.transferFromERC20(token, msg.sender, this, total)
+       |-- _balances[integrator][token]  += integratorFee
+       |-- _lifiBalances[token]          += lifiFee
+       `-- emit FeesCollected(token, integrator, integratorFee, lifiFee)   :63
+```
+
+Withdrawal is a separate, permissionless-per-owner action:
+
+```
+FeeCollector.withdrawIntegratorFees(token)      Periphery/FeeCollector.sol:100
+ |-- amount = _balances[msg.sender][token]; return early if 0
+ |-- _balances[msg.sender][token] = 0            (effects before interaction)
+ |-- LibAsset.transferAsset(token, msg.sender, amount)
+ `-- emit FeesWithdrawn(token, msg.sender, amount)   :107
+```
+
+LiFi's own cut leaves through `withdrawLifiFees` (`:136`), gated `onlyOwner`.
+Native-asset variants are `collectNativeFees` (`:75`) and the matching
+withdrawals. `FeeForwarder` ([§12.2](#122-feeforwardersol)) is the alternative
+model: split and forward immediately instead of accruing a balance.
+
+### 20.6 Wrap ETH inside a route
+
+Entry: `TokenWrapper.deposit()` (`src/Periphery/TokenWrapper.sol:74`), used as a
+`SwapData` step so a native-in route can feed an ERC20-only DEX.
+
+```
+route step: callTo = TokenWrapper, callData = deposit(), value = amount
+ `-- TokenWrapper.deposit()                     Periphery/TokenWrapper.sol:74
+       |-- IWrappedToken(WRAPPED_TOKEN).deposit{value: msg.value}()
+       `-- transfer full WRAPPED_TOKEN balance back to msg.sender
+```
+
+`withdraw()` (`:88`) is the mirror: pull the caller's full wrapped balance via
+`transferFrom`, unwrap, forward the native out. Both operate on *balance*, not on
+an amount parameter, so the contract must never be left holding funds between
+transactions — which is exactly why it is a stateless periphery contract.
+
+### 20.7 Convert stETH to wstETH (and back)
+
+Entry: `LidoWrapper.wrapStETHToWstETH(uint256)`
+(`src/Periphery/LidoWrapper.sol:67`).
+
+```
+route step: callTo = LidoWrapper, callData = wrapStETHToWstETH(amount)
+ `-- LidoWrapper.wrapStETHToWstETH(_amount)      Periphery/LidoWrapper.sol:67
+       |-- IERC20(ST_ETH).transferFrom(msg.sender, this, _amount)
+       |-- stETHBalance = IERC20(ST_ETH).balanceOf(this)      <-- full balance
+       |-- wrappedAmount = ST_ETH.unwrap(stETHBalance)        <-- inverted naming
+       `-- IERC20(WST_ETH_ADDRESS).transfer(msg.sender, wrappedAmount)
+```
+
+`unwrapWstETHToStETH` (`:94`) is the mirror and calls `ST_ETH.wrap(_amount)`.
+
+**Why an aggregator needs this at all.** stETH is *rebasing*: your balance grows
+each day while the price stays pegged near 1 ETH. wstETH is *share-based*: your
+balance is constant while its price grows. Almost every DEX pool, lending market
+and bridge is written against non-rebasing ERC20s, so routes that touch Lido have
+to normalise to wstETH first. The conversion is not a swap and has no slippage —
+it is a units change on the same underlying claim.
+
+**Gotcha.** Note the naming inversion: Lido's `stETH.unwrap()` yields wstETH.
+Also note that `wrapStETHToWstETH` unwraps the contract's *entire* stETH balance,
+not `_amount`. The source comments this as safe because the contract is designed
+never to hold funds, but it means any stETH sitting in the contract is swept into
+the caller's output. See [§21.7](#217-balance-based-periphery-contracts).
+
+### 20.8 Sign a Permit2 route (gasless approval)
+
+Entry: `Permit2Proxy.callDiamondWithPermit2Witness(...)`
+(`src/Periphery/Permit2Proxy.sol:168`).
+
+```
+off-chain: user signs a PermitTransferFrom whose witness commits to
+           the exact diamond calldata:
+             witness = keccak256(abi.encode(WITNESS_TYPEHASH, lifiCall))
+                                                Periphery/Permit2Proxy.sol:179
+             typehash = PERMIT_WITH_WITNESS_TYPEHASH, built in the
+             constructor from Permit2's stub + WITNESS_TYPE_STRING   :54-57
+ |
+ `-- Permit2Proxy.callDiamondWithPermit2Witness(diamondCalldata, permit, sig)
+       |                                        Periphery/Permit2Proxy.sol:168
+       |-- PERMIT2.permitWitnessTransferFrom(permit, transferDetails,
+       |     owner, witness, WITNESS_TYPE_STRING, signature)          :189
+       |     `-- Permit2 verifies the signature AND that the witness matches,
+       |         then moves tokens owner -> Permit2Proxy
+       `-- _executeCalldata(diamondCalldata)                          :288
+             |-- LIFI_DIAMOND.call(diamondCalldata)
+             `-- revert CallToDiamondFailed(res) on failure
+```
+
+The witness is what makes this safe: the signature authorises *one specific
+route*, not a blanket transfer. A relayer who tries to substitute different
+calldata produces a different witness and Permit2 rejects the signature.
+Anti-replay comes from Permit2's own nonce/deadline, not from this contract.
+
+`callDiamondWithPermit2` (`:136`) is the witness-free variant, and
+`callDiamondWithEIP2612Signature` (`:77`) is the older single-token permit path
+for tokens that implement EIP-2612 natively.
+
+### 20.9 Patch an amount at execution time
+
+Entry: `Patcher.depositAndExecuteWithDynamicPatches(...)`
+(`src/Periphery/Patcher.sol:128`).
+
+The problem: at signing time you do not know the exact output of an earlier step,
+but the later step's calldata must contain it.
+
+```
+Patcher.depositAndExecuteWithDynamicPatches(token, amount, valueSource,
+                                            valueGetter, finalTarget,
+                                            data, offsets, delegateCall)
+ |                                          Periphery/Patcher.sol:128
+ |-- _depositAndApprove(token, amount, finalTarget)          :271
+ |     |-- LibAsset.transferFromERC20(token, msg.sender, this, amount)
+ |     |-- LibAsset.maxApproveERC20(token, finalTarget, amount)
+ |     `-- emit TokensDeposited                              :59
+ |-- value = _getDynamicValue(valueSource, valueGetter)      :298
+ |     |-- valueSource.staticcall(valueGetter)      <-- e.g. balanceOf(this)
+ |     |-- revert FailedToGetDynamicValue on failure
+ |     `-- revert InvalidReturnDataLength if returndata != 32 bytes
+ |-- for each offset: overwrite 32 bytes of `data` at that offset with `value`
+ |     `-- revert InvalidPatchOffset if offset + 32 > data.length
+ |-- finalTarget.call(data)  (or delegatecall)
+ |     `-- revert CallExecutionFailed on failure
+ `-- emit PatchExecuted                                      :153
+```
+
+`executeWithMultiplePatches` (`:228`) generalises this to several distinct values
+patched at several offset groups, with `MismatchedArrayLengths` guarding the
+parallel arrays.
+
+**Why the offset bound check matters.** The patch is a raw 32-byte memory
+overwrite into attacker-supplied calldata. `InvalidPatchOffset` is the only thing
+standing between a caller and rewriting an arbitrary word of `data`. See
+[§21.6](#216-patcher-writes-raw-words-into-calldata).
+
+### 20.10 Aggregate one swap across three DEXes
+
+Entry: `LiFiDEXAggregator.processRoute(...)`
+(`src/Periphery/LiFiDEXAggregator.sol:151`).
+
+```
+LiFiDEXAggregator.processRoute(tokenIn, amountIn, tokenOut, amountOutMin, to, route)
+ |                                       Periphery/LiFiDEXAggregator.sol:151
+ `-- processRouteInternal(...)            Periphery/LiFiDEXAggregator.sol:206
+       |-- snapshot balanceInInitial / balanceOutInitial
+       |-- while stream has bytes: read 1-byte command code
+       |     |  1 = processMyERC20      (funds already here)
+       |     |  2 = processUserERC20    (pull via transferFrom)
+       |     |  3 = processNative
+       |     |  4 = processOnePool
+       |     |  5 = processInsideBento
+       |     `-- 6 = applyPermit
+       |-- each source command -> distributeAndSwap(...)      :354
+       |     `-- read numPools, then per pool: 2-byte share + poolType, then
+       |         swapUniV2(...)      :492
+       |         swapUniV3(...)      :552   (pays inside uniswapV3SwapCallback)
+       |         swapCurve(...)      :1079
+       |         wrapNative(...)     :414
+       |         ... one handler per pool type
+       |-- assert amountOut >= amountOutMin  else MinimalOutputBalanceViolation
+       `-- emit Route(from, to, tokenIn, tokenOut, amountIn, amountOutMin, amountOut)  :262
+```
+
+A three-DEX split is one `distributeAndSwap` whose share bytes sum to `2^16`,
+each share dispatching to a different pool handler. The byte layout is decoded
+field by field in [§18.4](#184-route-byte-layout).
+
+**Callback safety.** V3-style pools call back into the aggregator to collect
+payment. Each callback checks `msg.sender == lastCalledPool` and then clears the
+sentinel, so a random contract cannot invoke `uniswapV3SwapCallback` and drain
+the aggregator. This is the same pattern Uniswap's own periphery uses via
+`CallbackValidation`, implemented here with a transient-style storage sentinel
+instead of an address recomputation.
+
+### 20.11 Emergency-pause the diamond
+
+Entry: `EmergencyPauseFacet.pauseDiamond()`
+(`src/Facets/EmergencyPauseFacet.sol:98`), callable by the pauser wallet or the
+owner — deliberately *not* timelocked, because an incident will not wait.
+
+```
+EmergencyPauseFacet.pauseDiamond()          Facets/EmergencyPauseFacet.sol:98
+ |-- OnlyPauserWalletOrOwner modifier
+ |-- cache the full facet/selector map to storage (for later restore)
+ `-- rewrite every selector in LibDiamond storage to point at this facet
+       `-- all calls now hit EmergencyPauseFacet's fallback and revert
+```
+
+Recovery is `unpauseDiamond(address[] _blacklist)` (`:132`), owner-only, which
+walks the cached map and reinstates every facet except those named in
+`_blacklist` — that is how a compromised facet is dropped permanently.
+`removeFacet(...)` (`:63`) is the surgical alternative that excises a single
+facet without pausing the rest.
+
+**Gas caveat.** Both the pause and the unpause iterate every registered selector.
+The source itself warns this "could potentially run out of gas if too many
+facets/function selectors are involved" (`:94`). On a diamond with 42 facets that
+is a real operational risk, and it is why `removeFacet` exists as the cheaper
+first response.
+
+### 20.12 Withdraw stuck funds
+
+Two separate mechanisms, depending on where the funds are stuck.
+
+**In the diamond** — `WithdrawFacet.withdraw(address, address payable, uint256)`
+(`src/Facets/WithdrawFacet.sol:65`):
+
+```
+WithdrawFacet.withdraw(assetAddress, receiver, amount)   Facets/WithdrawFacet.sol:65
+ |-- LibDiamond.enforceIsContractOwner()
+ `-- _withdrawAsset(assetAddress, receiver, amount)      Facets/WithdrawFacet.sol:82
+       `-- LibAsset.transferAsset(...)  (native or ERC20)
+```
+
+`executeCallAndWithdraw(...)` (`:35`) is the escape hatch for funds that need a
+call to liberate them first, for example claiming from a bridge that expects the
+diamond to be the claimant.
+
+**In a periphery contract** — `WithdrawablePeriphery.withdrawToken(address, address payable, uint256)`
+(`src/Helpers/WithdrawablePeriphery.sol:27`), inherited by the Receivers,
+`GasZipPeriphery`, `Permit2Proxy` and others:
+
+```
+WithdrawablePeriphery.withdrawToken(token, receiver, amount)
+ |                                  Helpers/WithdrawablePeriphery.sol:27
+ |-- onlyOwner
+ |-- LibAsset.transferAsset(token, receiver, amount)
+ `-- emit TokensWithdrawn(token, receiver, amount)    :40
+```
+
+Neither path is a backdoor into user funds: both are owner-gated and both act on
+assets the contract already holds, which in correct operation is only dust,
+because every flow in this codebase is designed to end with a zero balance.
+
+
+---
+
+## 21. Security notes
+
+This codebase's defining property is that it makes **arbitrary external calls
+with user-supplied calldata, by design**. Everything below follows from that.
+
+### 21.1 The allowlist is the load-bearing control, and it is not in `LibSwap`
+
+`LibSwap.swap` (`src/Libraries/LibSwap.sol:51`) performs the raw call:
+
+```solidity
+(bool success, bytes memory res) = _swap.callTo.call{
+    value: nativeValue
+}(_swap.callData);
+```
+
+That is `src/Libraries/LibSwap.sol:86-88`. It validates that `callTo` has code
+(`:53`) and that `fromAmount != 0` (`:57`), and **nothing else**. It never
+consults `LibAllowList`.
+
+The check lives one level up, in the callers:
+
+| Caller | Allowlist check at |
+|---|---|
+| `SwapperV2._executeSwaps` (no-reserve overload) | `src/Helpers/SwapperV2.sol:205`, `:211` |
+| `SwapperV2._executeSwaps` (reserve overload) | `src/Helpers/SwapperV2.sol:252`, `:258` |
+| `GenericSwapFacetV3` | `src/Facets/GenericSwapFacetV3.sol:164`, `:359`, `:368`, `:420`, `:431` |
+
+The practical consequence: **any new facet that calls `LibSwap.swap` directly,
+without going through `SwapperV2`, has no allowlist at all.** When reviewing a
+new facet, that is the first thing to check. `grep -n 'LibSwap.swap' src/` and
+confirm every call site is preceded by a `contractSelectorIsAllowed` gate.
+
+The check is granular on `(contract, selector)` rather than on contract alone.
+`LibAllowList` retains the older contract-only and selector-only views
+(`contractIsAllowed` `:168`, `selectorIsAllowed` `:179`) purely for
+already-deployed facets, and the source marks both "Avoid use in new code"
+(`:165`, `:176`).
+
+### 21.2 The Executor has no allowlist whatsoever
+
+`Periphery/Executor.sol` is a standalone contract, not a facet, and its
+`_executeSwaps` (`src/Periphery/Executor.sol:217`) has exactly one guard before
+calling `LibSwap.swap`:
+
+```solidity
+if (_swapData[i].callTo == address(erc20Proxy)) {
+    revert UnAuthorized(); // Prevent calling ERC20 Proxy directly
+}
+```
+
+`grep -n 'LibAllowList' src/Periphery/Executor.sol` returns nothing.
+
+Anyone can call `Executor.swapAndExecute` with any calldata. That is safe only
+because of two structural properties, and both must hold:
+
+1. **The Executor holds no funds between transactions.** It pulls exactly what it
+   needs, sweeps leftovers to `_leftoverReceiver` via the `noLeftovers` modifier,
+   and forwards the final asset. A balance left in it is stealable by the next
+   caller.
+2. **Approvals live in `ERC20Proxy`, not the Executor.** `ERC20Proxy.transferFrom`
+   (`src/Periphery/ERC20Proxy.sol:53`) only honours calls from an
+   `authorizedCallers` address. The single `callTo != erc20Proxy` check above
+   stops an attacker from routing a "swap" whose target is the proxy itself,
+   which would otherwise let them spend other users' standing approvals.
+
+That one-line check is doing far more work than its size suggests.
+
+### 21.3 Approval residue
+
+`LibAsset.maxApproveERC20` is called before every swap (`LibSwap.sol:71`) and
+grants an unlimited allowance to `approveTo`. Nothing revokes it afterwards.
+
+For a whitelisted DEX that is intentional and saves gas. The danger is the
+`approveTo != callTo` case: a route could otherwise grant an infinite allowance
+to an arbitrary address that was never vetted. `SwapperV2` closes this by
+requiring the `approveTo` address to be whitelisted against the sentinel selector
+`APPROVE_TO_ONLY_SELECTOR` = `0xffffffff`, declared at
+`src/Helpers/SwapperV2.sol:25` and enforced at `:213` and `:260`. The intent is
+documented in the NatSpec above each overload (`:185`, `:226`): whitelisting
+`approveTo` against this sentinel is what "prevent[s] allowance leaks".
+
+Because approvals persist, the blast radius of de-whitelisting a compromised DEX
+is not zero — the standing allowance survives removal from the list. Removing a
+contract from the allowlist stops *new* routes; it does not claw back approvals
+already granted by *past* routes.
+
+### 21.4 Diamond upgrade trust, and what the timelock does not cover
+
+Whoever owns the diamond can replace any function with anything, including one
+that transfers standing user approvals. Ownership is therefore the root of all
+trust here. In production the owner is `LiFiTimelockController`
+([§9](#9-security-lifitimelockcontrollersol)), which forces
+`schedule` → `minDelay` → `execute` and gives integrators a window to react.
+
+Two gaps worth knowing:
+
+- **`EmergencyPauseFacet` is deliberately outside the timelock.** `pauseDiamond`
+  (`src/Facets/EmergencyPauseFacet.sol:98`) is callable immediately by the pauser
+  wallet. That is correct for incident response, but it means the pauser key can
+  halt the protocol with no delay. It can only pause, not redirect funds.
+- **`unpauseDiamond` takes a `_blacklist`** (`:132`) and is owner-only. The
+  restore path is where a facet gets permanently dropped, so the pause/unpause
+  cycle is itself an upgrade mechanism.
+
+`LibDiamond.diamondCut` also delegatecalls an arbitrary `_init` address
+(`initializeDiamondCut`, `src/Libraries/LibDiamond.sol:326`). An upgrade
+proposal must be reviewed for what `_init` does, not just for which selectors
+move.
+
+### 21.5 Fee-on-transfer and rebasing tokens
+
+`LibSwap.swap` used to assert that the contract held at least `fromAmount` before
+swapping. That check was deliberately deleted; the source explains why at
+`src/Libraries/LibSwap.sol:78-82`:
+
+> we used to have a sending asset balance check here
+> (`initialSendingAssetBalance >= _swap.fromAmount`) — this check was removed to
+> allow for more flexibility with rebasing/fee-taking tokens — the general
+> assumption is that if not enough tokens are available to execute the calldata,
+> the transaction will fail anyway — the error message might not be as explicit
+> though
+
+So the protocol tolerates these tokens rather than supporting them. The
+consequences to hold in mind:
+
+- **Accounting is balance-difference based, everywhere.** `LibSwap` computes the
+  output as `newBalance - initialReceivingAssetBalance` (`:104-106`, inside the
+  `AssetSwapped` emit), and
+  `SwapperV2`'s `noLeftovers` modifier and `Executor._processSwaps`
+  (`src/Periphery/Executor.sol:139`) both snapshot before and after. This is the
+  right design for fee-on-transfer tokens and it is why `minAmount` checks are
+  the real protection, not the declared amounts.
+- **Failures are opaque.** A fee-on-transfer token that leaves the contract short
+  produces whatever revert the DEX emits, not a clear LiFi error.
+- **A positive rebase mid-route** is swept as "leftover" to `_leftoverReceiver`,
+  not to the original holder.
+
+### 21.6 `Patcher` writes raw words into calldata
+
+`Patcher` (`src/Periphery/Patcher.sol`) overwrites 32-byte words of
+caller-supplied calldata at caller-supplied offsets, then calls or *delegatecalls*
+the target. The guards are:
+
+| Guard | Line | Stops |
+|---|---|---|
+| `InvalidPatchOffset` | `:322` (`offset + 32 > patchedData.length`), plus `:378`, `:413` for empty offset arrays | writing past the buffer |
+| `InvalidReturnDataLength` | `_getDynamicValue` `:298` | a value source returning non-32-byte data |
+| `FailedToGetDynamicValue` | `_getDynamicValue` `:298` | a reverting or non-existent value source |
+| `MismatchedArrayLengths` | multi-patch variants | desynchronised parallel arrays |
+
+The security argument is that `Patcher` is **stateless and holds no approvals**:
+it pulls tokens from `msg.sender` within the same call
+(`_depositAndApprove` `:271`) and approves only `finalTarget`. A malicious patch
+can therefore only damage the caller's own funds for that transaction.
+
+That argument depends entirely on `Patcher` never being granted a standing
+allowance and never holding a balance. It is also the contract with a
+`delegateCall` flag on its public entry points, so a user who delegatecalls a
+hostile `finalTarget` executes it in `Patcher`'s context — harmless only because
+there is no state to corrupt. Do not add storage to this contract.
+
+### 21.7 Balance-based periphery contracts
+
+Several periphery contracts operate on their **entire balance** rather than on an
+amount parameter:
+
+| Contract | Function | Behaviour |
+|---|---|---|
+| `LidoWrapper` | `wrapStETHToWstETH` `:67` | unwraps `balanceOf(this)`, not `_amount` |
+| `TokenWrapper` | `deposit` `:74` / `withdraw` `:88` | forwards full balance |
+
+This is intentional — the source comments "This contract is designed to not hold
+funds so sending full balance is not a problem" — and it is efficient. But it
+means **any stray balance is swept to whoever calls next**. These contracts must
+never be used as a holding account, and a donation to them is a gift to the next
+caller rather than an exploit against the protocol.
+
+### 21.8 Destination-call griefing
+
+On the destination chain the bridged funds have already arrived and the recipient
+cannot be made to wait. Every Receiver therefore wraps the Executor call in
+`try`/`catch` and pays out the raw bridged asset on failure, emitting
+`LiFiTransferRecovered` (`ReceiverAcrossV3:115`, `ReceiverAcrossV4:111`,
+`ReceiverStargateV2:159/179/204/230`, `ReceiverChainflip:143/165`).
+
+The residual risks are about *gas*, not custody:
+
+- Receivers cap the gas forwarded to the Executor, and `ReceiverStargateV2` keeps
+  a `recoverGas` reserve so the recovery transfer itself cannot run out of gas.
+  Sizing that reserve wrong turns a recoverable failure into a stuck message.
+- A destination swap crafted to consume all forwarded gas triggers the recovery
+  path deliberately, so the user receives the bridged token instead of the one
+  they asked for. That is a griefing vector, not a theft vector.
+
+### 21.9 Receiver authentication
+
+Each Receiver trusts exactly one bridge contract, enforced by a modifier that
+checks `msg.sender`:
+
+| Receiver | Modifier | Line |
+|---|---|---|
+| `ReceiverAcrossV4` | `onlySpokepool` | `src/Periphery/ReceiverAcrossV4.sol:24` |
+| `ReceiverAcrossV3` | `onlySpokepool` | `src/Periphery/ReceiverAcrossV3.sol:28` |
+| `ReceiverStargateV2` | `onlyEndpointV2` | `src/Periphery/ReceiverStargateV2.sol:58` |
+| `ReceiverChainflip` | `onlyChainflipVault` | `src/Periphery/ReceiverChainflip.sol:36` |
+
+Without this, anyone could call `handleV3AcrossMessage` with a forged payload and
+have the Receiver approve and spend whatever tokens it happened to hold. Combined
+with the "hold no funds" property, the modifier is what makes the Receivers safe.
+
+### 21.10 A reviewer's checklist
+
+When a new facet or periphery contract lands, check in this order:
+
+1. Does it call `LibSwap.swap` without a preceding `contractSelectorIsAllowed`
+   gate? ([§21.1](#211-the-allowlist-is-the-load-bearing-control-and-it-is-not-in-libswap))
+2. Can it end a transaction holding a non-zero balance?
+   ([§21.2](#212-the-executor-has-no-allowlist-whatsoever), [§21.7](#217-balance-based-periphery-contracts))
+3. Does it grant an approval to an address that is not `callTo`, without the
+   `0xffffffff` sentinel? ([§21.3](#213-approval-residue))
+4. Is it reachable by anyone, and if so does it depend on caller-supplied
+   addresses being honest?
+5. Does it add storage to a contract whose safety argument is statelessness?
+   ([§21.6](#216-patcher-writes-raw-words-into-calldata))
+6. If it receives cross-chain messages, is `msg.sender` pinned to one bridge?
+   ([§21.9](#219-receiver-authentication))
