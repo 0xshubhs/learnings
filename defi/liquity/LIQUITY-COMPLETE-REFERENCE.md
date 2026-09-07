@@ -632,3 +632,152 @@ removal O(1).
 ---
 
                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      
+
+## 1.5 `BorrowerOperations`
+
+[`v1-dev/packages/contracts/contracts/BorrowerOperations.sol:16-666`](v1-dev/packages/contracts/contracts/BorrowerOperations.sol#L16-L666). The only contract a borrower ever calls to mutate a Trove.
+`TroveManager` holds the storage but refuses every write that does not come from
+here.
+
+`contract BorrowerOperations is LiquityBase, Ownable, CheckContract, IBorrowerOperations`.
+
+### 1.5.1 Structs
+
+`LocalVariables_openTrove` at [`v1-dev/packages/contracts/contracts/BorrowerOperations.sol:58-67`](v1-dev/packages/contracts/contracts/BorrowerOperations.sol#L58-L67) and `LocalVariables_adjustTrove` at
+[`v1-dev/packages/contracts/contracts/BorrowerOperations.sol:40-56`](v1-dev/packages/contracts/contracts/BorrowerOperations.sol#L40-L56) exist purely to dodge stack-too-deep. `ContractsCache` at [`v1-dev/packages/contracts/contracts/BorrowerOperations.sol:69-73`](v1-dev/packages/contracts/contracts/BorrowerOperations.sol#L69-L73)
+caches `troveManager`, `activePool` and `lusdToken` in memory so the hot path
+avoids repeated `SLOAD`s. `enum BorrowerOperation { openTrove, closeTrove,
+adjustTrove }` at [`v1-dev/packages/contracts/contracts/BorrowerOperations.sol:75-79`](v1-dev/packages/contracts/contracts/BorrowerOperations.sol#L75-L79) tags events.
+
+### 1.5.2 `openTrove(uint _maxFeePercentage, uint _LUSDAmount, address _upperHint, address _lowerHint)` — [`v1-dev/packages/contracts/contracts/BorrowerOperations.sol:156`](v1-dev/packages/contracts/contracts/BorrowerOperations.sol#L156)
+
+**External, payable.** Collateral arrives as `msg.value`.
+
+| Parameter | Meaning |
+|---|---|
+| `_maxFeePercentage` | Slippage guard on the borrowing fee |
+| `_LUSDAmount` | Net LUSD requested, before fee and gas compensation |
+| `_upperHint`, `_lowerHint` | Neighbours for the `SortedTroves` insert |
+
+**Checks, in order:**
+
+| Guard | Line | Revert |
+|---|---|---|
+| `_requireValidMaxFeePercentage` | [`v1-dev/packages/contracts/contracts/BorrowerOperations.sol:567`](v1-dev/packages/contracts/contracts/BorrowerOperations.sol#L567) | `"Max fee percentage must be between 0.5% and 100%"` |
+| `_requireTroveisNotActive` | [`v1-dev/packages/contracts/contracts/BorrowerOperations.sol:483`](v1-dev/packages/contracts/contracts/BorrowerOperations.sol#L483) | `"BorrowerOps: Trove is active"` |
+| ICR check | [`v1-dev/packages/contracts/contracts/BorrowerOperations.sol:535`](v1-dev/packages/contracts/contracts/BorrowerOperations.sol#L535) | `"BorrowerOps: An operation that would result in ICR < MCR is not permitted"` |
+| Recovery-mode ICR | [`v1-dev/packages/contracts/contracts/BorrowerOperations.sol:539`](v1-dev/packages/contracts/contracts/BorrowerOperations.sol#L539) | `"BorrowerOps: Operation must leave trove with ICR >= CCR"` |
+| TCR check | [`v1-dev/packages/contracts/contracts/BorrowerOperations.sol:547`](v1-dev/packages/contracts/contracts/BorrowerOperations.sol#L547) | `"BorrowerOps: An operation that would result in TCR < CCR is not permitted"` |
+
+**Body.** Fetches the price, decides Recovery Mode, charges the borrowing fee
+via `_triggerBorrowingFee` (skipped entirely in Recovery Mode), computes
+`compositeDebt = netDebt + 200e18`, derives the ICR, then:
+
+1. `setTroveStatus(borrower, 1)`
+2. `increaseTroveColl` / `increaseTroveDebt`
+3. `updateTroveRewardSnapshots`
+4. `updateStakeAndTotalStakes`
+5. `sortedTroves.insert(borrower, NICR, upperHint, lowerHint)`
+6. `addTroveOwnerToArray`
+7. Move ETH into `ActivePool`, mint `_LUSDAmount` to the borrower, mint 200 LUSD to `GasPool`
+
+**Emits** `TroveUpdated` and `TroveCreated`.
+
+**Note the ordering:** the borrower receives LUSD only after every state write.
+There is no callback and no external call to the borrower, so reentrancy has no
+foothold. Compare Aave, which needs an explicit guard because aTokens can hook
+transfers.
+
+### 1.5.3 The adjust family
+
+Five thin wrappers over one implementation:
+
+| Function | Line | Delegates to |
+|---|---|---|
+| `addColl` | [`v1-dev/packages/contracts/contracts/BorrowerOperations.sol:213`](v1-dev/packages/contracts/contracts/BorrowerOperations.sol#L213) | `_adjustTrove(msg.sender, 0, 0, false, ...)` |
+| `moveETHGainToTrove` | [`v1-dev/packages/contracts/contracts/BorrowerOperations.sol:218`](v1-dev/packages/contracts/contracts/BorrowerOperations.sol#L218) | Same, but callable only by the Stability Pool |
+| `withdrawColl` | [`v1-dev/packages/contracts/contracts/BorrowerOperations.sol:224`](v1-dev/packages/contracts/contracts/BorrowerOperations.sol#L224) | `_adjustTrove(msg.sender, _collWithdrawal, 0, false, ...)` |
+| `withdrawLUSD` | [`v1-dev/packages/contracts/contracts/BorrowerOperations.sol:229`](v1-dev/packages/contracts/contracts/BorrowerOperations.sol#L229) | `_adjustTrove(..., _LUSDAmount, true, ...)` |
+| `repayLUSD` | [`v1-dev/packages/contracts/contracts/BorrowerOperations.sol:234`](v1-dev/packages/contracts/contracts/BorrowerOperations.sol#L234) | `_adjustTrove(..., _LUSDAmount, false, ...)` |
+| `adjustTrove` | [`v1-dev/packages/contracts/contracts/BorrowerOperations.sol:238`](v1-dev/packages/contracts/contracts/BorrowerOperations.sol#L238) | Everything at once |
+
+`moveETHGainToTrove` is gated by `_requireCallerIsStabilityPool` at [`v1-dev/packages/contracts/contracts/BorrowerOperations.sol:559`](v1-dev/packages/contracts/contracts/BorrowerOperations.sol#L559),
+reverting `"BorrowerOps: Caller is not Stability Pool"`. It is how a depositor
+compounds an ETH gain straight back into their Trove.
+
+#### `_adjustTrove(...)` — [`v1-dev/packages/contracts/contracts/BorrowerOperations.sol:249`](v1-dev/packages/contracts/contracts/BorrowerOperations.sol#L249)
+
+The single mutation path. Checks in order:
+
+| Guard | Line | Revert |
+|---|---|---|
+| `_requireValidMaxFeePercentage` | [`v1-dev/packages/contracts/contracts/BorrowerOperations.sol:567`](v1-dev/packages/contracts/contracts/BorrowerOperations.sol#L567) | Fee band |
+| `_requireSingularCollChange` | [`v1-dev/packages/contracts/contracts/BorrowerOperations.sol:465`](v1-dev/packages/contracts/contracts/BorrowerOperations.sol#L465) | `"BorrowerOperations: Cannot withdraw and add coll"` |
+| `_requireCallerIsBorrower` | [`v1-dev/packages/contracts/contracts/BorrowerOperations.sol:469`](v1-dev/packages/contracts/contracts/BorrowerOperations.sol#L469) | `"BorrowerOps: Caller must be the borrower for a withdrawal"` |
+| `_requireNonZeroAdjustment` | [`v1-dev/packages/contracts/contracts/BorrowerOperations.sol:473`](v1-dev/packages/contracts/contracts/BorrowerOperations.sol#L473) | `"BorrowerOps: There must be either a collateral change or a debt change"` |
+| `_requireTroveisActive` | [`v1-dev/packages/contracts/contracts/BorrowerOperations.sol:478`](v1-dev/packages/contracts/contracts/BorrowerOperations.sol#L478) | `"BorrowerOps: Trove does not exist or is closed"` |
+| `_requireNonZeroDebtChange` | [`v1-dev/packages/contracts/contracts/BorrowerOperations.sol:487`](v1-dev/packages/contracts/contracts/BorrowerOperations.sol#L487) | `"BorrowerOps: Debt increase requires non-zero debtChange"` |
+| `_requireNotInRecoveryMode` | [`v1-dev/packages/contracts/contracts/BorrowerOperations.sol:491`](v1-dev/packages/contracts/contracts/BorrowerOperations.sol#L491) | `"BorrowerOps: Operation not permitted during Recovery Mode"` |
+| `_requireNoCollWithdrawal` | [`v1-dev/packages/contracts/contracts/BorrowerOperations.sol:495`](v1-dev/packages/contracts/contracts/BorrowerOperations.sol#L495) | `"BorrowerOps: Collateral withdrawal not permitted Recovery Mode"` |
+| `_requireValidLUSDRepayment` | [`v1-dev/packages/contracts/contracts/BorrowerOperations.sol:555`](v1-dev/packages/contracts/contracts/BorrowerOperations.sol#L555) | `"BorrowerOps: Amount repaid must not be larger than the Trove's debt"` |
+| `_requireSufficientLUSDBalance` | [`v1-dev/packages/contracts/contracts/BorrowerOperations.sol:563`](v1-dev/packages/contracts/contracts/BorrowerOperations.sol#L563) | `"BorrowerOps: Caller doesnt have enough LUSD to make repayment"` |
+
+**Recovery Mode is far stricter.** `_requireValidAdjustmentInCurrentMode` at
+[`v1-dev/packages/contracts/contracts/BorrowerOperations.sol:500`](v1-dev/packages/contracts/contracts/BorrowerOperations.sol#L500) forbids collateral withdrawal and any debt increase that does not
+improve ICR ([`v1-dev/packages/contracts/contracts/BorrowerOperations.sol:543`](v1-dev/packages/contracts/contracts/BorrowerOperations.sol#L543), `"BorrowerOps: Cannot decrease your Trove's ICR in
+Recovery Mode"`). Normal mode only requires the result to clear MCR and keep TCR
+above CCR.
+
+**Body.** Applies pending redistribution rewards first, charges the borrowing
+fee on a debt increase, computes the new ICR, re-inserts into `SortedTroves`
+using `sortedTroves.reInsert`, then moves tokens through
+`_moveTokensAndETHfromAdjustment` at [`v1-dev/packages/contracts/contracts/BorrowerOperations.sol:419`](v1-dev/packages/contracts/contracts/BorrowerOperations.sol#L419).
+
+### 1.5.4 `closeTrove()` — [`v1-dev/packages/contracts/contracts/BorrowerOperations.sol:321`](v1-dev/packages/contracts/contracts/BorrowerOperations.sol#L321)
+
+- **Checks:** Trove active; not in Recovery Mode ([`v1-dev/packages/contracts/contracts/BorrowerOperations.sol:491`](v1-dev/packages/contracts/contracts/BorrowerOperations.sol#L491)); the caller holds
+  enough LUSD to repay `debt - 200e18`.
+- **Body:** applies pending rewards, removes the stake, closes with status
+  `closedByOwner`, removes from `SortedTroves`, burns the borrower's LUSD, burns
+  the 200 LUSD from `GasPool`, and returns all collateral.
+- The 200 LUSD gas compensation is returned here, which is why the borrower only
+  needs to repay the net debt.
+
+### 1.5.5 `claimCollateral()` — [`v1-dev/packages/contracts/contracts/BorrowerOperations.sol:356`](v1-dev/packages/contracts/contracts/BorrowerOperations.sol#L356)
+
+Pulls the caller's balance out of `CollSurplusPool`. This is the money left over
+after a Recovery-Mode capped liquidation or a full redemption.
+
+### 1.5.6 Fee and helper internals
+
+| Function | Line | Role |
+|---|---|---|
+| `_triggerBorrowingFee` | [`v1-dev/packages/contracts/contracts/BorrowerOperations.sol:363`](v1-dev/packages/contracts/contracts/BorrowerOperations.sol#L363) | Decays the base rate, computes the fee, mints it to `LQTYStaking`, calls `increaseF_LUSD` |
+| `_getCollChange` | [`v1-dev/packages/contracts/contracts/BorrowerOperations.sol:382`](v1-dev/packages/contracts/contracts/BorrowerOperations.sol#L382) | Normalises `msg.value` versus `_collWithdrawal` into `(collChange, isCollIncrease)` |
+| `_updateTroveFromAdjustment` | [`v1-dev/packages/contracts/contracts/BorrowerOperations.sol:399`](v1-dev/packages/contracts/contracts/BorrowerOperations.sol#L399) | Applies the deltas to `TroveManager` storage |
+| `_moveTokensAndETHfromAdjustment` | [`v1-dev/packages/contracts/contracts/BorrowerOperations.sol:419`](v1-dev/packages/contracts/contracts/BorrowerOperations.sol#L419) | Routes ETH and LUSD between pools and the borrower |
+| `_activePoolAddColl` | [`v1-dev/packages/contracts/contracts/BorrowerOperations.sol:446`](v1-dev/packages/contracts/contracts/BorrowerOperations.sol#L446) | Low-level ETH send, reverts `"BorrowerOps: Sending ETH to ActivePool failed"` ([`v1-dev/packages/contracts/contracts/BorrowerOperations.sol:448`](v1-dev/packages/contracts/contracts/BorrowerOperations.sol#L448)) |
+| `_withdrawLUSD` | [`v1-dev/packages/contracts/contracts/BorrowerOperations.sol:452`](v1-dev/packages/contracts/contracts/BorrowerOperations.sol#L452) | Increases `ActivePool` debt and mints |
+| `_repayLUSD` | [`v1-dev/packages/contracts/contracts/BorrowerOperations.sol:458`](v1-dev/packages/contracts/contracts/BorrowerOperations.sol#L458) | Decreases `ActivePool` debt and burns |
+
+**Fee accrues to stakers, not to the protocol.** `_triggerBorrowingFee` mints
+LUSD directly to `LQTYStaking` and calls `increaseF_LUSD`, so the fee enters the
+staking accumulator in the same transaction. There is no treasury and no
+governance-controlled fee switch anywhere in v1.
+
+### 1.5.7 ICR / TCR projection helpers
+
+| Function | Line | Purpose |
+|---|---|---|
+| `_getNewNominalICRFromTroveChange` | [`v1-dev/packages/contracts/contracts/BorrowerOperations.sol:580`](v1-dev/packages/contracts/contracts/BorrowerOperations.sol#L580) | Projected NICR, for the list hint |
+| `_getNewICRFromTroveChange` | [`v1-dev/packages/contracts/contracts/BorrowerOperations.sol:600`](v1-dev/packages/contracts/contracts/BorrowerOperations.sol#L600) | Projected ICR, for the MCR check |
+| `_getNewTroveAmounts` | [`v1-dev/packages/contracts/contracts/BorrowerOperations.sol:620`](v1-dev/packages/contracts/contracts/BorrowerOperations.sol#L620) | Applies deltas without writing |
+| `_getNewTCRFromTroveChange` | [`v1-dev/packages/contracts/contracts/BorrowerOperations.sol:641`](v1-dev/packages/contracts/contracts/BorrowerOperations.sol#L641) | Projected system TCR |
+| `getCompositeDebt` | [`v1-dev/packages/contracts/contracts/BorrowerOperations.sol:663`](v1-dev/packages/contracts/contracts/BorrowerOperations.sol#L663) | Public wrapper over `_getCompositeDebt` |
+
+These compute the *post-state* before committing to it, which is how the
+contract enforces "an operation that would result in ICR < MCR is not permitted"
+rather than discovering the violation afterwards.
+
+---
+
