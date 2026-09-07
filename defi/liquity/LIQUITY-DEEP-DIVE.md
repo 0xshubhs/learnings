@@ -928,3 +928,151 @@ it is most needed, while Liquity's 200 LUSD reserve is untouched. That single
 choice explains much of the behavioural difference between the two under stress.
 
 ---
+## 4. Security notes
+
+**Recovery Mode is a circuit breaker with a griefing edge.** Below a 150% TCR the
+system will liquidate Troves that are individually healthy
+([`Dependencies/LiquityBase.sol:83-87`](v1-dev/packages/contracts/contracts/Dependencies/LiquityBase.sol#L83-L87)).
+Since TCR is a global figure, a large borrower can push the system into Recovery
+Mode by withdrawing collateral or minting heavily, making other people's positions
+liquidatable. The capped-offset branch limits the damage, seizing only 110% and
+returning the surplus
+([`TroveManager.sol:467-489`](v1-dev/packages/contracts/contracts/TroveManager.sol#L467-L489)),
+so the attack costs the attacker real fees and yields the victim's surplus back.
+It is a griefing vector, not a theft vector. v2 replaces the global mode with
+per-branch shutdown, which shrinks the blast radius considerably.
+
+**The oracle is the whole trust model.** With no governance, a bad price is
+unrecoverable: nobody can swap the feed. Hence the five-state machine and its four
+independent sanity checks. Note the residual risk that remains anyway: the 50%
+inter-round deviation guard
+([`PriceFeed.sol:45`](v1-dev/packages/contracts/contracts/PriceFeed.sol#L45))
+will not catch a slow manipulation delivered in several sub-50% steps, and the
+`bothOraclesUntrusted` state means the system keeps operating on the last good
+price rather than halting. Freezing would be safer but there would be no one to
+unfreeze it.
+
+**110% is tight, and latency is the real parameter.** A 110% MCR leaves 10% of
+headroom, but ETH can move 10% in minutes while Chainlink updates on a deviation
+threshold. The Stability Pool is what makes this survivable: liquidation is
+atomic and needs no bidder, so the gap between "became liquidatable" and "was
+liquidated" is one transaction rather than an auction. The design compensates for
+a thin buffer with a fast mechanism.
+
+**Redemption is hostile by design, and that is the point.** Being redeemed costs
+you nothing in dollar terms, but it force-deleverages you at a moment you did not
+choose, and it always finds whoever ran the thinnest margin. In v1 that is
+arbitrary punishment for efficient collateral use. v2's reordering by interest
+rate is the fix: you now choose your own place in the queue by paying for it.
+
+**Gas compensation exists because liquidation is a public good.** The 200 LUSD
+reserve is minted into a `GasPool` at open and paid to the liquidator. It is why
+liquidating a tiny underwater Trove is still worth someone's gas. The cost is that
+every borrower carries 200 LUSD of debt they never receive, which makes small
+Troves uneconomic and is why `MIN_NET_DEBT` is 1,800 LUSD
+([`Dependencies/LiquityBase.sol:31`](v1-dev/packages/contracts/contracts/Dependencies/LiquityBase.sol#L31)).
+
+**The last Trove cannot be liquidated.** `_liquidateRecoveryMode` returns early
+when only one Trove remains
+([`TroveManager.sol:362`](v1-dev/packages/contracts/contracts/TroveManager.sol#L362)),
+and redemption enforces the same
+([`_requireMoreThanOneTroveInSystem`, TroveManager.sol:1488](v1-dev/packages/contracts/contracts/TroveManager.sol#L1488)).
+Without this the system could reach a state with debt, no Troves, and no way to
+compute a meaningful TCR. It is the sort of edge case that only shows up when you
+cannot ship a fix later.
+
+**Stability Pool withdrawals are blocked while anyone is liquidatable.**
+`_requireNoUnderCollateralizedTroves`
+([`StabilityPool.sol:944`](v1-dev/packages/contracts/contracts/StabilityPool.sol#L944))
+stops depositors from front-running a liquidation they are supposed to absorb.
+Without it, watching the mempool and withdrawing just ahead of a large liquidation
+would be free money at the expense of everyone who stayed.
+
+**The scale mechanism is precision, not economics.** A depositor whose stake has
+shrunk by more than two scale factors reads as zero
+([`_getCompoundedStakeFromSnapshots`, StabilityPool.sol:781-806](v1-dev/packages/contracts/contracts/StabilityPool.sol#L781-L806)),
+which is correct: their deposit really has been reduced by a factor of 1e18. The
+`MIN_LUSD_IN_SP` floor is what keeps `P` strictly positive
+([`StabilityPool.sol:552`](v1-dev/packages/contracts/contracts/StabilityPool.sol#L552),
+[`:622`](v1-dev/packages/contracts/contracts/StabilityPool.sol#L622)) and is the
+reason this version needs no epoch dimension at all. If you port this pattern,
+port the floor with it.
+
+**Error feedback is load-bearing.** Both the redistribution accumulators
+([`TroveManager.sol:1217-1225`](v1-dev/packages/contracts/contracts/TroveManager.sol#L1217-L1225))
+and the Stability Pool offset
+([`StabilityPool.sol:531-577`](v1-dev/packages/contracts/contracts/StabilityPool.sol#L531-L577))
+measure their own truncation and carry it forward. Drop that and per-user balances
+drift from pool balances over thousands of operations, eventually making the last
+withdrawal fail. The Stability Pool additionally adds 1 to the loss quotient so the
+rounding always favours the pool rather than the depositor.
+
+**Immutability relocates risk, it does not remove it.** Everything above is
+handled in code because there is no one to handle it later. That is the honest
+summary of the whole design: Liquity is not safer than Aave by construction, it
+has simply moved every decision forward in time to before deployment, where it can
+be audited once and never revisited. Whether that is an improvement depends
+entirely on whether the authors thought of everything.
+
+---
+
+## 5. Exercises: trace these yourself
+
+1. **Prove the redistribution invariant.** Open
+   [`TroveManager.sol:1203-1237`](v1-dev/packages/contracts/contracts/TroveManager.sol#L1203-L1237).
+   Three Troves have stakes 100, 200 and 700. A fourth is liquidated with 10 ETH
+   and 20,000 LUSD to redistribute. Compute `L_ETH` and `L_LUSDDebt` by hand, then
+   compute each Trove's pending reward via
+   [`getPendingETHReward`](v1-dev/packages/contracts/contracts/TroveManager.sol#L1099)
+   and confirm the three sum to 10 ETH, up to the truncation held in
+   `lastETHError_Redistribution`.
+
+2. **Derive `P` and `S` from scratch.** Without looking at §1.6, start from "every
+   deposit shrinks by the same factor" and derive the update rule for `P` and then
+   for `S`. Then check yourself against
+   [`StabilityPool.sol:589`](v1-dev/packages/contracts/contracts/StabilityPool.sol#L589)
+   and [`:601-602`](v1-dev/packages/contracts/contracts/StabilityPool.sol#L601-L602).
+   Explain in one sentence why `S` must be updated before `P`.
+
+3. **Break the scale factor.** Assume `MIN_LUSD_IN_SP` did not exist and a
+   liquidation offsets the entire pool. Walk
+   [`_updateRewardSumAndProduct`](v1-dev/packages/contracts/contracts/StabilityPool.sol#L580)
+   and identify exactly which line fails and what every depositor's balance would
+   read as afterwards. Then find the two asserts that make it unreachable.
+
+4. **Compare a liquidation path against Aave.** A borrower holds 10 ETH against
+   18,000 of debt, and ETH falls from $2,000 to $1,900. Trace the Liquity path
+   through [`_liquidateNormalMode`](v1-dev/packages/contracts/contracts/TroveManager.sol#L314)
+   and [`_getOffsetAndRedistributionVals`](v1-dev/packages/contracts/contracts/TroveManager.sol#L431),
+   then the Aave path through
+   [`executeLiquidationCall`](../aave/aave-v3-origin/src/contracts/protocol/libraries/logic/LiquidationLogic.sol#L166).
+   How much debt is cleared in each? Who supplied the capital? What happens in each
+   if no third party shows up?
+
+5. **Recovery Mode branches.** In
+   [`_liquidateRecoveryMode`](v1-dev/packages/contracts/contracts/TroveManager.sol#L349),
+   construct four Troves that each take a different one of the four branches.
+   For the capped-offset case, compute the surplus returned via
+   [`_getCappedOffsetVals`](v1-dev/packages/contracts/contracts/TroveManager.sol#L467)
+   and say which contract holds it until claimed.
+
+6. **The stable sort.** Explain why
+   [`_computeNominalCR`](v1-dev/packages/contracts/contracts/Dependencies/LiquityMath.sol#L92)
+   deliberately omits price, and what would have to change in
+   [`SortedTroves`](v1-dev/packages/contracts/contracts/SortedTroves.sol) if it did
+   not. Then find the v2 equivalent and explain why interest-rate ordering makes
+   the list even cheaper to maintain.
+
+7. **Follow the interest in v2.** Starting at
+   [`calcPendingAggInterest`](v2-bold/contracts/src/ActivePool.sol#L104), trace
+   where minted interest goes via
+   [`_mintAggInterest`](v2-bold/contracts/src/ActivePool.sol#L248). Why is the
+   aggregate computed with `ceilDiv` while individual Troves use floor division?
+   State the invariant that choice protects.
+
+8. **Redemption routing.** In
+   [`CollateralRegistry.redeemCollateral`](v2-bold/contracts/src/CollateralRegistry.sol#L92),
+   work out how a 1,000,000 BOLD redemption splits across three branches with
+   unbacked debts of 5M, 3M and 0. Then explain the two fallbacks at
+   [`:118-135`](v2-bold/contracts/src/CollateralRegistry.sol#L118-L135) and what
+   each is defending against.
