@@ -554,3 +554,299 @@ native currency, set per chain by governance, and is frequently **zero** on
 mainnet EVM deployments — which is why `require(msg.value == messageFee())` with
 `msg.value == 0` is the common case and integrators often forget the fee exists
 at all until they hit a chain where it does not.
+
+---
+
+## 3. The token bridge
+
+Everything so far has been the *core* protocol: publish bytes, verify bytes. The
+token bridge (branded "Portal") is an **application** built on top, living in
+[`wormhole/ethereum/contracts/bridge/Bridge.sol`](wormhole/ethereum/contracts/bridge/Bridge.sol)
+(960 lines). It is a Wormhole *user*, not part of Wormhole.
+
+Its job is to make a token on chain A spendable on chain B, and it does that with
+two mechanisms depending on where the token is native.
+
+### 3.1 Lock/mint versus burn/release
+
+```
+  Token native to chain A, moving A ──► B
+  ────────────────────────────────────────
+  A:  safeTransferFrom(user → Bridge)      LOCK   (bridge custodies real tokens)
+      bridgeOut(token, normalizedAmount)          (accounting)
+  B:  TokenImplementation.mint(recipient)  MINT   (wrapped asset created)
+
+  Same token coming home B ──► A
+  ────────────────────────────────────────
+  B:  safeTransferFrom(user → Bridge)
+      TokenImplementation.burn(...)        BURN   (wrapped supply destroyed)
+  A:  safeTransfer(Bridge → recipient)     RELEASE
+      bridgedIn(token, normalizedAmount)          (accounting)
+```
+
+The branch is decided by comparing the token's home chain to the local chain. On
+the way out, [`_transferTokens:419-425`](wormhole/ethereum/contracts/bridge/Bridge.sol#L419-L425):
+
+```solidity
+if (isWrappedAsset(token)) {
+    tokenChain = TokenImplementation(token).chainId();
+    tokenAddress = TokenImplementation(token).nativeContract();
+} else {
+    tokenChain = chainId();
+    tokenAddress = bytes32(uint256(uint160(token)));
+}
+```
+
+A wrapped asset knows its own origin. Note the crucial consequence: `tokenChain`
+and `tokenAddress` in the VAA always describe the **canonical origin** of the
+asset, never the local representation. That is what allows a token to hop
+A→B→C and still be recognised on C as "the asset from A".
+
+The lock/burn decision itself, [`:434-451`](wormhole/ethereum/contracts/bridge/Bridge.sol#L434-L451):
+
+```solidity
+if (tokenChain == chainId()) {
+    // ... balanceOf before ...
+    SafeERC20.safeTransferFrom(IERC20(token), msg.sender, address(this), amount);
+    // ... balanceOf after ...
+    amount = balanceAfter - balanceBefore;
+} else {
+    SafeERC20.safeTransferFrom(IERC20(token), msg.sender, address(this), amount);
+    TokenImplementation(token).burn(address(this), amount);
+}
+```
+
+The native branch measures the balance delta rather than trusting `amount`,
+which handles fee-on-transfer tokens correctly — the same defensive pattern
+LI.FI uses in `LibSwap`. The wrapped branch does not need it, because the bridge
+controls that token's implementation.
+
+### 3.2 Normalization: the eight-decimal truncation
+
+This is the detail that trips up every integrator, so derive it properly.
+
+[`wormhole/ethereum/contracts/bridge/Bridge.sol:472-484`](wormhole/ethereum/contracts/bridge/Bridge.sol#L472-L484):
+
+```solidity
+function normalizeAmount(uint256 amount, uint8 decimals) internal pure returns(uint256){
+    if (decimals > 8) {
+        amount /= 10 ** (decimals - 8);
+    }
+    return amount;
+}
+
+function deNormalizeAmount(uint256 amount, uint8 decimals) internal pure returns(uint256){
+    if (decimals > 8) {
+        amount *= 10 ** (decimals - 8);
+    }
+    return amount;
+}
+```
+
+**Why 8?** Because the VAA must be interpretable on chains that cannot represent
+18 decimals. Solana's SPL tokens are typically 6 or 9 decimals and amounts are
+`u64`. The maximum `u64` is ~1.8×10¹⁹; an 18-decimal token amount of 100 tokens
+is 10²⁰, which overflows. Capping the wire format at 8 decimals keeps every
+transferable amount inside `u64` and makes the format chain-agnostic. The bridge
+enforces that bound explicitly at
+[`bridgeOut:765-768`](wormhole/ethereum/contracts/bridge/Bridge.sol#L765-L768):
+
+```solidity
+uint outstanding = outstandingBridged(token);
+if (outstanding + normalizedAmount > type(uint64).max) revert OutstandingExceedsMax();
+```
+
+**The consequence is truncation, and it is lossy.** For an 18-decimal token,
+`normalizeAmount` divides by 10¹⁰. Any value below 10¹⁰ wei — that is, below
+0.00000001 tokens — normalizes to zero and would simply vanish.
+
+The bridge refuses to let that happen silently. At
+[`:432`](wormhole/ethereum/contracts/bridge/Bridge.sol#L432):
+
+```solidity
+amount = deNormalizeAmount(normalizeAmount(amount, decimals), decimals);
+```
+
+Round-tripping through normalize/denormalize **before** the transfer floors the
+amount to the nearest representable value, and only that floored amount is
+pulled from the user. Send `1.2345678901234` ETH and the bridge takes
+`1.23456789` and leaves the rest in your wallet. The comment calls it exactly
+that: *"don't deposit dust that can not be bridged due to the decimal shift"*.
+
+The ETH path handles it differently, because there `msg.value` has already
+arrived. [`_wrapAndTransferETH:322-328`](wormhole/ethereum/contracts/bridge/Bridge.sol#L322-L328):
+
+```solidity
+uint normalizedAmount = normalizeAmount(amount, 18);
+uint normalizedArbiterFee = normalizeAmount(arbiterFee, 18);
+
+// refund dust
+uint dust = amount - deNormalizeAmount(normalizedAmount, 18);
+if (dust > 0) {
+    payable(msg.sender).transfer(dust);
+}
+```
+
+It cannot decline the dust, so it **refunds** it. Note `.transfer` with its 2300
+gas stipend — a contract with a non-trivial `receive()` cannot bridge ETH through
+this path if there is any dust. That is a real integration hazard and the reason
+sophisticated callers pre-floor their amounts.
+
+Decimals are re-read on the destination side and denormalized back at
+[`_completeTransfer:720-722`](wormhole/ethereum/contracts/bridge/Bridge.sol#L720-L722).
+Because the wrapped token is created with the *origin* token's decimals (section
+3.4), the round trip is faithful.
+
+### 3.3 The three payload types
+
+The core protocol treats payloads as opaque bytes; the token bridge imposes its
+own tagging. From
+[`BridgeStructs.sol`](wormhole/ethereum/contracts/bridge/BridgeStructs.sol) and
+the parsers:
+
+| ID | struct | meaning |
+|---|---|---|
+| 1 | [`Transfer`](wormhole/ethereum/contracts/bridge/BridgeStructs.sol#L7-L22) | plain token transfer, redeemable by anyone |
+| 2 | [`AssetMeta`](wormhole/ethereum/contracts/bridge/BridgeStructs.sol#L56-L69) | token metadata attestation (name, symbol, decimals) |
+| 3 | [`TransferWithPayload`](wormhole/ethereum/contracts/bridge/BridgeStructs.sol#L24-L41) | transfer plus arbitrary bytes, redeemable **only** by the recipient |
+
+Payload 1 carries a `fee` field — the "arbiter fee", paid to whoever submits the
+VAA. Payload 3 replaces it with `fromAddress` and `payload`, because a
+contract-controlled transfer does not need to bribe a relayer; the recipient
+contract is the relayer.
+
+The distinction is enforced at
+[`_completeTransfer:687-691`](wormhole/ethereum/contracts/bridge/Bridge.sol#L687-L691):
+
+```solidity
+address transferRecipient = _truncateAddress(transfer.to);
+if (transfer.payloadID == 3) {
+    if (msg.sender != transferRecipient) revert InvalidSender();
+}
+```
+
+**This is the composability primitive.** Payload 3 lets a contract on chain B
+receive tokens *and* instructions atomically, knowing that only it could have
+redeemed them. That is what protocols like Mayan build on, and it is the direct
+analogue of LI.FI's destination-call pattern.
+
+Both parsers funnel into
+[`_parseTransferCommon:926-944`](wormhole/ethereum/contracts/bridge/Bridge.sol#L926-L944),
+which reads the shared prefix regardless of tag — the comment notes its *"sole
+purpose ... is to get around the local variable limit"*, a very Solidity reason
+for a function to exist.
+
+### 3.4 `attestToken` and wrapped-asset creation
+
+Before a token can move to a new chain, that chain must be told what it is.
+
+[`attestToken:222-255`](wormhole/ethereum/contracts/bridge/Bridge.sol#L222-L255)
+reads `decimals()`, `symbol()`, `name()` via `staticcall` — the comment notes
+these *"are not part of the core ERC20 token standard"*, so failures must not
+revert the whole call — packs them into an `AssetMeta` (payload 2), and publishes
+it. The string→`bytes32` conversion is done in assembly at
+[`:234-238`](wormhole/ethereum/contracts/bridge/Bridge.sol#L234-L238), which
+**silently truncates** names longer than 32 bytes.
+
+On the far side,
+[`_createWrapped:580-616`](wormhole/ethereum/contracts/bridge/Bridge.sol#L580-L616)
+consumes it. Two guards first,
+[`:581-582`](wormhole/ethereum/contracts/bridge/Bridge.sol#L581-L582):
+
+```solidity
+if (meta.tokenChain == chainId()) revert OnlyForeignTokens();
+if (wrappedAsset(meta.tokenChain, meta.tokenAddress) != address(0)) revert WrappedAssetAlreadyExists();
+```
+
+Then a CREATE2 deploy,
+[`:604-613`](wormhole/ethereum/contracts/bridge/Bridge.sol#L604-L613):
+
+```solidity
+bytes32 salt = keccak256(abi.encodePacked(meta.tokenChain, meta.tokenAddress));
+
+assembly {
+    token := create2(0, add(bytecode, 0x20), mload(bytecode), salt)
+    if iszero(extcodesize(token)) { revert(0, 0) }
+}
+```
+
+**The salt is the canonical origin, so the wrapped address is deterministic.**
+Anyone can compute where wrapped-USDC-from-Ethereum will live on Polygon before
+it is deployed — the same CREATE2 determinism you saw in Uniswap V2's `pairFor`.
+
+The deployed contract is a `BridgeToken` beacon proxy pointing at
+[`TokenImplementation`](wormhole/ethereum/contracts/bridge/token/TokenImplementation.sol),
+initialised with the **origin token's** decimals, so a 6-decimal USDC stays
+6-decimal everywhere.
+
+`updateWrapped` /
+[`_updateWrapped:559-567`](wormhole/ethereum/contracts/bridge/Bridge.sol#L559-L567)
+refreshes name and symbol from a newer attestation, gated on the attestation's
+`sequence` so an old VAA cannot roll metadata backwards.
+
+### 3.5 `_completeTransfer`, the redemption path
+
+[`wormhole/ethereum/contracts/bridge/Bridge.sol:679-762`](wormhole/ethereum/contracts/bridge/Bridge.sol#L679-L762)
+is where a VAA becomes tokens. All four public entry points reach it:
+
+| entry point | `unwrapWETH` | payload |
+|---|---|---|
+| [`completeTransfer`](wormhole/ethereum/contracts/bridge/Bridge.sol#L652) | false | 1 |
+| [`completeTransferAndUnwrapETH`](wormhole/ethereum/contracts/bridge/Bridge.sol#L663) | true | 1 |
+| [`completeTransferWithPayload`](wormhole/ethereum/contracts/bridge/Bridge.sol#L627) | false | 3 |
+| [`completeTransferAndUnwrapETHWithPayload`](wormhole/ethereum/contracts/bridge/Bridge.sol#L641) | true | 3 |
+
+The ordered checks, [`:680-700`](wormhole/ethereum/contracts/bridge/Bridge.sol#L680-L700):
+
+1. **`parseAndVerifyVM`** — the core protocol validates signatures and quorum
+   (section 1). Everything downstream assumes this passed.
+2. **`verifyBridgeVM`** — is the emitter the registered token bridge on that
+   chain? [`:774-777`](wormhole/ethereum/contracts/bridge/Bridge.sol#L774-L777):
+   `bridgeContracts(vm.emitterChainId) == vm.emitterAddress`. Without this, any
+   contract could emit a payload-1-shaped message and mint. Note it also rejects
+   forks via `if (isFork()) revert InvalidFork()`.
+3. **Payload-3 recipient gate** (section 3.3).
+4. **Replay protection**, [`:694-695`](wormhole/ethereum/contracts/bridge/Bridge.sol#L694-L695):
+   ```solidity
+   if (isTransferCompleted(vm.hash)) revert TransferAlreadyCompleted();
+   setTransferCompleted(vm.hash);
+   ```
+   Keyed on `vm.hash`, set **before** any transfer — checks-effects-interactions,
+   on top of the `nonReentrant` modifier. This is precisely the invariant that the
+   *"do not change how the hash is computed"* warning in section 1.3 protects.
+5. **`transfer.toChain != chainId()`** — a VAA addressed to Polygon cannot be
+   redeemed on Ethereum, even though the signatures are valid on both.
+
+Then payout, [`:701-712`](wormhole/ethereum/contracts/bridge/Bridge.sol#L701-L712):
+if the token is native here, take the custodied ERC20 and call `bridgedIn` to
+decrement outstanding accounting; otherwise look up the wrapped asset and revert
+with `WrappedAssetNotFound` if it was never created.
+
+The arbiter fee is split off at
+[`:723-747`](wormhole/ethereum/contracts/bridge/Bridge.sol#L723-L747), paid to
+`msg.sender` only when the submitter is not the recipient — otherwise it is zeroed
+so you cannot pay yourself. Then the remainder goes to the recipient by mint (if
+wrapped) or transfer (if native), with a WETH-unwrap variant.
+
+### 3.6 The accounting invariant
+
+[`:764-772`](wormhole/ethereum/contracts/bridge/Bridge.sol#L764-L772):
+
+```solidity
+function bridgeOut(address token, uint normalizedAmount) internal {
+    uint outstanding = outstandingBridged(token);
+    if (outstanding + normalizedAmount > type(uint64).max) revert OutstandingExceedsMax();
+    setOutstandingBridged(token, outstanding + normalizedAmount);
+}
+
+function bridgedIn(address token, uint normalizedAmount) internal {
+    setOutstandingBridged(token, outstandingBridged(token) - normalizedAmount);
+}
+```
+
+`outstandingBridged` tracks, per native token, how much has left this chain. It
+is incremented on lock and decremented on release, and only for tokens native
+here. The `uint64` ceiling is the `u64` compatibility bound from section 3.2. The
+subtraction in `bridgedIn` is unchecked-by-absence — in Solidity 0.8 it reverts
+on underflow, which is the desired behaviour: it is a solvency assertion. You
+cannot release more than was ever locked.
