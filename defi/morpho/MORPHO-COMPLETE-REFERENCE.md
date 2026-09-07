@@ -1708,3 +1708,165 @@ tuple-versus-struct pattern Blue uses (§6.1).
 That two mocks totalling **752 lines** exist purely to model ERC-777 reentrancy tells you how
 seriously the reentrancy path through `_deposit` (§8.7) is taken.
 
+---
+
+<a id="10-oracles"></a>
+## 10. Oracles
+
+[`morpho-blue-oracles/`](morpho-blue-oracles/), 12 files. Blue's `IOracle` is a single `price()`
+view (§6.3), so all the difficulty lives here: composing feeds and getting the scale exactly right.
+
+### 10.1 `MorphoChainlinkOracleV2` — the `SCALE_FACTOR` derivation
+
+[`morpho-blue-oracles/src/morpho-chainlink/MorphoChainlinkOracleV2.sol`](morpho-blue-oracles/src/morpho-chainlink/MorphoChainlinkOracleV2.sol),
+157 lines. Ten immutables, one constructor, one function.
+
+The whole contract exists to answer: *how many loan-token units is one collateral-token unit
+worth, scaled by 1e36?* It supports up to **two feeds on each side** plus an optional ERC-4626
+vault on each side, which covers chains of the form wstETH → stETH → ETH → USD.
+
+The constructor's comment block at
+[`:113-137`](morpho-blue-oracles/src/morpho-chainlink/MorphoChainlinkOracleV2.sol#L113-L137) is
+the best piece of documentation in either repo. Reproducing the derivation:
+
+Let `B1, B2, Q1, Q2, C` be assets with `dB1, dB2, dQ1, dQ2, dC` decimals, and let the feeds report
+
+- `pB1` = units of `1e(dB2)` of B2 per `1e(dB1)` of B1
+- `pB2` = units of `1e(dC)` of C per `1e(dB2)` of B2
+- `pQ1`, `pQ2` symmetrically on the quote side
+
+Blue wants `price()` = quantity of 1 asset Q1 exchangeable for 1 asset B1, times 1e36:
+
+```
+1e36 · (pB1 · 1e(dB2−dB1)) · (pB2 · 1e(dC−dB2)) / ((pQ1 · 1e(dQ2−dQ1)) · (pQ2 · 1e(dC−dQ2)))
+  = 1e36 · (pB1 · 1e(−dB1) · pB2) / (pQ1 · 1e(−dQ1) · pQ2)
+```
+
+The `dB2` and `dC` terms cancel, which is why intermediate decimals never appear in the final
+formula. Feeds actually return `p · 1e(fp)` for feed precision `fp`, so solving for the constant
+that makes the runtime expression come out right:
+
+```
+SCALE_FACTOR = 1e(36 + dQ1 + fpQ1 + fpQ2 − dB1 − fpB1 − fpB2)
+```
+
+which is exactly the code at
+[`:138-145`](morpho-blue-oracles/src/morpho-chainlink/MorphoChainlinkOracleV2.sol#L138-L145),
+with the vault conversion samples folded in:
+
+```solidity
+SCALE_FACTOR = 10
+    ** (36
+        + quoteTokenDecimals
+        + quoteFeed1.getDecimals()
+        + quoteFeed2.getDecimals()
+        - baseTokenDecimals
+        - baseFeed1.getDecimals()
+        - baseFeed2.getDecimals()) * quoteVaultConversionSample / baseVaultConversionSample;
+```
+
+`price()` is then a single `mulDiv`
+([`:151-156`](morpho-blue-oracles/src/morpho-chainlink/MorphoChainlinkOracleV2.sol#L151-L156)):
+
+```solidity
+return SCALE_FACTOR.mulDiv(
+    BASE_VAULT.getAssets(BASE_VAULT_CONVERSION_SAMPLE) * BASE_FEED_1.getPrice() * BASE_FEED_2.getPrice(),
+    QUOTE_VAULT.getAssets(QUOTE_VAULT_CONVERSION_SAMPLE) * QUOTE_FEED_1.getPrice() * QUOTE_FEED_2.getPrice()
+);
+```
+
+**The absent-component trick.** Every optional piece returns a multiplicative identity rather than
+branching. `VaultLib.getAssets` returns `1` for a zero-address vault
+([`VaultLib.sol:13-17`](morpho-blue-oracles/src/morpho-chainlink/libraries/VaultLib.sol#L13-L17));
+`ChainlinkDataFeedLib.getPrice` returns `1` for a zero-address feed
+([`ChainlinkDataFeedLib.sol:38-45`](morpho-blue-oracles/src/morpho-chainlink/libraries/ChainlinkDataFeedLib.sol#L38-L45));
+and `getDecimals` returns **`0`** so the exponent is unaffected
+([`:49-53`](morpho-blue-oracles/src/morpho-chainlink/libraries/ChainlinkDataFeedLib.sol#L49-L53)).
+Four optional components, zero conditionals in `price()`.
+
+Constructor validation is thin: only that a conversion sample is `1` when its vault is unset, and
+non-zero otherwise
+([`:93-102`](morpho-blue-oracles/src/morpho-chainlink/MorphoChainlinkOracleV2.sol#L93-L102)).
+Nothing checks that the feeds actually describe the assets in the market — a misconfigured oracle
+is a valid oracle.
+
+The warning at
+[`:70-72`](morpho-blue-oracles/src/morpho-chainlink/MorphoChainlinkOracleV2.sol#L70-L72) is
+important and easy to miss: a vault that can receive donations must not be used as the loan/quote
+asset, because an instantaneous price *drop* larger than `LLTV·LIF` would create bad debt faster
+than liquidators can act.
+
+### 10.2 `ChainlinkDataFeedLib` — what is deliberately *not* checked
+
+[`ChainlinkDataFeedLib.sol:31-37`](morpho-blue-oracles/src/morpho-chainlink/libraries/ChainlinkDataFeedLib.sol#L31-L37)
+states the position outright:
+
+```
+- Using oracles on L2s assumes that the liveness risks are acceptable, there is no additional safety check.
+- Staleness is not checked because it's assumed that the Chainlink feed keeps its promises on this.
+- The price is not checked to be in the min/max bounds because it's assumed that the Chainlink feed keeps its promises.
+```
+
+The only validation is `answer >= 0`
+([`:42`](morpho-blue-oracles/src/morpho-chainlink/libraries/ChainlinkDataFeedLib.sol#L42),
+`NEGATIVE_ANSWER`). No `updatedAt` check, no L2 sequencer-uptime feed, no round-completeness check.
+
+This is the same gap I flagged in Aave v2's `AaveOracle`
+([`../aave/V1-V2-COMPLETE-REFERENCE.md`](../aave/V1-V2-COMPLETE-REFERENCE.md)) — but the posture
+differs. Aave v2 has one oracle for the whole protocol and no alternative; Morpho documents the
+omission and pushes the choice to the market creator, who is free to deploy a stricter `IOracle`.
+Whether that is principled minimalism or passing the buck is a fair question, and it is the single
+largest risk surface in the Morpho stack.
+
+### 10.3 `MorphoChainlinkOracleV2Factory`
+
+[`MorphoChainlinkOracleV2Factory.sol`](morpho-blue-oracles/src/morpho-chainlink/MorphoChainlinkOracleV2Factory.sol),
+54 lines. CREATE2 deploy plus an `isMorphoChainlinkOracleV2` registry
+([`:37-52`](morpho-blue-oracles/src/morpho-chainlink/MorphoChainlinkOracleV2Factory.sol#L37-L52)),
+mirroring `MetaMorphoFactory` (§9.1). The registry lets a front-end say "this oracle came from the
+canonical factory", which is weak assurance but better than none.
+
+### 10.4 `WstEthStEthExchangeRateChainlinkAdapter`
+
+[`WstEthStEthExchangeRateChainlinkAdapter.sol`](morpho-blue-oracles/src/wsteth-exchange-rate-adapter/WstEthStEthExchangeRateChainlinkAdapter.sol),
+30 lines — an adapter that makes a Lido call *look* like a Chainlink feed:
+
+```solidity
+function latestRoundData() external view returns (uint80, int256, uint256, uint256, uint80) {
+    return (0, int256(ST_ETH.getPooledEthByShares(1 ether)), 0, 0, 0);
+}
+```
+
+[`:26-29`](morpho-blue-oracles/src/wsteth-exchange-rate-adapter/WstEthStEthExchangeRateChainlinkAdapter.sol#L26-L29).
+
+`decimals` is a hardcoded constant 18
+([`:15`](morpho-blue-oracles/src/wsteth-exchange-rate-adapter/WstEthStEthExchangeRateChainlinkAdapter.sol#L15))
+and stETH is a hardcoded mainnet address
+([`:21`](morpho-blue-oracles/src/wsteth-exchange-rate-adapter/WstEthStEthExchangeRateChainlinkAdapter.sol#L21)),
+which is why the NatSpec restricts it to Ethereum
+([`:11`](morpho-blue-oracles/src/wsteth-exchange-rate-adapter/WstEthStEthExchangeRateChainlinkAdapter.sol#L11)).
+
+Two honest caveats in the source. It returns **zero for `roundId`, `startedAt`, `updatedAt` and
+`answeredInRound`** ([`:24`](morpho-blue-oracles/src/wsteth-exchange-rate-adapter/WstEthStEthExchangeRateChainlinkAdapter.sol#L24)),
+so any consumer that *did* check staleness would see a permanently stale feed — harmless here only
+because §10.2 never checks. And it *"silently overflows if `getPooledEthByShares`'s return value is
+greater than `type(int256).max`"*
+([`:25`](morpho-blue-oracles/src/wsteth-exchange-rate-adapter/WstEthStEthExchangeRateChainlinkAdapter.sol#L25)),
+unreachable in practice.
+
+Using an exchange rate rather than a market price is the correct choice for wstETH/stETH: it cannot
+be manipulated by trading, and it ignores any temporary depeg. The trade-off is that a genuine
+Lido slashing event would not show up until the rate itself moved.
+
+### 10.5 The remaining oracle files
+
+| File | Lines | What it is |
+|---|---|---|
+| [`interfaces/AggregatorV3Interface.sol`](morpho-blue-oracles/src/morpho-chainlink/interfaces/AggregatorV3Interface.sol) | 22 | trimmed Chainlink interface |
+| [`interfaces/IERC4626.sol`](morpho-blue-oracles/src/morpho-chainlink/interfaces/IERC4626.sol) | — | only `convertToAssets` |
+| [`interfaces/IMorphoChainlinkOracleV2.sol`](morpho-blue-oracles/src/morpho-chainlink/interfaces/IMorphoChainlinkOracleV2.sol) | 39 | the ten immutables as getters |
+| [`interfaces/IMorphoChainlinkOracleV2Factory.sol`](morpho-blue-oracles/src/morpho-chainlink/interfaces/IMorphoChainlinkOracleV2Factory.sol) | 56 | factory surface |
+| [`libraries/ErrorsLib.sol`](morpho-blue-oracles/src/morpho-chainlink/libraries/ErrorsLib.sol) | — | three string constants |
+| [`wsteth-exchange-rate-adapter/interfaces/IStEth.sol`](morpho-blue-oracles/src/wsteth-exchange-rate-adapter/interfaces/IStEth.sol) | — | just `getPooledEthByShares` |
+| [`wsteth-exchange-rate-adapter/interfaces/MinimalAggregatorV3Interface.sol`](morpho-blue-oracles/src/wsteth-exchange-rate-adapter/interfaces/MinimalAggregatorV3Interface.sol) | — | `decimals` + `latestRoundData` only |
+

@@ -807,8 +807,7 @@ struct Snapshots {
     uint S;
     uint P;
     uint G;
-    uint128 scale;
-    uint128 epoch;
+    uint scale;
 }
 ```
 
@@ -823,30 +822,47 @@ Both are O(1). `P` decreasing multiplicatively is exactly a proportional haircut
 applied to everyone at once, and dividing the `S` delta by `P_snapshot` scales
 the ETH credit to the depositor's *then-current* share.
 
-### 1.6.2 Epochs and scales, the two precision problems
+### 1.6.2 Scale shifts, and why there are no epochs
 
-**Problem one: `P` hits zero.** If a liquidation empties the pool,
-`lossPerUnit = 1` and `P` would become 0, destroying every future division.
-Solution at [`v1-dev/packages/contracts/contracts/StabilityPool.sol:596-600`](v1-dev/packages/contracts/contracts/StabilityPool.sol#L596-L600): when the pool is fully drained, increment
-`currentEpoch`, reset `P` to `1e18`, and reset `S`. Deposits from a prior epoch
-are worth exactly zero, which `_getCompoundedStakeFromSnapshots` detects by
-comparing `epoch` snapshots ([`v1-dev/packages/contracts/contracts/StabilityPool.sol:792-795`](v1-dev/packages/contracts/contracts/StabilityPool.sol#L792-L795)).
+**The precision problem.** Each liquidation multiplies `P` by
+`(1 - lossPerUnit)`. Enough partial liquidations and `P` drifts toward zero,
+where 18-digit fixed point loses all resolution and every depositor's
+compounded stake rounds to nothing.
 
-**Problem two: `P` underflows toward zero.** Many partial liquidations shrink `P`
-multiplicatively. Once it drops below `1e9` the fixed-point precision collapses.
-Solution at [`v1-dev/packages/contracts/contracts/StabilityPool.sol:605-617`](v1-dev/packages/contracts/contracts/StabilityPool.sol#L605-L617): multiply `P` by `SCALE_FACTOR = 1e9` ([`v1-dev/packages/contracts/contracts/StabilityPool.sol:195`](v1-dev/packages/contracts/contracts/StabilityPool.sol#L195)) and
-increment `currentScale`. Reads then correct for the scale difference.
+**The fix: scale shifts.** When `P` would fall below `1e9`, multiply it by
+`SCALE_FACTOR = 1e9` ([`v1-dev/packages/contracts/contracts/StabilityPool.sol:195`](v1-dev/packages/contracts/contracts/StabilityPool.sol#L195)) and increment `currentScale` ([`v1-dev/packages/contracts/contracts/StabilityPool.sol:198`](v1-dev/packages/contracts/contracts/StabilityPool.sol#L198)). Reads
+then correct for the difference. The transition is at [`v1-dev/packages/contracts/contracts/StabilityPool.sol:605-617`](v1-dev/packages/contracts/contracts/StabilityPool.sol#L605-L617).
 
-`_getCompoundedStakeFromSnapshots` at [`v1-dev/packages/contracts/contracts/StabilityPool.sol:781-812`](v1-dev/packages/contracts/contracts/StabilityPool.sol#L781-L812) handles all three cases:
+`_getCompoundedStakeFromSnapshots` at [`v1-dev/packages/contracts/contracts/StabilityPool.sol:781-812`](v1-dev/packages/contracts/contracts/StabilityPool.sol#L781-L812) handles three cases:
 
 | `scaleDiff` | Treatment |
 |---|---|
 | `0` | `initialStake * P / snapshot_P` |
 | `1` | `initialStake * P / snapshot_P / SCALE_FACTOR` |
-| `>= 2` | Return `0`. The stake has shrunk by at least 1e-18. |
+| `>= 2` | Return `0`. The stake has shrunk by at least a factor of 1e-18. |
 
 There is also a dust floor: a compounded stake below `initialStake / 1e9` is
 truncated to zero ([`v1-dev/packages/contracts/contracts/StabilityPool.sol:808-810`](v1-dev/packages/contracts/contracts/StabilityPool.sol#L808-L810)), so the pool never carries unreclaimable dust.
+
+**Why `P` can never reach zero.** A fully-drained pool would set
+`lossPerUnit = 1` and zero out `P`, destroying every future division. Some
+Liquity deployments solve this with an epoch counter that resets `P`. **This
+tree does not.** `grep -c 'epoch' StabilityPool.sol` returns 0, and the
+`Snapshots` struct above has no epoch field.
+
+Instead there is a floor. `MIN_LUSD_IN_SP = 1e18` at [`v1-dev/packages/contracts/contracts/StabilityPool.sol:185`](v1-dev/packages/contracts/contracts/StabilityPool.sol#L185), with the comment
+"We never allow the SP to go below this amount through withdrawals or
+liquidations." `getMaxAmountToOffset` at [`v1-dev/packages/contracts/contracts/StabilityPool.sol:495`](v1-dev/packages/contracts/contracts/StabilityPool.sol#L495) enforces it on the liquidation
+side:
+
+```solidity
+uint256 lusdToLeaveInSP = LiquityMath._min(MIN_LUSD_IN_SP, totalLUSD);
+```
+
+[`v1-dev/packages/contracts/contracts/StabilityPool.sol:499`](v1-dev/packages/contracts/contracts/StabilityPool.sol#L499). `withdrawFromSP` enforces the same floor at [`v1-dev/packages/contracts/contracts/StabilityPool.sol:388`](v1-dev/packages/contracts/contracts/StabilityPool.sol#L388). One LUSD always
+remains, so `_debtToOffset < _totalLUSDDeposits` holds, the `assert` at [`v1-dev/packages/contracts/contracts/StabilityPool.sol:552`](v1-dev/packages/contracts/contracts/StabilityPool.sol#L552)
+never trips, and `P` stays strictly positive. A single constant replaces a whole
+epoch mechanism.
 
 ### 1.6.3 `offset(uint _debtToOffset, uint _collToAdd)` — [`v1-dev/packages/contracts/contracts/StabilityPool.sol:514`](v1-dev/packages/contracts/contracts/StabilityPool.sol#L514)
 
@@ -1300,7 +1316,7 @@ grep -rhoE '"[^"](5, 90)"' --include='*.sol' v1-dev/packages/contracts/contracts
 | `TroveSnapshotsUpdated` | TroveManager | A Trove claimed its rewards |
 | `UserDepositChanged`, `ETHGainWithdrawn` | StabilityPool | Depositor activity |
 | `P_Updated`, `S_Updated`, `G_Updated` | StabilityPool | Accumulator moves |
-| `EpochUpdated`, `ScaleUpdated` | StabilityPool | Precision transitions |
+| `ScaleUpdated` | StabilityPool | Precision transition, `P` rescaled by 1e9 |
 | `StakeChanged`, `StakingGainsWithdrawn` | LQTYStaking | |
 | `F_ETHUpdated`, `F_LUSDUpdated` | LQTYStaking | Fee accumulators |
 
