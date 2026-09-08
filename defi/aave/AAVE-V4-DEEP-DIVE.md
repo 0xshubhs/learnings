@@ -1,5 +1,29 @@
 # Aave v4 Deep Dive (Hub & Spoke)
 
+## Why this exists
+
+**The pain.** In v3 every market is its own pool, so the same asset supplied to two
+markets is two separate piles of liquidity that cannot help each other. Adding a
+market means a governance process and, in practice, bootstrapping its liquidity
+from scratch. Removing one means migrating everybody out.
+
+**What people did instead.** Live with the fragmentation, or deploy yet another
+isolated market and hope liquidity followed.
+
+**What Aave v4 changed.** Split liquidity from product. A Hub holds the capital for
+an asset and enforces the accounting invariants. Spokes are the things users touch,
+and they draw from the Hub under caps the Hub sets. New products become new Spokes
+attached to existing liquidity, and retiring one does not strand anybody. Borrowing
+cost becomes a base rate from utilisation plus a premium priced off the borrower's
+collateral quality, so safer collateral pays less.
+
+**What it cost.** A new trust boundary between Hub and Spoke, with Spokes
+upgradeable while the Hub is not. Oracles are per-Spoke. And the accounting is
+genuinely different from v3: supply uses ERC-4626 shares with a virtual offset while
+debt uses a ray index, so there is no `liquidityIndex` to reason about any more.
+
+---
+
 > Source read for this document: `aave/v4-aave` (repo `aave/aave-v4`), Solidity `0.8.28`.
 > Everything below is derived from that source tree. Where the code did not let me
 > settle a question, the text says so explicitly rather than guessing.

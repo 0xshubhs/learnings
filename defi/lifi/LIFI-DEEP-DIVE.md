@@ -1,5 +1,28 @@
 # LI.FI Deep Dive
 
+## Why this exists
+
+**The pain.** Moving USDC on Arbitrum into ETH on Base means choosing among dozens
+of bridges, each with its own interface, trust model, fees and failure modes, then
+swapping on both sides. Every wallet or app offering this had to integrate all of
+them and keep every integration alive as they changed underneath.
+
+**What people did instead.** Support two or three bridges and hope they covered the
+routes users actually wanted.
+
+**What LI.FI changed.** Split routing from execution. An off-chain API computes the
+best path across bridges and DEXes and hands back calldata. The on-chain side is a
+Diamond: one contract whose behaviour is assembled from facets, roughly one facet
+per integration. Adding a bridge means adding a facet, not redeploying. Funds pass
+straight through and are never held between transactions.
+
+**What it cost.** These contracts make arbitrary external calls by design, so the
+whole security model rests on an allowlist of which contracts and function selectors
+may be called. Aggregators have been drained precisely when that allowlist was
+wrong. You also trust the off-chain API to return an honest route.
+
+---
+
 A code-level walkthrough of the `lifinance/contracts` repo (cloned at `lifi/contracts`, `.git` removed).
 Every `path:line` below is relative to `lifi/contracts/` and was checked against the cloned source.
 Read this with the files open. The goal: after this you can trace any LI.FI transaction from the user's

@@ -1,9 +1,29 @@
 # Lido v3 — Complete Reference
 
-> **Why this exists.** Staking Ethereum needed exactly 32 ETH, a server that stays online, and until Shanghai no way out at all. Lido pools any amount, delegates the operations, and gives you a liquid token for the locked stake.
->
-> Background and the derivations behind it: [`LIDO-DEEP-DIVE.md`](LIDO-DEEP-DIVE.md).
-> The problem each protocol in this repo solves: [`WHY.md`](../WHY.md).
+## Why this exists
+
+**The pain.** Running an Ethereum validator requires exactly 32 ETH, software that
+must stay online or you are penalised, and — until the Shanghai upgrade — no way to
+withdraw, ever. Three separate barriers: capital, operations, and liquidity. Most
+holders could clear none of them.
+
+**What people did instead.** Stake through a centralised exchange and accept the
+custody risk, or do not stake at all.
+
+**What Lido changed.** Pool deposits of any size, delegate the operational burden
+to professional node operators, and issue stETH: a token representing your stake
+that can be sold, lent or posted as collateral while the underlying ETH stays
+locked. Rewards arrive as a daily rebase, so the balance grows without a
+transaction.
+
+**What it cost.** You trust an oracle quorum to report validator balances honestly,
+and node operators not to get slashed, with losses socialised across every holder.
+stETH's price is a market price, not a redemption guarantee, so it can and did
+trade below ETH. And one protocol holding a large share of all staked ETH is a
+concern about Ethereum itself, not only about Lido.
+
+---
+
 
 Every contract and every function in [`lidofinance/core`](https://github.com/lidofinance/core)
 v3.0.2, cloned into `lido/core` with its `.git` removed. **155 Solidity files,

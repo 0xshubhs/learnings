@@ -1,9 +1,30 @@
 # Aave v1 & v2 — Complete Contract & Function Reference
 
-> **Why this exists.** Peer-to-peer lending needed a counterparty and left money idle waiting for one. Aave pooled it. v1 and v2 are where the pooled money-market design was worked out, and most of v3 is an answer to their specific failures.
->
-> Background and the derivations behind it: [`AAVE-V1-V2-DEEP-DIVE.md`](AAVE-V1-V2-DEEP-DIVE.md).
-> The problem each protocol in this repo solves: [`WHY.md`](../WHY.md).
+## Why this exists
+
+**The pain.** Early lending protocols matched a specific lender to a specific
+borrower on amount, duration and rate. Matching is slow and leaves money idle
+waiting for it. Worse, a borrower who is anonymous and cannot be sued has no
+reason to repay at all.
+
+**What people did instead.** MakerDAO let you mint DAI against ETH, but only DAI.
+There was no way to borrow an arbitrary asset against an arbitrary collateral.
+
+**What Aave changed.** Pool everything. Suppliers deposit into a shared pool and
+hold a claim token that grows in value; borrowers draw from that pool against
+over-collateralised positions; the interest rate is a function of how much of the
+pool is currently borrowed. Nobody matches anybody. If a position's collateral
+falls too close to its debt, anyone may liquidate it at a discount. That
+liquidation incentive is what replaces the legal system.
+
+**What it cost.** Everything depends on an oracle, so a wrong price is a total
+loss. And a shared pool means every listed asset exposes every other one, which is
+why later versions spent enormous complexity on isolation mode, supply and borrow
+caps, e-mode and siloed borrowing. That complexity is exactly what Morpho Blue
+later rejected.
+
+---
+
 
 A mechanical, file-by-file, function-by-function reference for the two Aave
 generations cloned in this folder:

@@ -1,9 +1,30 @@
 # Aave V4 — Complete Reference
 
-> **Why this exists.** v3 fragmented liquidity across per-market pools and made adding a market a governance event. v4 splits liquidity (the Hub) from products (Spokes) so markets can be added and removed without migrating capital.
->
-> Background and the derivations behind it: [`AAVE-V4-DEEP-DIVE.md`](AAVE-V4-DEEP-DIVE.md).
-> The problem each protocol in this repo solves: [`WHY.md`](../WHY.md).
+## Why this exists
+
+**The pain.** Early lending protocols matched a specific lender to a specific
+borrower on amount, duration and rate. Matching is slow and leaves money idle
+waiting for it. Worse, a borrower who is anonymous and cannot be sued has no
+reason to repay at all.
+
+**What people did instead.** MakerDAO let you mint DAI against ETH, but only DAI.
+There was no way to borrow an arbitrary asset against an arbitrary collateral.
+
+**What Aave changed.** Pool everything. Suppliers deposit into a shared pool and
+hold a claim token that grows in value; borrowers draw from that pool against
+over-collateralised positions; the interest rate is a function of how much of the
+pool is currently borrowed. Nobody matches anybody. If a position's collateral
+falls too close to its debt, anyone may liquidate it at a discount. That
+liquidation incentive is what replaces the legal system.
+
+**What it cost.** Everything depends on an oracle, so a wrong price is a total
+loss. And a shared pool means every listed asset exposes every other one, which is
+why later versions spent enormous complexity on isolation mode, supply and borrow
+caps, e-mode and siloed borrowing. That complexity is exactly what Morpho Blue
+later rejected.
+
+---
+
 
 Every contract, every function, every custom error, every storage slot in
 `aave/v4-aave/src`, excluding the vendored `src/dependencies/**` (listed in §13).

@@ -1,9 +1,30 @@
 # Morpho — Complete Reference
 
-> **Why this exists.** Listing a market on Aave is a DAO vote, which is slow and political, and every depositor inherits every decision. Morpho makes the market itself the primitive: an immutable five-tuple anyone can deploy, with risk curation moved up to vaults.
->
-> Background and the derivations behind it: [`MORPHO-DEEP-DIVE.md`](MORPHO-DEEP-DIVE.md).
-> The problem each protocol in this repo solves: [`WHY.md`](../WHY.md).
+## Why this exists
+
+**The pain.** Listing a market on Aave is a governance vote: the DAO argues about
+the oracle, the loan-to-value ratio, the caps and the rate curve, then votes. That
+is slow and political, it means a market nobody influential cares about never gets
+listed, and it means every depositor inherits every decision made about every
+other asset in the pool.
+
+**What people did instead.** Wait for the vote, or fork the entire protocol.
+
+**What Morpho Blue changed.** Stop treating the protocol as the product and make
+the *market* the primitive. A market is an immutable five-tuple — loan token,
+collateral token, oracle, interest rate model, liquidation threshold — that anyone
+can deploy without asking. Markets are isolated, so one cannot poison another. The
+core is 557 lines with no governance over live markets and no upgrade path. Risk
+curation does not vanish; it moves up a layer into vaults where curators allocate
+depositors' funds and compete on results.
+
+**What it cost.** Liquidity fragments across markets that cannot share it. There is
+no pause, no freeze, no cap and no circuit breaker, so if a market's oracle breaks
+nobody can stop it. And you are trusting a curator instead of a DAO, which is a
+different risk rather than an absent one.
+
+---
+
 
 An exhaustive, function-by-function reference for the four repositories that make up the
 Morpho stack, written against the exact sources cloned in this folder.

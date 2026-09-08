@@ -1,5 +1,28 @@
 # Uniswap V1 Deep Dive
 
+## Why this exists
+
+**The pain.** In 2017 a token had a market only if someone agreed to make one. That
+meant a centralised listing, or a market maker willing to post bids and asks and
+keep updating them. On-chain, updating a quote costs a transaction, and a maker who
+cannot cancel cheaply is picked off by anyone faster. So almost every token had no
+market at all.
+
+**What people did instead.** On-chain order books like EtherDelta. Slow, expensive,
+and thin enough that large trades were impossible.
+
+**What Uniswap V1 changed.** Delete the order book. Hold ETH and one token in a
+contract, and price every trade with `x * y = k`. No counterparty to find, no quote
+to maintain, and anyone can create the market or supply it. This is the whole idea
+in a few hundred lines of Vyper, which is why it is the right place to start.
+
+**What it cost.** Every pair must route through ETH, so a token-to-token trade is
+two hops and two fees. There is no price oracle, no flash swap, and no reentrancy
+guard. V2 fixes all four, and reading V1 first makes each of those fixes obvious
+rather than arbitrary.
+
+---
+
 **Source:** `uni/v1-contracts/contracts/uniswap_exchange.vy` (496 lines) and
 `uni/v1-contracts/contracts/uniswap_factory.vy` (46 lines), written in Vyper, deployed November 2018.
 

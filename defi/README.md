@@ -16,16 +16,11 @@ are written to be read that way, not instead of it.
 
 ---
 
-## Start here
-
-**[`WHY.md`](WHY.md)** — what problem each of the eight protocols was built to
-solve, what people did before it existed, and what the fix cost. No code, no math,
-fifteen minutes. Read it before anything else; the rest of this repo assumes you
-know why any of it exists.
-
----
-
 ## The documents
+
+**Every document opens with why its protocol exists**: what hurt, what people did
+before it, what it changed, and what that change cost. You can open any file cold
+and know what you are reading about before you meet a line of code.
 
 There are two layers. **Deep dives** teach the ideas: they pick the important
 code, derive the math, and trace end-to-end user actions. **Complete

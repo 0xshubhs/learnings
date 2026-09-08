@@ -1,9 +1,29 @@
 # Wormhole EVM — Complete Reference
 
-> **Why this exists.** A contract on Ethereum cannot read Solana state, and verifying it natively costs more gas than it is worth. Wormhole takes an explicit trust assumption instead: guardians sign an observation, and any chain can check the signatures cheaply.
->
-> Background and the derivations behind it: [`WORMHOLE-DEEP-DIVE.md`](WORMHOLE-DEEP-DIVE.md).
-> The problem each protocol in this repo solves: [`WHY.md`](../WHY.md).
+## Why this exists
+
+**The pain.** A contract on Ethereum can read Ethereum state and nothing else.
+There is no opcode for reading Solana. Verifying a Solana block header inside the
+EVM would mean running a light client over roughly 1,500 validators on every
+block, forever, which costs far more gas than it could ever be worth. So assets and
+messages were trapped on whichever chain they started on.
+
+**What people did instead.** Use a centralised exchange as the bridge: sell on one
+chain, withdraw on another, and trust the exchange in between.
+
+**What Wormhole changed.** Accept an explicit trust assumption rather than pretend
+to eliminate it. A set of guardians watches every supported chain; when a message
+is published they sign an observation of it. That signed bundle, a VAA, can be
+verified cheaply anywhere by checking signatures against the known guardian set.
+Token transfers are then just messages: lock on one side, mint on the other.
+
+**What it cost.** You are trusting roughly 13 of 19 guardians, not cryptography. If
+a quorum is compromised, or a verification bug lets a forged VAA through, every
+wrapped asset backed by it is worthless. That is not hypothetical: a single
+under-constrained account type cost $326M in February 2022.
+
+---
+
 
 Every Solidity contract and every function in `wormhole/ethereum/contracts`, walked
 one at a time. 61 files, 6,477 lines.

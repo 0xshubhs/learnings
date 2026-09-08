@@ -1,9 +1,28 @@
 # LI.FI Facets — Complete Reference
 
-> **Why this exists.** Dozens of bridges, each with its own interface and failure mode. LI.FI puts one facet per integration behind a single Diamond, so adding a bridge does not mean redeploying.
->
-> Background and the derivations behind it: [`LIFI-DEEP-DIVE.md`](LIFI-DEEP-DIVE.md).
-> The problem each protocol in this repo solves: [`WHY.md`](../WHY.md).
+## Why this exists
+
+**The pain.** Moving USDC on Arbitrum into ETH on Base means choosing among dozens
+of bridges, each with its own interface, trust model, fee structure and failure
+mode, then swapping on both sides. Every wallet and app that wanted to offer this
+had to integrate all of them and keep every integration alive as they changed.
+
+**What people did instead.** Support two or three bridges and hope they covered the
+routes users actually wanted.
+
+**What LI.FI changed.** Split routing from execution. An off-chain API computes the
+best path across bridges and DEXes and returns calldata. The on-chain side is a
+Diamond: one contract whose behaviour is assembled from facets, with roughly one
+facet per bridge integration. Adding a bridge means adding a facet, not
+redeploying. Funds pass straight through and are never held between transactions.
+
+**What it cost.** The contracts make arbitrary external calls by design, so the
+entire security model rests on an allowlist of which contracts and which function
+selectors may be called. Aggregators have been drained precisely when that
+allowlist was wrong. You also trust the off-chain API to return an honest route.
+
+---
+
 
 Every facet in `lifi/contracts/src/Facets/`, function by function. 42 files,
 11,214 lines of Solidity. Nothing here is skipped: every contract, every

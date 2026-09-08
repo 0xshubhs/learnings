@@ -1,9 +1,31 @@
 # Curve Classic Pools — Complete Reference
 
-> **Why this exists.** Constant product prices two dollars as if they might not be worth the same. Curve's curve stays flat while a pool is balanced, giving stablecoin swaps far more depth at the same TVL.
->
-> Background and the derivations behind it: [`CURVE-DEEP-DIVE.md`](CURVE-DEEP-DIVE.md).
-> The problem each protocol in this repo solves: [`WHY.md`](../WHY.md).
+## Why this exists
+
+**The pain.** USDC and DAI are both supposed to be one dollar. In 2020, swapping a
+million dollars between them on Uniswap V2 cost several percent, because `x*y=k`
+deliberately prices the ten-thousandth unit very differently from the first. That
+is exactly right for ETH against an unknown token, and absurd for two things meant
+to be identical.
+
+**What people did instead.** Split large stablecoin trades across venues, route
+through a centralised exchange, or accept the loss.
+
+**What Curve changed.** Keep the AMM, change the curve. StableSwap is almost flat
+while a pool is balanced, so trades near the peg have near-zero slippage, and it
+degrades toward constant product as the pool skews so it can never be fully
+drained. One parameter picks where on that spectrum a pool sits. In practice that
+is roughly 50 to 100 times the depth of a Uniswap V2 pool at the same TVL, for
+assets that hold their peg.
+
+**What it cost.** The curve has no closed-form solution, so every swap runs
+Newton's method on-chain and costs more gas. And the curve encodes a belief that
+these assets are worth the same; when that breaks, as with UST, Curve LPs are the
+ones left holding the broken asset. The veCRV and gauge system exists to pay for
+liquidity to stay anyway.
+
+---
+
 
 Every pool template and every deployed pool family in `curve/curve-contract/`,
 function by function. This is the *first* generation of Curve StableSwap: 33

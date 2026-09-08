@@ -1,9 +1,31 @@
 # Liquity v1 & v2 — Complete Reference
 
-> **Why this exists.** Every stablecoin before it was one governance vote away from changing your loan's terms. Liquity removes governance entirely: no admin keys, no upgrades, zero ongoing interest, and a peg held by hard redeemability rather than by anyone defending it.
->
-> Background and the derivations behind it: [`LIQUITY-DEEP-DIVE.md`](LIQUITY-DEEP-DIVE.md).
-> The problem each protocol in this repo solves: [`WHY.md`](../WHY.md).
+## Why this exists
+
+**The pain.** Every stablecoin before it was one governance vote from changing the
+rules. MakerDAO charged a variable stability fee set by vote, could add or remove
+collateral types, and could in principle alter the terms of a loan after you took
+it. Borrowing costs were unpredictable and the peg depended on active management.
+
+**What people did instead.** Accept governance risk, or stay in centralised
+stablecoins and accept custody risk instead.
+
+**What Liquity changed.** Remove governance entirely. No admin keys, no upgrades,
+no parameters to vote on. Borrow at a one-time fee with zero ongoing interest, at a
+110% minimum collateral ratio rather than 150%. The peg is held by hard
+redeemability: anyone can always swap 1 LUSD for a dollar of ETH taken from the
+riskiest positions, which creates a floor nobody has to defend. Liquidations are
+absorbed first by a Stability Pool of volunteers, and if that empties, the debt is
+redistributed across remaining borrowers in constant time.
+
+**What it cost.** Immutability means bugs are permanent and the protocol cannot
+adapt. Being redeemed against is unpleasant if you are the riskiest borrower.
+Recovery Mode, the systemic circuit breaker, is itself a griefing surface. V2
+addresses several of these by letting borrowers set their own interest rate, which
+turns redemption priority into a market instead of a punishment.
+
+---
+
 
 Every contract, every function, in both generations of Liquity, written against
 the exact sources cloned in this folder.

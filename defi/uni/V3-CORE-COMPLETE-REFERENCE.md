@@ -1,9 +1,31 @@
 # Uniswap V3 Core — Complete Reference
 
-> **Why this exists.** V2 spread liquidity across every price from zero to infinity, so most of it never traded. V3 lets an LP concentrate capital in a range, which is where the tick and sqrt-price machinery comes from.
->
-> Background and the derivations behind it: [`UNISWAP-DEEP-DIVE.md`](UNISWAP-DEEP-DIVE.md).
-> The problem each protocol in this repo solves: [`WHY.md`](../WHY.md).
+## Why this exists
+
+**The pain.** In 2017, listing a token meant convincing a centralised exchange or
+finding a market maker willing to quote both sides continuously. Order books need
+someone posting bids and asks and updating them as the price moves. On-chain that
+is ruinous: every quote update is a transaction, and a maker who cannot cancel
+cheaply gets picked off by anyone faster. Long-tail tokens therefore had no market
+at all.
+
+**What people did instead.** EtherDelta and its peers put an order book on-chain.
+It worked, barely, and it was slow, expensive and thin.
+
+**What Uniswap changed.** Delete the order book. Hold reserves of two tokens and
+price every trade with a formula, `x * y = k`. There is no counterparty to find
+and no quote to maintain. Anyone can create a market for any token in one
+transaction, and anyone can be the market maker by depositing both sides.
+
+**What it cost.** Liquidity providers now lose to arbitrageurs whenever the price
+moves, which is impermanent loss. Capital is spread across every price from zero
+to infinity, so most of it never trades. V3 attacks that by letting an LP
+concentrate capital in a range, at the cost of positions becoming non-fungible and
+needing management. V4 keeps V3's math and attacks gas and extensibility instead,
+putting every pool in one contract with pluggable hooks.
+
+---
+
 
 Every contract, every function, every parameter, every revert string, every
 storage slot in `uni/v3-core/contracts`. Written to be read cover to cover.

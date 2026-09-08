@@ -1,5 +1,30 @@
 # Aave v1 & v2 Deep Dive (the road to v3)
 
+## Why this exists
+
+**The pain.** Lending on-chain first meant matching a lender to a borrower on
+amount, duration and rate. Matching is slow and leaves capital idle. And an
+anonymous borrower who cannot be sued has no reason to repay.
+
+**What people did instead.** MakerDAO, which let you mint DAI against ETH but only
+DAI, and nothing that let you borrow an arbitrary asset against an arbitrary
+collateral.
+
+**What Aave v1 and v2 changed.** Pool the capital and price it by utilisation.
+Suppliers hold a claim token that grows; borrowers draw against over-collateralised
+positions; anyone may liquidate a position that gets too close to its debt. v1
+worked out the model. v2 rebuilt it: funds moved out of a monolithic core contract
+into the aTokens themselves, debt became its own token, and the logic split into
+libraries.
+
+**What it cost, and why you should read them anyway.** Both are superseded. But
+almost every design decision in v3 is an answer to something specific that hurt in
+v1 or v2 — the rebasing aToken that broke composability, the stable rate that never
+worked, the gas cost of a monolithic core. Reading these two makes v3 legible as a
+sequence of fixes rather than arbitrary complexity.
+
+---
+
 > Sibling documents in this folder:
 > - `aave/AAVE-DEEP-DIVE.md` — Aave v3.6 in depth (`aave-v3-origin`).
 > - `aave/AAVE-V4-DEEP-DIVE.md` — Aave v4 Hub & Spoke architecture.
