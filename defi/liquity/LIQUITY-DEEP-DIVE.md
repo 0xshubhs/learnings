@@ -25,7 +25,7 @@ designers refuse to keep any control at all.
 
 ---
 
-## 0. The mental model: a CDP stablecoin with no governance
+## 0. Why this exists: a CDP stablecoin with no governance
 
 **The primitive.** You lock ETH in a "Trove" and mint LUSD against it. The Trove
 is yours alone. There is no shared interest rate, no utilisation curve, no supply

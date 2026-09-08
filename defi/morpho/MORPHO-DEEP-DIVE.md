@@ -21,7 +21,7 @@ roughly **760 lines of logic against Aave's ~9,000**, a factor of twelve.
 
 ---
 
-## 0. The thesis: a lending primitive, not a lending protocol
+## 0. Why this exists: a lending primitive, not a lending protocol
 
 **The problem.** Listing a market on Aave is a governance vote: the DAO argues
 about the oracle, the loan-to-value ratio, the caps and the rate curve, then votes.

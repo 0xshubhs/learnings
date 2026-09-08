@@ -14,7 +14,7 @@ Reading order if you are new: §0 (why) → §1 (classic pool, the whole AMM in 
 
 ---
 
-## 0. Why StableSwap
+## 0. Why this exists: why StableSwap
 
 **The problem.** USDC and DAI are both supposed to be one dollar. In 2020,
 swapping a million dollars between them on Uniswap V2 cost several percent, because

@@ -19,7 +19,7 @@ Every `path:line` below was checked with `grep -n` against these files.
 
 ---
 
-## 0. What liquid staking actually solves
+## 0. Why this exists: what liquid staking solves
 
 **The problem.** Ethereum proof-of-stake wants validators. A validator costs
 exactly 32 ETH, runs software that must stay online, and until the Shanghai

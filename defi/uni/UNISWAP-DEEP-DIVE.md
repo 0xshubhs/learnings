@@ -14,7 +14,7 @@ Every `path:line` below was checked with `grep -n` against these files. Open the
 
 ---
 
-## 0. Mental model of an AMM
+## 0. Why this exists: the mental model of an AMM
 
 **The problem.** An order book needs someone to post a bid and someone to post an ask. On-chain that is expensive and slow. An Automated Market Maker replaces the order book with a *pool* of two tokens and a *formula* that decides the price for any trade size, deterministically, with no counterparty to find.
 

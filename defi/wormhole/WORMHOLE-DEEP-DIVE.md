@@ -19,7 +19,7 @@ verified link into that tree.
 
 ---
 
-## 0. The problem: chains cannot read each other
+## 0. Why this exists: chains cannot read each other
 
 A smart contract on Ethereum can read Ethereum state. It cannot read Solana
 state. There is no opcode for it, and there is no cheap way to build one: to

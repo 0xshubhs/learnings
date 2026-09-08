@@ -16,7 +16,7 @@
 
 ---
 
-## 0. Lending protocol mental model
+## 0. Why this exists: the lending mental model
 
 A lending protocol is a **pooled, over-collateralized, algorithmic-rate money market**. Every concept in Aave's code maps to one of these words.
 
