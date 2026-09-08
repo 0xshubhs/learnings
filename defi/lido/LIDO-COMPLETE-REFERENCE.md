@@ -1,5 +1,10 @@
 # Lido v3 — Complete Reference
 
+> **Why this exists.** Staking Ethereum needed exactly 32 ETH, a server that stays online, and until Shanghai no way out at all. Lido pools any amount, delegates the operations, and gives you a liquid token for the locked stake.
+>
+> Background and the derivations behind it: [`LIDO-DEEP-DIVE.md`](LIDO-DEEP-DIVE.md).
+> The problem each protocol in this repo solves: [`WHY.md`](../WHY.md).
+
 Every contract and every function in [`lidofinance/core`](https://github.com/lidofinance/core)
 v3.0.2, cloned into `lido/core` with its `.git` removed. **155 Solidity files,
 37,663 lines.**

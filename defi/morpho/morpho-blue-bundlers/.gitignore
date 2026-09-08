@@ -24,3 +24,6 @@ broadcast/
 
 # Certora
 .certora_internal
+
+# 0xTools generated signatures
+signatures/

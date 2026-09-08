@@ -1,5 +1,10 @@
 # LI.FI Facets — Complete Reference
 
+> **Why this exists.** Dozens of bridges, each with its own interface and failure mode. LI.FI puts one facet per integration behind a single Diamond, so adding a bridge does not mean redeploying.
+>
+> Background and the derivations behind it: [`LIFI-DEEP-DIVE.md`](LIFI-DEEP-DIVE.md).
+> The problem each protocol in this repo solves: [`WHY.md`](../WHY.md).
+
 Every facet in `lifi/contracts/src/Facets/`, function by function. 42 files,
 11,214 lines of Solidity. Nothing here is skipped: every contract, every
 function, every parameter, every custom error, every external call into a bridge.

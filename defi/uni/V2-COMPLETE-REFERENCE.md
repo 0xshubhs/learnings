@@ -1,5 +1,10 @@
 # Uniswap V2 — Complete Reference
 
+> **Why this exists.** Uniswap replaced the order book with a formula, so any token could have a market without a market maker willing to quote it.
+>
+> Background and the derivations behind it: [`UNISWAP-DEEP-DIVE.md`](UNISWAP-DEEP-DIVE.md).
+> The problem each protocol in this repo solves: [`WHY.md`](../WHY.md).
+
 Every contract, every function, every revert string in `uni/v2-core` and
 `uni/v2-periphery`. **35 Solidity files**: 12 in core, 23 in periphery. Nothing
 is skipped — trivial interfaces get short entries, but they get entries.

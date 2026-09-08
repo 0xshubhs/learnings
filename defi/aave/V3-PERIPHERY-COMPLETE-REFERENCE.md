@@ -1,5 +1,10 @@
 # Aave v3 — Complete Reference: everything outside `protocol/`
 
+> **Why this exists.** Everything around the core pool that a real market needs: prices, rate curves, reward emissions, a non-rebasing wrapper, and the machinery to deploy and configure a whole market.
+>
+> Background and the derivations behind it: [`AAVE-DEEP-DIVE.md`](AAVE-DEEP-DIVE.md).
+> The problem each protocol in this repo solves: [`WHY.md`](../WHY.md).
+
 This document covers **every Solidity file** in `aave/aave-v3-origin/src/` *except*
 `src/contracts/protocol/**` and `src/contracts/interfaces/**`, which are covered by the
 sibling document [`V3-PROTOCOL-COMPLETE-REFERENCE.md`](V3-PROTOCOL-COMPLETE-REFERENCE.md).

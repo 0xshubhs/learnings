@@ -45,3 +45,6 @@ testMatrix.json
 
 # E2E broadcast logs
 /broadcast-e2e
+
+# 0xTools generated signatures
+signatures/

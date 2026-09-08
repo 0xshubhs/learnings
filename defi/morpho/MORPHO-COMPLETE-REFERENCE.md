@@ -1,5 +1,10 @@
 # Morpho — Complete Reference
 
+> **Why this exists.** Listing a market on Aave is a DAO vote, which is slow and political, and every depositor inherits every decision. Morpho makes the market itself the primitive: an immutable five-tuple anyone can deploy, with risk curation moved up to vaults.
+>
+> Background and the derivations behind it: [`MORPHO-DEEP-DIVE.md`](MORPHO-DEEP-DIVE.md).
+> The problem each protocol in this repo solves: [`WHY.md`](../WHY.md).
+
 An exhaustive, function-by-function reference for the four repositories that make up the
 Morpho stack, written against the exact sources cloned in this folder.
 

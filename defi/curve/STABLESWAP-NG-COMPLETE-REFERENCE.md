@@ -1,5 +1,10 @@
 # Curve StableSwap-NG — Complete Reference
 
+> **Why this exists.** The next generation of Curve's pools: more coins, dynamic fees that widen as a pool skews, rebasing and ERC-4626 assets, and a built-in price oracle.
+>
+> Background and the derivations behind it: [`CURVE-DEEP-DIVE.md`](CURVE-DEEP-DIVE.md).
+> The problem each protocol in this repo solves: [`WHY.md`](../WHY.md).
+
 Every contract, every function, every parameter, every revert, in
 `curve/stableswap-ng/`. This is the exhaustive companion to
 [`CURVE-DEEP-DIVE.md`](CURVE-DEEP-DIVE.md), which teaches the ideas; this file

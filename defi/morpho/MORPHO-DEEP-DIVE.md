@@ -23,6 +23,19 @@ roughly **760 lines of logic against Aave's ~9,000**, a factor of twelve.
 
 ## 0. The thesis: a lending primitive, not a lending protocol
 
+**The problem.** Listing a market on Aave is a governance vote: the DAO argues
+about the oracle, the loan-to-value ratio, the caps and the rate curve, then votes.
+That is slow and political, it means a market nobody influential cares about never
+gets listed at all, and it means every depositor in the protocol inherits every
+decision made about every other asset.
+
+**The move.** Stop treating the protocol as the product and make the *market* the
+primitive. A market is an immutable five-tuple that anyone can deploy without
+asking, markets are isolated from each other, and the core has no governance over
+live markets and no upgrade path. Risk curation does not disappear; it moves up a
+layer into vaults that compete on results. What follows is that five-tuple.
+
+
 A Morpho Blue market is defined entirely by an immutable five-tuple, and there is
 nothing else to it ([`morpho-blue/src/interfaces/IMorpho.sol:6-12`](morpho-blue/src/interfaces/IMorpho.sol#L6-L12)):
 

@@ -23,3 +23,6 @@ broadcast/
 munged/
 
 *.log
+
+# 0xTools generated signatures
+signatures/

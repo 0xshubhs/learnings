@@ -16,6 +16,19 @@ Reading order if you are new: §0 (why) → §1 (classic pool, the whole AMM in 
 
 ## 0. Why StableSwap
 
+**The problem.** USDC and DAI are both supposed to be one dollar. In 2020,
+swapping a million dollars between them on Uniswap V2 cost several percent, because
+`x * y = k` deliberately prices the ten-thousandth unit very differently from the
+first. That is exactly right for ETH against an unknown token, and absurd for two
+things that are meant to be identical.
+
+**The move.** Keep the AMM, change the curve. Use a function that is almost flat
+while the pool is balanced, so trades near the peg have near-zero slippage, and
+which degrades toward constant product as the pool skews so it can never be fully
+drained. One parameter picks where on that spectrum a pool sits. The rest of this
+section derives that function from those two requirements.
+
+
 ### 0.1 The two extremes
 
 An AMM is a function `F(x_0, …, x_{n-1}) = const` over the pool's reserves. A trade moves the reserves along the level set; the marginal price is the slope.

@@ -1,5 +1,10 @@
 # LI.FI — Libraries, Helpers, Periphery & Diamond Core: Complete Reference
 
+> **Why this exists.** An aggregator makes arbitrary external calls by design. These libraries and periphery contracts are the machinery that makes that survivable: allowlists, balance-diff accounting, and receivers that cannot hold funds hostage.
+>
+> Background and the derivations behind it: [`LIFI-DEEP-DIVE.md`](LIFI-DEEP-DIVE.md).
+> The problem each protocol in this repo solves: [`WHY.md`](../WHY.md).
+
 Exhaustive, function-by-function reference for **everything under
 `lifi/contracts/src/` except `src/Facets/`**. The facets have their own document,
 [`lifi/FACETS-COMPLETE-REFERENCE.md`](FACETS-COMPLETE-REFERENCE.md); the

@@ -46,3 +46,6 @@ deployed-*-upgrade.json
 .local/
 .tmp/
 .dev/
+
+# 0xTools generated signatures
+signatures/

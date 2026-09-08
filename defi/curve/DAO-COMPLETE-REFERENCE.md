@@ -1,5 +1,10 @@
 # Curve DAO — Complete Contract Reference
 
+> **Why this exists.** Deep liquidity for pegged assets is only worth providing if someone pays for it. veCRV, gauges and emissions are the machine Curve built to direct that payment, and the template most protocols copied.
+>
+> Background and the derivations behind it: [`CURVE-DEEP-DIVE.md`](CURVE-DEEP-DIVE.md).
+> The problem each protocol in this repo solves: [`WHY.md`](../WHY.md).
+
 Exhaustive, function-by-function reference for **every** Vyper file in
 `curve-dao-contracts/contracts/` — 68 files, 19,366 lines.
 

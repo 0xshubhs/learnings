@@ -1,5 +1,10 @@
 # Aave v1 & v2 — Complete Contract & Function Reference
 
+> **Why this exists.** Peer-to-peer lending needed a counterparty and left money idle waiting for one. Aave pooled it. v1 and v2 are where the pooled money-market design was worked out, and most of v3 is an answer to their specific failures.
+>
+> Background and the derivations behind it: [`AAVE-V1-V2-DEEP-DIVE.md`](AAVE-V1-V2-DEEP-DIVE.md).
+> The problem each protocol in this repo solves: [`WHY.md`](../WHY.md).
+
 A mechanical, file-by-file, function-by-function reference for the two Aave
 generations cloned in this folder:
 

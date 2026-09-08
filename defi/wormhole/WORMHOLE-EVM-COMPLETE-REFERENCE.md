@@ -1,5 +1,10 @@
 # Wormhole EVM — Complete Reference
 
+> **Why this exists.** A contract on Ethereum cannot read Solana state, and verifying it natively costs more gas than it is worth. Wormhole takes an explicit trust assumption instead: guardians sign an observation, and any chain can check the signatures cheaply.
+>
+> Background and the derivations behind it: [`WORMHOLE-DEEP-DIVE.md`](WORMHOLE-DEEP-DIVE.md).
+> The problem each protocol in this repo solves: [`WHY.md`](../WHY.md).
+
 Every Solidity contract and every function in `wormhole/ethereum/contracts`, walked
 one at a time. 61 files, 6,477 lines.
 

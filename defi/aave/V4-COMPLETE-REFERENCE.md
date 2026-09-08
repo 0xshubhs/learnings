@@ -1,5 +1,10 @@
 # Aave V4 — Complete Reference
 
+> **Why this exists.** v3 fragmented liquidity across per-market pools and made adding a market a governance event. v4 splits liquidity (the Hub) from products (Spokes) so markets can be added and removed without migrating capital.
+>
+> Background and the derivations behind it: [`AAVE-V4-DEEP-DIVE.md`](AAVE-V4-DEEP-DIVE.md).
+> The problem each protocol in this repo solves: [`WHY.md`](../WHY.md).
+
 Every contract, every function, every custom error, every storage slot in
 `aave/v4-aave/src`, excluding the vendored `src/dependencies/**` (listed in §13).
 

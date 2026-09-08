@@ -1,5 +1,10 @@
 # Uniswap V3 Periphery — Complete Reference
 
+> **Why this exists.** The V3 core pool is deliberately unusable directly: it has no approvals, no slippage checks and no multi-hop. The periphery is what makes it safe for humans and routers to call.
+>
+> Background and the derivations behind it: [`UNISWAP-DEEP-DIVE.md`](UNISWAP-DEEP-DIVE.md).
+> The problem each protocol in this repo solves: [`WHY.md`](../WHY.md).
+
 Every contract, every library, every function in `uni/v3-periphery/contracts`.
 76 Solidity files, all enumerated. Line numbers verified with `grep -n` against
 this tree; open the files beside this document.

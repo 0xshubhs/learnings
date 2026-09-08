@@ -1,5 +1,10 @@
 # Uniswap V3 Core — Complete Reference
 
+> **Why this exists.** V2 spread liquidity across every price from zero to infinity, so most of it never traded. V3 lets an LP concentrate capital in a range, which is where the tick and sqrt-price machinery comes from.
+>
+> Background and the derivations behind it: [`UNISWAP-DEEP-DIVE.md`](UNISWAP-DEEP-DIVE.md).
+> The problem each protocol in this repo solves: [`WHY.md`](../WHY.md).
+
 Every contract, every function, every parameter, every revert string, every
 storage slot in `uni/v3-core/contracts`. Written to be read cover to cover.
 

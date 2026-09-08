@@ -1,5 +1,10 @@
 # Curve Classic Pools — Complete Reference
 
+> **Why this exists.** Constant product prices two dollars as if they might not be worth the same. Curve's curve stays flat while a pool is balanced, giving stablecoin swaps far more depth at the same TVL.
+>
+> Background and the derivations behind it: [`CURVE-DEEP-DIVE.md`](CURVE-DEEP-DIVE.md).
+> The problem each protocol in this repo solves: [`WHY.md`](../WHY.md).
+
 Every pool template and every deployed pool family in `curve/curve-contract/`,
 function by function. This is the *first* generation of Curve StableSwap: 33
 production pools written in Vyper between 2020 and 2021, before the factory-based

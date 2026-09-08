@@ -1,5 +1,10 @@
 # Aave v3 Core Protocol — Complete Reference
 
+> **Why this exists.** A shared pool means every listed asset exposes every other one. Almost all of v3's complexity, isolation mode, caps, e-mode and siloed borrowing, exists to contain that blast radius.
+>
+> Background and the derivations behind it: [`AAVE-DEEP-DIVE.md`](AAVE-DEEP-DIVE.md).
+> The problem each protocol in this repo solves: [`WHY.md`](../WHY.md).
+
 An exhaustive, function-by-function reference for **every contract and every
 function** under `aave/aave-v3-origin/src/contracts/protocol/`, plus the
 interfaces in `src/contracts/interfaces/` that define the protocol's external

@@ -1,5 +1,10 @@
 # Liquity v1 & v2 — Complete Reference
 
+> **Why this exists.** Every stablecoin before it was one governance vote away from changing your loan's terms. Liquity removes governance entirely: no admin keys, no upgrades, zero ongoing interest, and a peg held by hard redeemability rather than by anyone defending it.
+>
+> Background and the derivations behind it: [`LIQUITY-DEEP-DIVE.md`](LIQUITY-DEEP-DIVE.md).
+> The problem each protocol in this repo solves: [`WHY.md`](../WHY.md).
+
 Every contract, every function, in both generations of Liquity, written against
 the exact sources cloned in this folder.
 

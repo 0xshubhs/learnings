@@ -1,5 +1,10 @@
 # Uniswap V4 Core — Complete Reference
 
+> **Why this exists.** Every V3 pool was its own contract, so creating one cost a deployment and multi-hop swaps moved tokens between them. V4 puts every pool in one contract, nets balances instead of transferring, and adds hooks so behaviour is pluggable.
+>
+> Background and the derivations behind it: [`UNISWAP-DEEP-DIVE.md`](UNISWAP-DEEP-DIVE.md).
+> The problem each protocol in this repo solves: [`WHY.md`](../WHY.md).
+
 Exhaustive, function-by-function documentation of every Solidity file in
 `uni/v4-core/src/`. **84 files**: 46 core (7 root contracts, 24 libraries, 7
 types, 8 interfaces) and 38 test helpers.

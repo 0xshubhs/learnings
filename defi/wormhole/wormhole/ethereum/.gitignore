@@ -5,3 +5,5 @@ flattened
 ethers-contracts
 build-forge/
 broadcast/
+# 0xTools generated signatures
+signatures/
